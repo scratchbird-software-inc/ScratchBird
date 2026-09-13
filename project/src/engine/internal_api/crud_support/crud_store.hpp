@@ -203,6 +203,36 @@ Lookup BuildCrudLatestRowIdentityMap(const RelationReadSnapshot& state,
   return latest;
 }
 
+// Visible-key recheck only; not the pending-key reservation/wait coordinator.
+// Logical key projection and MGA visibility come from their owning callers.
+// Returned rows borrow state exactly as BuildCrudLatestRowIdentityMap does.
+template<class RowVisible, class EntryVisible, class EntryMatches, class RowKeys>
+const CrudRowVersionRecord* FindCrudVisibleUniqueConflict(
+    const RelationReadSnapshot& state, const CrudIndexRecord& index,
+    const EngineUuid& writing_row_uuid, const std::vector<std::string>& proposed_keys,
+    RowVisible row_visible, EntryVisible entry_visible,
+    EntryMatches entry_matches, RowKeys row_keys) {
+  if (!index.unique || proposed_keys.empty()) return nullptr;
+  std::optional<CrudHashedRowIdentityMap> latest;
+  for (const auto& key : proposed_keys) {
+    for (const auto& entry : state.index_entries) {
+      if (entry.index_uuid != index.index_uuid || entry.table_uuid != index.table_uuid ||
+          entry.row_uuid == writing_row_uuid || !entry_matches(entry, key) || !entry_visible(entry))
+        continue;
+      if (!latest) latest.emplace(BuildCrudLatestRowIdentityMap<CrudHashedRowIdentityMap>(
+          state, index.table_uuid, row_visible));
+      const auto found = latest->find(entry.row_uuid);
+      if (found == latest->end() || found->second->deleted) continue;
+      // A physical entry for an older version is only a candidate. The latest
+      // visible version may have changed key or left a partial index entirely.
+      const auto current_keys = row_keys(*found->second);
+      for (const auto& current_key : current_keys)
+        if (current_key == key) return found->second;
+    }
+  }
+  return nullptr;
+}
+
 struct CrudState : RelationReadSnapshot {
   CrudState() = default;
   CrudState(const CrudState&) = default;

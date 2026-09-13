@@ -223,18 +223,12 @@ EngineApiDiagnostic ValidateCrudUniqueIndexesForRow(const RelationReadSnapshot& 
   for (const auto& index : VisibleCrudIndexesForTable(state, table_uuid, observer_tx)) {
     if (!index.unique) { continue; }
     const auto keys = CrudIndexEntryKeysForValues(index, values);
-    for (const auto& key : keys) {
-      for (const auto& entry : state.index_entries) {
-        if (entry.index_uuid != index.index_uuid || entry.table_uuid != table_uuid || entry.row_uuid == row_uuid ||
-            !CrudIndexEntryMatchesLogicalKey(index, entry, key) ||
-            !TxVisible(state, entry.creator_tx, observer_tx)) {
-          continue;
-        }
-        const auto visible_row =
-            FindVisibleCrudRowForContext(state, table_uuid, entry.row_uuid, context);
-        if (visible_row) { return MakeInvalidRequestDiagnostic("crud.unique_index", "unique_index_duplicate"); }
-      }
-    }
+    const auto* conflict = FindCrudVisibleUniqueConflict(state, index, row_uuid, keys,
+        [&](const auto& row) { return CrudRowVersionVisibleToContext(state, row, context); },
+        [&](const auto& entry) { return TxVisible(state, entry.creator_tx, observer_tx); },
+        [&](const auto& entry, const auto& key) { return CrudIndexEntryMatchesLogicalKey(index, entry, key); },
+        [&](const auto& row) { return CrudIndexEntryKeysForValues(index, row.values); });
+    if (conflict) return MakeInvalidRequestDiagnostic("crud.unique_index", "unique_index_duplicate");
   }
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }

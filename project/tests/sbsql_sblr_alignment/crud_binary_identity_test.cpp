@@ -12,6 +12,7 @@
 #include <iostream>
 #include <limits>
 #include <new>
+#include <stdexcept>
 #include <type_traits>
 
 namespace api = scratchbird::engine::internal_api;
@@ -175,6 +176,97 @@ void BinaryRowSelectors() {
   Check(entropy_calls==entropy_before&&clock_calls==clock_before,"row selection generated replacement identities");
 }
 
+void UniqueLatestRowRecheck() {
+  const auto table=Expected(10),other_table=Expected(11),index_id=Expected(20);
+  const auto existing=Expected(30),writing=Expected(31);
+  api::CrudIndexRecord index;index.table_uuid=table;index.index_uuid=index_id;index.unique=true;
+  api::RelationReadSnapshot state;
+  api::CrudRowVersionRecord old;old.table_uuid=table;old.row_uuid=existing;
+  old.version_uuid=Expected(40);old.sequence=1;old.creator_tx=1;old.values={{"key","old"}};
+  auto current=old;current.version_uuid=Expected(41);current.sequence=2;current.creator_tx=2;
+  current.values={{"key","new"}};state.row_versions={old,current};
+  api::CrudIndexEntryRecord old_entry;old_entry.index_uuid=index_id;old_entry.table_uuid=table;
+  old_entry.row_uuid=existing;old_entry.version_uuid=old.version_uuid;old_entry.key_value="old";old_entry.creator_tx=1;
+  auto new_entry=old_entry;new_entry.version_uuid=current.version_uuid;new_entry.key_value="new";new_entry.creator_tx=2;
+  state.index_entries={old_entry,new_entry};
+  // Inputs here are already resolved logical keys and visibility decisions;
+  // the tested helper does not parse SQL or establish inventory authority.
+  const auto project=[](const auto& row){
+    std::vector<std::string> keys;
+    for(const auto& [role,value]:row.values) {
+      if(role=="excluded")return std::vector<std::string>{};
+      if(role=="key")keys.push_back(value);
+    }
+    return keys;
+  };
+  const auto resolve=[&](const std::vector<std::string>& keys,unsigned visibility=3,
+                         const api::EngineUuid* owner=nullptr){
+    return api::FindCrudVisibleUniqueConflict(state,index,owner?*owner:writing,keys,
+      [&](const auto& row){return (visibility&(1u<<(row.creator_tx-1)))!=0;},
+      [&](const auto& entry){return (visibility&(1u<<(entry.creator_tx-1)))!=0;},
+      [](const auto& entry,const auto& key){return entry.key_value==key;},project);
+  };
+  Check(resolve({"old"})==nullptr,"stale index entry falsely conflicts after visible key change");
+  Check(resolve({"new"})==&state.row_versions[1],"actual latest duplicate was lost");
+  Check(resolve({"old"},1)==&state.row_versions[0],"older snapshot/rolled-back successor lost original key");
+  Check(resolve({"new"},1)==nullptr,"invisible future key caused duplicate");
+  Check(resolve({"new"},3,&existing)==nullptr,"same row update conflicts with itself");
+  state.row_versions[1].deleted=true;
+  Check(resolve({"old","new"})==nullptr,"newest visible tombstone resurrected old unique entry");
+  state.row_versions[1].deleted=false;state.row_versions[1].values={{"excluded","1"},{"key","new"}};
+  Check(resolve({"old","new"})==nullptr,"row outside partial index still conflicts");
+  state.row_versions[1].values={{"key","old"}};
+  Check(resolve({"old"})==&state.row_versions[1],"same logical key in newer version must remain conflicting");
+  state.row_versions[1].values={{"key","one"},{"key","two"}};
+  state.index_entries[1].key_value="two";
+  Check(resolve({"absent","two"})==&state.row_versions[1],"multi-key latest membership was not checked");
+  const std::string embedded("a\0b",3);
+  state.row_versions[1].values={{"key",embedded}};state.index_entries[1].key_value=embedded;
+  Check(resolve({embedded})==&state.row_versions[1],"embedded-zero logical key was truncated");
+  state.row_versions[1].values={{"key","a"}};
+  Check(resolve({embedded})==nullptr,"logical key prefix was treated as full equality");
+  state.row_versions[1]=current;state.index_entries[1]=new_entry;
+  state.index_entries[1].index_uuid=Expected(21);
+  Check(resolve({"new"})==nullptr,"foreign index entry participated in unique recheck");
+  state.index_entries[1]=new_entry;state.index_entries[1].table_uuid=other_table;
+  Check(resolve({"new"})==nullptr,"foreign relation entry participated in unique recheck");
+  state.index_entries[1]=new_entry;state.row_versions[1].table_uuid=other_table;
+  Check(resolve({"new"})==nullptr,"foreign relation row participated in unique recheck");
+  state.row_versions[1]=current;state.index_entries[1].row_uuid=Expected(32);
+  Check(resolve({"new"})==nullptr,"missing candidate row produced a duplicate");
+  state.index_entries[1]=new_entry;
+  const std::vector<std::string> proposed{"new"};
+  index.unique=false;fail_after=0;
+  const auto nonunique=resolve(proposed);fail_after=-1;
+  Check(nonunique==nullptr,"nonunique candidate set produced conflict");index.unique=true;
+  auto saved_entries=std::move(state.index_entries);state.index_entries.clear();fail_after=0;
+  const auto no_candidates=resolve(proposed);fail_after=-1;
+  Check(no_candidates==nullptr,"absent index candidates allocated row recheck state");
+  state.index_entries=std::move(saved_entries);
+  unsigned faults=0;bool completed=false;
+  for(long budget=0;budget<32;++budget) {
+    const auto* destination=&old;fail_after=budget;
+    try {
+      destination=resolve(proposed);fail_after=-1;completed=true;
+      Check(destination==&state.row_versions[1],"completed recheck lost exact conflict row");
+    } catch(const std::bad_alloc&) {
+      fail_after=-1;++faults;
+      Check(destination==&old,"failed recheck exposed partial conflict result");
+    }
+    if(completed)break;
+  }
+  allocation_faults+=faults;
+  Check(completed&&faults>0,"unique recheck allocation faults were not exercised");
+  const auto* destination=&old;bool threw=false;
+  try {
+    destination=api::FindCrudVisibleUniqueConflict(state,index,writing,proposed,
+      [](const auto&){return true;},[](const auto&){return true;},
+      [](const auto& entry,const auto& key){return entry.key_value==key;},
+      [](const auto&)->std::vector<std::string>{throw std::runtime_error("key projection failed");});
+  } catch(const std::runtime_error&){threw=true;}
+  Check(threw&&destination==&old,"key projection failure became a no-conflict answer");
+}
+
 void Generation() {
   static_assert(sizeof(api::EngineUuid)==16);
   static_assert(std::is_same_v<decltype(api::GenerateCrudEngineUuid("row")),api::EngineUuid>);
@@ -316,7 +408,7 @@ __wrap__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv() {
   return result;
 }
 int main() {
-  try { Generation(); SuppliedIdentity(); PrimaryObjectBinding(); BinaryRowSelectors(); }
+  try { Generation(); SuppliedIdentity(); PrimaryObjectBinding(); BinaryRowSelectors(); UniqueLatestRowRecheck(); }
   catch (const std::exception& error) {
     fail_after=-1;
     std::cerr<<"unexpected exception "<<error.what()<<'\n';
