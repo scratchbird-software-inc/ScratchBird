@@ -821,6 +821,33 @@ LocalTransactionStoreResult MakeRootPageContext(FileDevice* device,
     return StorePageError("SB-TXN-INVENTORY-PAGE-CHAIN-INVALID",
                           "transaction_inventory_page.null_device_or_context");
   }
+  SerializedDatabaseHeader database_bytes{};
+  const auto read_database=device->ReadAt(0,database_bytes.data(),database_bytes.size());
+  if (!read_database.ok()) return StoreError(read_database.status,read_database.diagnostic);
+  const auto database=ParseDatabaseHeader(database_bytes);
+  if (!database.ok()) return StoreError(database.status,database.diagnostic);
+  if (database.header.page_size!=page_size ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(database.header.database_uuid))
+    return StorePageError("CATALOG.INVALID_INPUT","transaction_inventory_page.database_binding_invalid");
+  const auto startup=ReadStartupStatePageBody(device,page_size);
+  if (!startup.ok()) return StoreError(startup.status,startup.diagnostic);
+  if (startup.state.page_size!=page_size || startup.state.database_uuid.kind!=UuidKind::database ||
+      startup.state.database_uuid.value!=database.header.database_uuid ||
+      startup.state.first_filespace_uuid.kind!=UuidKind::filespace ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(startup.state.first_filespace_uuid.value))
+    return StorePageError("CATALOG.INVALID_INPUT","transaction_inventory_page.startup_binding_invalid");
+  const auto startup_header=ReadDevicePageHeader(device,page_size,kSystemStatePageNumber,
+                                                 InventoryHeaderPolicy(device,page_size));
+  if (!startup_header.ok()) return StoreError(startup_header.status,startup_header.diagnostic);
+  const auto parsed_startup=ParsePageHeader(startup_header.serialized);
+  if (!parsed_startup.ok()) return StoreError(parsed_startup.status,parsed_startup.diagnostic);
+  if (parsed_startup.header.page_type!=PageType::system_state ||
+      parsed_startup.header.database_uuid!=database.header.database_uuid ||
+      parsed_startup.header.filespace_uuid!=startup.state.first_filespace_uuid.value ||
+      parsed_startup.header.page_size!=page_size || parsed_startup.header.page_number!=kSystemStatePageNumber ||
+      !parsed_startup.header.page_generation ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(parsed_startup.header.page_uuid))
+    return StorePageError("CATALOG.INVALID_INPUT","transaction_inventory_page.startup_header_binding_invalid");
   const auto header = ReadDevicePageHeader(device,
                                            page_size,
                                            kTransactionInventoryPageNumber,
@@ -833,6 +860,11 @@ LocalTransactionStoreResult MakeRootPageContext(FileDevice* device,
   }
   const auto parsed = ParsePageHeader(header.serialized);
   if (!parsed.ok()) { return StoreError(parsed.status, parsed.diagnostic); }
+  if (parsed.header.database_uuid!=database.header.database_uuid ||
+      parsed.header.filespace_uuid!=startup.state.first_filespace_uuid.value ||
+      parsed.header.page_size!=page_size || parsed.header.page_number!=kTransactionInventoryPageNumber ||
+      !parsed.header.page_generation || !scratchbird::core::uuid::IsEngineIdentityUuid(parsed.header.page_uuid))
+    return StorePageError("CATALOG.INVALID_INPUT","transaction_inventory_page.root_binding_invalid");
   context->page_size = page_size;
   context->database_uuid = MakeTyped(UuidKind::database, parsed.header.database_uuid);
   context->filespace_uuid = MakeTyped(UuidKind::filespace, parsed.header.filespace_uuid);
@@ -864,8 +896,10 @@ LocalTransactionStoreResult ReadInventoryPageBody(FileDevice* device,
 }
 
 LocalTransactionStoreResult ValidateInventoryPageHeader(FileDevice* device,
-                                                        u32 page_size,
-                                                        u64 page_number) {
+                                                        const PageManagerContext& context,
+                                                        u64 page_number,
+                                                        scratchbird::core::platform::Uuid* page_uuid) {
+  const u32 page_size=context.page_size;
   const auto header = ReadDevicePageHeader(device,
                                            page_size,
                                            page_number,
@@ -876,6 +910,14 @@ LocalTransactionStoreResult ValidateInventoryPageHeader(FileDevice* device,
                           "transaction_inventory_page.chain_type_mismatch",
                           std::to_string(page_number));
   }
+  const auto parsed=ParsePageHeader(header.serialized);
+  if (!parsed.ok()) return StoreError(parsed.status,parsed.diagnostic);
+  if (parsed.header.database_uuid!=context.database_uuid.value ||
+      parsed.header.filespace_uuid!=context.filespace_uuid.value ||
+      parsed.header.page_size!=page_size || parsed.header.page_number!=page_number ||
+      !parsed.header.page_generation || !scratchbird::core::uuid::IsEngineIdentityUuid(parsed.header.page_uuid))
+    return StorePageError("CATALOG.INVALID_INPUT","transaction_inventory_page.chain_header_binding_invalid");
+  *page_uuid=parsed.header.page_uuid;
   return LocalTransactionStoreResult{StoreOkStatus(), {}, {}, {}};
 }
 
@@ -889,21 +931,32 @@ LocalTransactionStoreResult LoadInventoryChain(FileDevice* device,
   }
   inventory->entries.clear();
   page_chain->clear();
+  PageManagerContext context;
+  const auto owning_context=MakeRootPageContext(device,page_size,&context);
+  if (!owning_context.ok()) return owning_context;
+  const auto extent=device->Size();
+  if (!extent.ok()) return StoreError(extent.status,extent.diagnostic);
+  if (!page_size || extent.size_bytes%page_size!=0)
+    return StorePageError("CATALOG.INVALID_INPUT","transaction_inventory_page.file_extent_invalid");
+  const auto allocated_pages=extent.size_bytes/page_size;
   std::set<u64> visited;
+  std::set<scratchbird::core::platform::Uuid> visited_page_uuids;
   u64 page_number = kTransactionInventoryPageNumber;
   u64 previous_page_number = 0;
   u64 chain_generation = 0;
-  u32 page_count = 0;
   u64 next_local_id = 1;
   u64 next_commit_sequence = 1;
   while (page_number != 0) {
-    if (++page_count > 4096 || visited.count(page_number) != 0) {
+    if (page_number>=allocated_pages || visited.count(page_number) != 0) {
       return StorePageError("SB-TXN-INVENTORY-PAGE-CHAIN-INVALID",
-                            "transaction_inventory_page.chain_cycle_or_too_long",
+                            "transaction_inventory_page.chain_cycle_or_invalid_extent",
                             std::to_string(page_number));
     }
-    const auto header = ValidateInventoryPageHeader(device, page_size, page_number);
+    scratchbird::core::platform::Uuid page_uuid;
+    const auto header = ValidateInventoryPageHeader(device, context, page_number,&page_uuid);
     if (!header.ok()) { return header; }
+    if (!visited_page_uuids.insert(page_uuid).second)
+      return StorePageError("CATALOG.INVALID_INPUT","transaction_inventory_page.duplicate_page_identity");
     TransactionInventoryPageBody page_body;
     const auto read = ReadInventoryPageBody(device, page_size, page_number, &page_body);
     if (!read.ok()) { return read; }
@@ -1143,6 +1196,14 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(FileDevi
   if (device == nullptr)
     return StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.null_device_or_context");
   const auto operation_guard = device->AcquireOperationGuard();
+  // Recovery may replace damaged page state, never an invalid caller binding.
+  SerializedDatabaseHeader expected_database_bytes{};
+  const auto expected_read=device->ReadAt(0,expected_database_bytes.data(),expected_database_bytes.size());
+  if (!expected_read.ok()) return StoreError(expected_read.status,expected_read.diagnostic);
+  const auto expected_database=ParseDatabaseHeader(expected_database_bytes);
+  if (!expected_database.ok()) return StoreError(expected_database.status,expected_database.diagnostic);
+  if (expected_database.header.page_size!=page_size)
+    return StorePageError("CATALOG.INVALID_INPUT","transaction_inventory_page.request_page_size_mismatch");
   const auto issue_base = [&](LocalTransactionStoreResult result) {
     if (result.ok()) {
       result.inventory.publication_base = InventoryPublicationBase(device, result.inventory);

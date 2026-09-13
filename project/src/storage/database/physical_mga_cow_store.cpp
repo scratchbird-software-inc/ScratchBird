@@ -243,6 +243,30 @@ DatabaseContextResult LoadDatabaseContext(FileDevice* device) {
         "SB-PHYSICAL-MGA-COW-DATABASE-UUID-MISMATCH",
         "storage.physical_mga_cow.database_uuid_mismatch");
   }
+  const auto startup=ReadStartupStatePageBody(device,parsed_header.header.page_size);
+  if (!startup.ok()) return Propagate<DatabaseContextResult>(startup.status,startup.diagnostic);
+  const auto startup_header=ReadDevicePageHeader(device,parsed_header.header.page_size,
+      kSystemStatePageNumber,ReadWritePolicy(parsed_header.header.page_size));
+  if (!startup_header.ok()) return Propagate<DatabaseContextResult>(startup_header.status,startup_header.diagnostic);
+  const auto parsed_startup=ParsePageHeader(startup_header.serialized);
+  if (!parsed_startup.ok()) return Propagate<DatabaseContextResult>(parsed_startup.status,parsed_startup.diagnostic);
+  if (startup.state.database_uuid.kind!=UuidKind::database ||
+      startup.state.database_uuid.value!=parsed_header.header.database_uuid ||
+      startup.state.page_size!=parsed_header.header.page_size ||
+      !IsTypedEngineIdentity(startup.state.first_filespace_uuid,UuidKind::filespace) ||
+      parsed_inventory_header.header.filespace_uuid!=startup.state.first_filespace_uuid.value ||
+      parsed_inventory_header.header.page_number!=kTransactionInventoryPageNumber ||
+      !parsed_inventory_header.header.page_generation ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(parsed_inventory_header.header.page_uuid) ||
+      parsed_startup.header.page_type!=PageType::system_state ||
+      parsed_startup.header.database_uuid!=parsed_header.header.database_uuid ||
+      parsed_startup.header.filespace_uuid!=startup.state.first_filespace_uuid.value ||
+      parsed_startup.header.page_number!=kSystemStatePageNumber ||
+      parsed_startup.header.page_size!=parsed_header.header.page_size ||
+      !parsed_startup.header.page_generation ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(parsed_startup.header.page_uuid))
+    return ErrorResult<DatabaseContextResult>("CATALOG.INVALID_INPUT",
+        "storage.physical_mga_cow.inventory_filespace_binding_invalid");
 
   DatabaseContextResult result;
   result.status = CowStoreOkStatus();

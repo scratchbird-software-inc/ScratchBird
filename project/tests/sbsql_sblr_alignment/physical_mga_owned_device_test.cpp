@@ -7,6 +7,9 @@
 #include "transaction_recovery.hpp"
 #include "transaction_inventory_validation.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "transaction_inventory_page.hpp"
+#include "page_header.hpp"
+#include "startup_state.hpp"
 #include "uuid.hpp"
 #include "hash_digest.hpp"
 #include <cerrno>
@@ -1584,8 +1587,150 @@ void Run() {
   Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen after failed publication");
   Check(f.Read(f.first_page + 9).visible_rows.empty() && f.Read(f.first_page + 10).visible_rows.empty(), "failed batch visibility after restart");
 }
+void NativeInventoryPageBindings() {
+  namespace page=scratchbird::storage::page;
+  Fixture f; const auto owner=f.Begin(); f.Begin();
+  const auto state=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
+  Check(state.ok()&&state.inventory.entries.size()>=2,"real inventory for page binding fixture");
+  const auto data_page=f.first_page+5;
+  Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device,
+      f.Mutation(owner,Id(UuidKind::row),data_page,"owning-filespace-row")).ok(),"actual row for caller filespace binding");
+  disk::SerializedPageHeader data_header_bytes{};
+  Check(f.device.ReadAt(data_page*page_size,data_header_bytes.data(),data_header_bytes.size()).ok(),"actual row page identity");
+  const auto data_header=disk::ParsePageHeader(data_header_bytes);Check(data_header.ok(),"decode actual row page identity");
+  const auto journal=std::filesystem::path(f.path+".sb.txn_publish");
+  const auto retained=std::filesystem::path(f.path+".saved_publication");
+  std::filesystem::rename(journal,retained);
+  disk::SerializedPageHeader root_bytes{};
+  Check(f.device.ReadAt(db::kTransactionInventoryPageNumber*page_size,root_bytes.data(),root_bytes.size()).ok(),"actual root header");
+  const auto root=disk::ParsePageHeader(root_bytes);Check(root.ok(),"decode actual root identity");
+  const u64 continuation=f.first_page;
+  auto overflow=root.header;overflow.page_number=continuation;overflow.page_uuid=Id(UuidKind::page).value;
+  const auto overflow_bytes=disk::SerializePageHeader(overflow);Check(overflow_bytes.ok(),"independent continuation header");
+  std::array<page::TransactionInventoryPageBody,2> bodies;
+  for(unsigned i=0;i<2;++i) {
+    page::TransactionInventoryPageBody body;
+    body.page_number=i?continuation:db::kTransactionInventoryPageNumber;
+    body.previous_page_number=i?db::kTransactionInventoryPageNumber:0;
+    body.next_page_number=i?0:continuation;body.inventory_generation=7;
+    body.inventory.next_local_transaction_id=state.inventory.next_local_transaction_id;
+    body.inventory.next_commit_sequence=state.inventory.next_commit_sequence;
+    if(i) body.inventory.entries.assign(state.inventory.entries.begin()+1,state.inventory.entries.end());
+    else body.inventory.entries.push_back(state.inventory.entries.front());
+    if(!i) body.horizons=state.horizons;
+    bodies[i]=body;
+    const auto encoded=page::BuildTransactionInventoryPageBody(body,page_size);Check(encoded.ok(),"real two-page native inventory body");
+    const auto& header=i?overflow_bytes.serialized:root_bytes;
+    Check(f.device.WriteAt(body.page_number*page_size,header.data(),header.size()).ok()
+      &&f.device.WriteAt(body.page_number*page_size+128,encoded.serialized.data(),encoded.serialized.size()).ok(),"persist native inventory chain");
+  }
+  Check(f.device.Sync().ok(),"sync inventory chain");
+  auto loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
+  Check(loaded.ok()&&loaded.inventory.entries.size()==state.inventory.entries.size(),"valid real chain accepted without journal");
+  mga::VisibilitySnapshot own_snapshot;own_snapshot.reader_transaction=owner.local_id;
+  const auto read_own=[&] {return db::ReadPhysicalMgaCowRowsFromOpenDevice(f.device,f.relation,data_page,own_snapshot,false,owner);};
+  for(unsigned mode=0;mode<7;++mode) {
+    auto bad=mode>=5?root.header:overflow;
+    if(mode==0||mode==5) bad.database_uuid=Id(UuidKind::database).value;
+    if(mode==1||mode==6) bad.filespace_uuid=Id(UuidKind::filespace).value;
+    if(mode==2) ++bad.page_number;
+    if(mode==3) bad.page_uuid=root.header.page_uuid;
+    if(mode==4) bad.page_generation=0;
+    const auto encoded=disk::SerializePageHeader(bad);Check(encoded.ok(),"reseal adversarial inventory page header");
+    const auto target=mode>=5?db::kTransactionInventoryPageNumber:continuation;
+    Check(f.device.WriteAt(target*page_size,encoded.serialized.data(),encoded.serialized.size()).ok(),"write own adversarial inventory header");
+    const auto writes=write_calls;
+    loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
+    Check(!loaded.ok()&&loaded.inventory.entries.empty()&&!loaded.inventory.publication_base,
+      "foreign/duplicate/zero-generation inventory page accepted or returned prefix");
+    Check(write_calls==writes,"inventory refusal wrote node state");
+    // A valid owning-node recovery carrier may still supply the exact selected
+    // inventory; damaged page bytes must not override it or invent a new state.
+    std::filesystem::rename(retained,journal);
+    loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
+    Check(loaded.ok()&&loaded.inventory.entries.size()==state.inventory.entries.size()
+      &&loaded.inventory.publication_base==state.inventory.publication_base,"bound recovery authority lost after page rejection");
+    const auto wrong_size=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size/2);
+    Check(!wrong_size.ok()&&wrong_size.inventory.entries.empty()&&!wrong_size.inventory.publication_base,
+      "journal recovery turned a wrong caller page size into success");
+    if(mode==6) {
+      auto substituted=data_header.header;substituted.filespace_uuid=bad.filespace_uuid;
+      const auto substituted_bytes=disk::SerializePageHeader(substituted);Check(substituted_bytes.ok(),"reseal transplanted data filespace");
+      Check(f.device.WriteAt(data_page*page_size,substituted_bytes.serialized.data(),substituted_bytes.serialized.size()).ok(),"write matching foreign data/root filespace fixture");
+      const auto read=read_own();
+      Check(!read.ok()&&read.visible_rows.empty(),"recovered inventory authorized foreign physical row context");
+      Check(f.device.WriteAt(data_page*page_size,data_header_bytes.data(),data_header_bytes.size()).ok(),"restore own data page header");
+    }
+    std::filesystem::rename(journal,retained);
+    const auto& original=mode>=5?root_bytes:overflow_bytes.serialized;
+    Check(f.device.WriteAt(target*page_size,original.data(),original.size()).ok(),"restore own inventory header");
+  }
+  for(unsigned mode=0;mode<2;++mode) {
+    auto body=bodies[1];body.next_page_number=mode?f.device.Size().size_bytes/page_size:db::kTransactionInventoryPageNumber;
+    const auto bad=page::BuildTransactionInventoryPageBody(body,page_size);Check(bad.ok(),"reseal invalid inventory chain route");
+    Check(f.device.WriteAt(continuation*page_size+128,bad.serialized.data(),bad.serialized.size()).ok(),"write own cycle/out-of-range fixture");
+    const auto writes=write_calls;loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
+    Check(!loaded.ok()&&loaded.inventory.entries.empty()&&!loaded.inventory.publication_base&&write_calls==writes,
+      "cycle/out-of-range chain returned prefix or wrote state");
+  }
+  const auto restore=page::BuildTransactionInventoryPageBody(bodies[1],page_size);Check(restore.ok(),"restore inventory body encoding");
+  Check(f.device.WriteAt(continuation*page_size+128,restore.serialized.data(),restore.serialized.size()).ok(),"restore own inventory chain");
+  disk::SerializedPageHeader startup_bytes{};
+  Check(f.device.ReadAt(db::kSystemStatePageNumber*page_size,startup_bytes.data(),startup_bytes.size()).ok(),"actual startup header");
+  auto startup=disk::ParsePageHeader(startup_bytes);Check(startup.ok(),"decode actual startup header");
+  startup.header.database_uuid=Id(UuidKind::database).value;
+  const auto wrong_startup=disk::SerializePageHeader(startup.header);Check(wrong_startup.ok(),"reseal foreign startup header");
+  Check(f.device.WriteAt(db::kSystemStatePageNumber*page_size,wrong_startup.serialized.data(),wrong_startup.serialized.size()).ok(),"write own startup header fixture");
+  loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
+  Check(!loaded.ok()&&loaded.inventory.entries.empty(),"foreign startup header admitted inventory chain");
+  std::filesystem::rename(retained,journal);
+  Check(db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size).ok(),"same-node recovery survives damaged startup page header");
+  Check(!read_own().ok(),"recovered state bypassed physical startup/header binding");
+  std::filesystem::rename(journal,retained);
+  Check(f.device.WriteAt(db::kSystemStatePageNumber*page_size,startup_bytes.data(),startup_bytes.size()).ok(),"restore own startup header");
+  f.Locked();Check(f.device.Close().ok()&&f.device.Open(f.path,disk::FileOpenMode::open_existing_read_only).ok(),"readonly inventory chain reopen");
+  loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
+  Check(loaded.ok()&&loaded.inventory.entries.size()==state.inventory.entries.size(),"reopened real page-bound inventory");
+  Payload(f.Read(data_page,owner),"owning-filespace-row");
+}
+void NativeInventoryLongChain() {
+  namespace page=scratchbird::storage::page;
+  Fixture f;
+  constexpr u64 count=4097;
+  disk::SerializedPageHeader root_bytes{};
+  Check(f.device.ReadAt(db::kTransactionInventoryPageNumber*page_size,root_bytes.data(),root_bytes.size()).ok(),"long chain root header");
+  const auto root=disk::ParsePageHeader(root_bytes);Check(root.ok(),"long chain root identity");
+  const auto page_at=[&](u64 i) {return i?f.first_page+i-1:db::kTransactionInventoryPageNumber;};
+  std::vector<platform::Uuid> transaction_ids;transaction_ids.reserve(count);
+  for(u64 i=0;i<count;++i) {
+    page::TransactionInventoryPageBody body;body.page_number=page_at(i);
+    body.previous_page_number=i?page_at(i-1):0;body.next_page_number=i+1<count?page_at(i+1):0;
+    body.inventory_generation=1;body.inventory.next_local_transaction_id=count+1;
+    mga::TransactionInventoryEntry entry;entry.identity.local_id=mga::MakeLocalTransactionId(i+1);
+    entry.identity.transaction_uuid=Id(UuidKind::transaction);transaction_ids.push_back(entry.identity.transaction_uuid.value);
+    entry.identity.scope=mga::TransactionScope::local_node;entry.state=mga::TransactionState::active;
+    entry.begin_unix_epoch_millis=1790000000000ull+i;body.inventory.entries.push_back(entry);
+    const auto encoded=page::BuildTransactionInventoryPageBody(body,page_size);Check(encoded.ok(),"independent one-entry-per-page long-chain fixture");
+    auto header=root.header;header.page_number=body.page_number;
+    if(i) header.page_uuid=Id(UuidKind::page).value;
+    const auto serialized=disk::SerializePageHeader(header);Check(serialized.ok(),"long-chain exact page header");
+    Check(f.device.WriteAt(body.page_number*page_size,serialized.serialized.data(),serialized.serialized.size()).ok()
+      &&f.device.WriteAt(body.page_number*page_size+128,encoded.serialized.data(),encoded.serialized.size()).ok(),"persist actual long inventory chain");
+  }
+  Check(f.device.Sync().ok(),"sync long inventory chain");
+  const auto writes=write_calls;
+  const auto loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&f.device,page_size);
+  Check(loaded.ok()&&loaded.inventory.entries.size()==count&&loaded.inventory.next_local_transaction_id==count+1,
+    "valid allocated inventory chain rejected by invented 4096-page limit");
+  for(u64 i=0;i<count;++i) Check(loaded.inventory.entries[i].identity.transaction_uuid.value==transaction_ids[i],"long-chain native transaction identity changed");
+  Check(write_calls==writes,"long inventory read performed writes");f.Locked();
+}
 }  // namespace
 int main(int argc, char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--inventory-long") {
+    try {NativeInventoryLongChain();std::cout<<"long_inventory checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& error) {std::cerr<<error.what()<<'\n';return 1;}
+  }
   if (argc == 3 && std::string_view(argv[1]) == "--batch-crash") return CrashNativeBatch(argv[2]);
   if (argc == 3 && std::string_view(argv[1]) == "--catalog-probe") return VerifyCatalogVersion(argv[2]);
   if (argc == 3 && std::string_view(argv[1]) == "--start-snapshot-probe") return VerifyStartSnapshot(argv[2]);
@@ -1594,6 +1739,6 @@ int main(int argc, char** argv) {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); NativeCatalogMetadataVersions(); FailedNativeBatchCannotCommitPrefix(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { NativeInventoryPageBindings(); NativeInventoryLongChain(); Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); PublishedSnapshotNativeVisibility(); TransactionStartCommitOrder(); ArchiveAndRecoveryCommitOrder(); NativeInventoryPublicationConcurrency(); NativeCatalogMetadataVersions(); FailedNativeBatchCannotCommitPrefix(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
