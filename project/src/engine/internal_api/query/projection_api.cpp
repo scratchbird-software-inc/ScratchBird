@@ -601,7 +601,8 @@ EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
     out.ok = true;
     out.value.descriptor = ProjectionDescriptor(expression.type_name);
     out.value.encoded_value = expression.encoded_value;
-    out.value.is_null = expression.is_null;
+    out.value.binary_value = expression.binary_value;
+    out.value.setState(expression.is_null ? EngineValueState::sql_null : EngineValueState::value);
     return out;
   }
 
@@ -674,13 +675,9 @@ EngineProjectionFunctionResult EvaluateProjectionExpressionTree(
     for (std::size_t arg_index = 0; arg_index < expression.arguments.size(); ++arg_index) {
       auto arg_result = EvaluateProjectionExpressionTree(request, expression.arguments[arg_index]);
       if (!arg_result.ok) return arg_result;
-      EngineProjectionFunctionArgument argument;
-      argument.name = expression.arguments[arg_index].name.empty()
+      auto argument = MakeProjectionFunctionArgument(expression.arguments[arg_index].name.empty()
                           ? "arg" + std::to_string(arg_index)
-                          : expression.arguments[arg_index].name;
-      argument.type_name = arg_result.value.descriptor.canonical_type_name;
-      argument.encoded_value = arg_result.value.encoded_value;
-      argument.is_null = arg_result.value.is_null;
+                          : expression.arguments[arg_index].name, std::move(arg_result.value));
       function_request.arguments.push_back(std::move(argument));
       argument_evidence.insert(argument_evidence.end(),
                                arg_result.evidence.begin(),

@@ -8,11 +8,12 @@
 
 #pragma once
 
-#include "api_types.hpp"
+#include "../api_types.hpp"
 
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -23,7 +24,26 @@ struct EngineProjectionFunctionArgument {
   std::string type_name;
   std::string encoded_value;
   bool is_null = false;
+  // Binary/UUID payloads have no encoded text alternative. Names remain
+  // metadata; descriptor admission belongs to the bound query runtime.
+  std::vector<std::uint8_t> binary_value;
+  EngineValueState state = EngineValueState::value;
 };
+
+inline EngineProjectionFunctionArgument MakeProjectionFunctionArgument(
+    std::string name, const EngineTypedValue& value) {
+  return {std::move(name), value.descriptor.canonical_type_name,
+          value.encoded_value, value.isSqlNull(), value.binary_value, value.state};
+}
+
+inline EngineProjectionFunctionArgument MakeProjectionFunctionArgument(
+    std::string name, EngineTypedValue&& value) {
+  // The only fallible descriptor copy precedes moving either payload. This
+  // transfers vector storage, not a resource or final-publication capability.
+  return {std::move(name), value.descriptor.canonical_type_name,
+          std::move(value.encoded_value), value.isSqlNull(),
+          std::move(value.binary_value), value.state};
+}
 
 struct EngineProjectionExpression {
   std::string name;
@@ -38,6 +58,7 @@ struct EngineProjectionExpression {
   std::string special_form_id;
   std::string sblr_binding;
   std::vector<EngineProjectionExpression> arguments;
+  std::vector<std::uint8_t> binary_value;
 };
 
 struct EngineBindProjectionRequest : EngineApiRequest {};

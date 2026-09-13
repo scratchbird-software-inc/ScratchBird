@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_dispatch.hpp"
+#include "sblr_projection_value_runtime.hpp"
 
 #include <stdexcept>
 #include "sblr_function_diagnostic.hpp"
@@ -3341,23 +3342,6 @@ bool HexDecodeBytes(std::string_view text, std::vector<std::uint8_t>* out) {
   }
   *out = std::move(bytes);
   return true;
-}
-
-std::string FormatReal64(double value) {
-  std::ostringstream encoded;
-  encoded << std::setprecision(std::numeric_limits<double>::max_digits10) << value;
-  return encoded.str();
-}
-
-std::string HexEncodeBytes(const std::vector<std::uint8_t>& bytes) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(bytes.size() * 2);
-  for (const auto byte : bytes) {
-    out.push_back(kHex[(byte >> 4) & 0x0f]);
-    out.push_back(kHex[byte & 0x0f]);
-  }
-  return out;
 }
 
 SblrEnvelopeDiagnostic DispatchDiagnostic(std::string code, std::string message) {
@@ -8148,150 +8132,6 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
   return typed;
 }
 
-SblrValue SblrValueFromProjectionArgument(
-    const api::EngineProjectionFunctionArgument& argument) {
-  SblrValue value;
-  const std::string type_name = LowerAscii(argument.type_name);
-  value.descriptor_id = type_name;
-  value.encoded_value = argument.encoded_value;
-  value.text_value = argument.encoded_value;
-  value.is_null = argument.is_null;
-  if (argument.is_null) {
-    value.payload_kind = SblrValuePayloadKind::none;
-    return value;
-  }
-  if (type_name == "binary" || type_name == "varbinary") {
-    std::vector<std::uint8_t> bytes;
-    if (HexDecodeBytes(argument.encoded_value, &bytes)) {
-      value.binary_value = std::move(bytes);
-      value.payload_kind = SblrValuePayloadKind::binary;
-      return value;
-    }
-    value.payload_kind = SblrValuePayloadKind::none;
-    return value;
-  }
-  if (type_name == "bigint" || type_name == "integer" ||
-      type_name == "int8" || type_name == "int16" ||
-      type_name == "int32" || type_name == "int64") {
-    const auto parsed = std::from_chars(
-        argument.encoded_value.data(),
-        argument.encoded_value.data() + argument.encoded_value.size(),
-        value.int64_value);
-    if (parsed.ec == std::errc{} &&
-        parsed.ptr ==
-            argument.encoded_value.data() + argument.encoded_value.size()) {
-      value.has_int64_value = true;
-      value.payload_kind = SblrValuePayloadKind::signed_integer;
-      return value;
-    }
-    value.payload_kind = SblrValuePayloadKind::none;
-    return value;
-  }
-  if (type_name == "uint8" || type_name == "uint16" ||
-      type_name == "uint32" || type_name == "uint64") {
-    const auto parsed = std::from_chars(
-        argument.encoded_value.data(),
-        argument.encoded_value.data() + argument.encoded_value.size(),
-        value.uint64_value);
-    if (parsed.ec == std::errc{} &&
-        parsed.ptr ==
-            argument.encoded_value.data() + argument.encoded_value.size()) {
-      value.has_uint64_value = true;
-      value.payload_kind = SblrValuePayloadKind::unsigned_integer;
-      return value;
-    }
-    value.payload_kind = SblrValuePayloadKind::none;
-    return value;
-  }
-  if (type_name == "boolean" || type_name == "bool") {
-    const std::string lowered = LowerAscii(argument.encoded_value);
-    if (lowered == "true" || lowered == "1") {
-      value.int64_value = 1;
-      value.has_int64_value = true;
-      value.payload_kind = SblrValuePayloadKind::boolean;
-      value.descriptor_id = "boolean";
-      return value;
-    }
-    if (lowered == "false" || lowered == "0") {
-      value.int64_value = 0;
-      value.has_int64_value = true;
-      value.payload_kind = SblrValuePayloadKind::boolean;
-      value.descriptor_id = "boolean";
-      return value;
-    }
-    value.payload_kind = SblrValuePayloadKind::none;
-    return value;
-  }
-  if (type_name == "real32" || type_name == "real64" ||
-      type_name == "real128" || type_name == "double" ||
-      type_name == "numeric" || type_name == "decimal" ||
-      type_name.rfind("numeric(", 0) == 0 ||
-      type_name.rfind("decimal(", 0) == 0) {
-    const auto parsed = std::from_chars(
-        argument.encoded_value.data(),
-        argument.encoded_value.data() + argument.encoded_value.size(),
-        value.real64_value,
-        std::chars_format::general);
-    if (parsed.ec == std::errc{} &&
-        parsed.ptr ==
-            argument.encoded_value.data() + argument.encoded_value.size() &&
-        std::isfinite(value.real64_value)) {
-      value.has_real64_value = true;
-      value.payload_kind = SblrValuePayloadKind::real64;
-      return value;
-    }
-    value.payload_kind = SblrValuePayloadKind::none;
-    return value;
-  }
-  value.payload_kind = SblrValuePayloadKind::text;
-  return value;
-}
-
-bool ProjectionArgumentEncodingValid(
-    const api::EngineProjectionFunctionArgument& argument) {
-  if (argument.type_name.empty()) return false;
-  if (argument.is_null) return argument.encoded_value.empty();
-  const SblrValue value = SblrValueFromProjectionArgument(argument);
-  return value.payload_kind != SblrValuePayloadKind::none;
-}
-
-bool ProjectionSblrValueResolved(const SblrValue& value) {
-  return !value.descriptor_id.empty() &&
-         (value.is_null || value.payload_kind != SblrValuePayloadKind::none);
-}
-
-api::EngineTypedValue EngineTypedValueFromSblrValue(const SblrValue& value) {
-  api::EngineTypedValue out;
-  out.descriptor.descriptor_kind = "scalar";
-  out.descriptor.canonical_type_name = value.descriptor_id;
-  out.descriptor.encoded_descriptor = "type=" + out.descriptor.canonical_type_name;
-  out.is_null = value.is_null;
-  if (out.is_null) {
-    out.encoded_value.clear();
-    out.binary_value.clear();
-    out.setState(api::EngineValueState::sql_null);
-    return out;
-  }
-  out.setState(api::EngineValueState::value);
-  if (value.payload_kind == SblrValuePayloadKind::uuid_binary) {
-    if (!CopySblrUuidPayload(value, &out.binary_value)) {
-      throw std::invalid_argument("conflicting SBLR UUID payload representations");
-    }
-    // Formatting is a parser/driver render operation, not engine identity.
-    out.encoded_value.clear();
-    return out;
-  }
-  if (value.payload_kind == SblrValuePayloadKind::binary) {
-    out.binary_value = value.binary_value;
-    out.encoded_value = HexEncodeBytes(value.binary_value);
-    return out;
-  }
-  out.encoded_value = !value.encoded_value.empty() ? value.encoded_value : value.text_value;
-  if (value.has_int64_value) out.encoded_value = std::to_string(value.int64_value);
-  if (value.has_uint64_value) out.encoded_value = std::to_string(value.uint64_value);
-  if (value.has_real64_value) out.encoded_value = FormatReal64(value.real64_value);
-  return out;
-}
 
 void PopulateSavepointContext(const api::EngineRequestContext& context,
                               SblrExecutionContext* output);
@@ -8548,16 +8388,14 @@ std::optional<SblrValue> ProjectionLiteralToSblrValue(
   api::EngineProjectionFunctionArgument argument;
   argument.type_name = expression.type_name;
   argument.encoded_value = expression.encoded_value;
+  argument.binary_value = expression.binary_value;
   argument.is_null = expression.is_null;
   if (!ProjectionArgumentEncodingValid(argument)) return std::nullopt;
   return SblrValueFromProjectionArgument(argument);
 }
 
 SblrValue ProjectionTypedValueToSblrValue(const api::EngineTypedValue& value) {
-  api::EngineProjectionFunctionArgument argument;
-  argument.type_name = value.descriptor.canonical_type_name;
-  argument.encoded_value = value.encoded_value;
-  argument.is_null = value.is_null;
+  const auto argument = api::MakeProjectionFunctionArgument({}, value);
   return SblrValueFromProjectionArgument(argument);
 }
 
@@ -8706,13 +8544,9 @@ api::EngineProjectionFunctionResult EvaluateProjectionOperatorExpression(
     for (std::size_t index = 0; index < expression.arguments.size(); ++index) {
       auto argument_result = EvaluateProjectionOperatorExpression(context, expression.arguments[index]);
       if (!argument_result.ok) return argument_result;
-      api::EngineProjectionFunctionArgument argument;
-      argument.name = expression.arguments[index].name.empty()
+      auto argument = api::MakeProjectionFunctionArgument(expression.arguments[index].name.empty()
                           ? "arg" + std::to_string(index)
-                          : expression.arguments[index].name;
-      argument.type_name = argument_result.value.descriptor.canonical_type_name;
-      argument.encoded_value = argument_result.value.encoded_value;
-      argument.is_null = argument_result.value.is_null;
+                          : expression.arguments[index].name, std::move(argument_result.value));
       function_request.arguments.push_back(std::move(argument));
       argument_evidence.insert(argument_evidence.end(),
                                argument_result.evidence.begin(),
@@ -9671,12 +9505,7 @@ BuildCanonicalRelationalExpressionRuntimeServices(
         request.arguments.reserve(arguments.size());
         for (std::size_t index = 0; index < arguments.size(); ++index) {
           const auto& argument_value = arguments[index];
-          api::EngineProjectionFunctionArgument argument;
-          argument.name = "arg" + std::to_string(index);
-          argument.type_name =
-              argument_value.descriptor.canonical_type_name;
-          argument.encoded_value = argument_value.encoded_value;
-          argument.is_null = argument_value.isSqlNull();
+          auto argument = api::MakeProjectionFunctionArgument("arg" + std::to_string(index), argument_value);
           request.arguments.push_back(std::move(argument));
         }
         const auto evaluated = EvaluateProjectionFunction(request);

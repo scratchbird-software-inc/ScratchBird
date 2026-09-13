@@ -9,6 +9,7 @@
 #include "sblr/sblr_aggregate_window_runtime.hpp"
 #include "sblr/sblr_function_diagnostic.hpp"
 #include "sblr/sblr_block_runtime.hpp"
+#include "sblr/sblr_projection_value_runtime.hpp"
 #include "internal_api/api_types.hpp"
 #include "blake3_digest.hpp"
 #include "scrypt_kdf.hpp"
@@ -1304,6 +1305,167 @@ void ScryptCancellation() {
   request.context.engine_request_context=nullptr;
 }
 
+void ProjectionBinaryValues() {
+  namespace api = scratchbird::engine::internal_api;
+  for (const char* type : {"binary", "varbinary"}) for (unsigned size : {0u, 1u, 16u, 257u, 65535u}) {
+    api::EngineProjectionFunctionArgument argument;
+    argument.type_name = type;
+    argument.binary_value.resize(size);
+    for (unsigned i = 0; i < size; ++i) argument.binary_value[i] = static_cast<std::uint8_t>(i);
+    Check(s::ProjectionArgumentEncodingValid(argument), "projection accepts raw binary bytes including empty and all octets");
+    const auto value = s::SblrValueFromProjectionArgument(argument);
+    Check(!value.is_null && value.payload_kind == s::SblrValuePayloadKind::binary &&
+          value.binary_value == argument.binary_value && value.text_value.empty() && value.encoded_value.empty(),
+          "projection does not parse hex or introduce text mirrors");
+    const auto result = s::EngineTypedValueFromSblrValue(value);
+    Check(!result.isSqlNull() && result.binary_value == argument.binary_value && result.encoded_value.empty(),
+          "binary result retains exact raw bytes without engine rendering");
+    const auto copied = api::MakeProjectionFunctionArgument("value", result);
+    Check(copied.binary_value == result.binary_value && copied.encoded_value.empty() &&
+          copied.state == result.state && copied.type_name == type, "actual canonical producer copies raw payload and state");
+    auto move_source = result;
+    const auto* old_data = move_source.binary_value.data();
+    const auto moved = api::MakeProjectionFunctionArgument("value", std::move(move_source));
+    Check(moved.binary_value == result.binary_value && (size == 0 || moved.binary_value.data() == old_data) &&
+          move_source.binary_value.empty(), "nested producer transfers actual vector storage without another payload copy");
+    for (unsigned fault = 0; fault < 10; ++fault) {
+      auto bad = argument;
+      if (fault == 0) bad.encoded_value = "00";
+      else if (fault == 1) {bad.type_name = "character"; bad.binary_value = {0};}
+      else if (fault == 2) {bad.is_null = true; bad.binary_value = {0};}
+      else if (fault == 3) {bad.state = api::EngineValueState::sql_null; bad.binary_value = {0};}
+      else bad.state = static_cast<api::EngineValueState>(fault - 2);
+      Check(!s::ProjectionArgumentEncodingValid(bad), "conflicting binary and unresolved state cannot become a scalar");
+    }
+    for (unsigned fault = 0; fault < 12; ++fault) {
+      auto bad = value;
+      if (fault == 0) bad.encoded_value = "00";
+      if (fault == 1) bad.text_value = "00";
+      if (fault == 2) bad.charset_name = "utf8";
+      if (fault == 3) bad.collation_name = "unicode";
+      if (fault == 4) bad.uuid_value = Base();
+      if (fault == 5) bad.has_int64_value = true;
+      if (fault == 6) bad.has_uint64_value = true;
+      if (fault == 7) bad.has_real64_value = true;
+      if (fault == 8) bad.descriptor_id = "character";
+      if (fault == 9) bad.is_null = true;
+      if (fault == 10) bad.payload_kind = s::SblrValuePayloadKind::text;
+      if (fault == 11) bad.payload_kind = s::SblrValuePayloadKind::none;
+      bool threw = false;
+      try {(void)s::EngineTypedValueFromSblrValue(bad);} catch (const std::invalid_argument&) {threw = true;}
+      Check(threw && !s::ProjectionSblrValueResolved(bad), "conflicting binary result cannot publish bytes or NULL");
+    }
+    if (size == 257) {
+      bool completed = false; unsigned faults = 0;
+      for (long budget = 0; budget < 20; ++budget) {
+        api::EngineTypedValue destination; destination.binary_value = {99};
+        fail_after = budget;
+        try {destination = s::EngineTypedValueFromSblrValue(value); fail_after = -1; completed = true;}
+        catch (const std::bad_alloc&) {fail_after = -1; ++faults;}
+        Check(value.binary_value == argument.binary_value && (completed ? destination.binary_value == value.binary_value :
+              destination.binary_value == std::vector<std::uint8_t>{99}), "output allocation fault preserves source and prior destination");
+        if (completed) break;
+      }
+      allocation_faults += faults;
+      Check(completed && faults > 0, "binary output copy allocation failures were exercised");
+      fail_after = 0;
+      bool validation = false, validation_threw = false;
+      try {validation = s::ProjectionArgumentEncodingValid(argument);} catch (const std::bad_alloc&) {validation_threw = true;}
+      fail_after = -1;
+      Check(validation && !validation_threw, "binary validation does not allocate a duplicate secret payload");
+      fail_after = 0; bool input_threw = false;
+      try {(void)s::SblrValueFromProjectionArgument(argument);} catch (const std::bad_alloc&) {input_threw = true;}
+      fail_after = -1;
+      if (input_threw) ++allocation_faults;
+      Check(input_threw && argument.binary_value == value.binary_value, "input copy allocation failure preserves source bytes");
+    }
+    argument.binary_value.clear(); argument.state = api::EngineValueState::sql_null;
+    const auto null_value = s::SblrValueFromProjectionArgument(argument);
+    const auto null_result = s::EngineTypedValueFromSblrValue(null_value);
+    Check(s::ProjectionArgumentEncodingValid(argument) && null_result.isSqlNull() &&
+          null_result.binary_value.empty() && null_result.encoded_value.empty(), "typed NULL retains state without payload");
+  }
+  for (unsigned version = 1; version <= 7; ++version) {
+    auto uuid = Base(); uuid.bytes[6] = static_cast<std::uint8_t>((version << 4) | 1);
+    api::EngineProjectionFunctionArgument argument;
+    argument.type_name = "uuid"; argument.binary_value.assign(uuid.bytes.begin(), uuid.bytes.end());
+    const auto value = s::SblrValueFromProjectionArgument(argument);
+    const auto output = s::EngineTypedValueFromSblrValue(value);
+    Check(s::ProjectionArgumentEncodingValid(argument) && value.payload_kind == s::SblrValuePayloadKind::uuid_binary &&
+          value.uuid_value == uuid && output.binary_value == argument.binary_value && output.encoded_value.empty(),
+          "projection UUID preserves all user version bits without text identity");
+    for (unsigned size : {0u, 15u, 17u, 36u}) {auto bad = argument; bad.binary_value.resize(size);
+      Check(!s::ProjectionArgumentEncodingValid(bad), "UUID projection rejects every non-sixteen-byte carrier");}
+    argument.encoded_value = "019d0000-0000-7000-8000-000000000001";
+    Check(!s::ProjectionArgumentEncodingValid(argument), "UUID projection refuses text alternatives");
+  }
+  for (unsigned state = 0; state <= 7; ++state) {
+    api::EngineTypedValue value; value.descriptor.canonical_type_name = "binary";
+    value.setState(static_cast<api::EngineValueState>(state));
+    const auto argument = api::MakeProjectionFunctionArgument("state", value);
+    Check(argument.state == value.state && argument.is_null == value.isSqlNull() &&
+          s::ProjectionArgumentEncodingValid(argument) == (state <= 1), "producer cannot flatten missing, error or protected state");
+  }
+  {
+    api::EngineTypedValue value; value.descriptor.canonical_type_name.assign(200, 'x');
+    value.encoded_value = "retained text"; value.binary_value = {0, 1, 255};
+    fail_after = 0; bool threw = false;
+    try {(void)api::MakeProjectionFunctionArgument("value", std::move(value));} catch (const std::bad_alloc&) {threw = true;}
+    fail_after = -1;
+    if (threw) ++allocation_faults;
+    Check(threw && value.encoded_value == "retained text" && value.binary_value == std::vector<std::uint8_t>({0, 1, 255}),
+          "fallible producer metadata preparation precedes either source payload move");
+  }
+  // Exercise the same adapter used by dispatch, actual binary binding, real
+  // SHA3 execution and response adaptation; this is not SQL/IPC qualification.
+  const auto package = f::BuildStandardFunctionSeedPackage();
+  const auto* entry = package.registry.Lookup("sb.crypto.sha3_256");
+  Check(entry != nullptr, "projection digest seed exists");
+  if (entry) {
+    api::EngineTypedValue source;
+    source.descriptor.canonical_type_name = "binary"; source.binary_value = {'a','b','c'};
+    const auto argument = api::MakeProjectionFunctionArgument("value", source);
+    f::FunctionCallRequest request; request.context.function_uuid = entry->function_uuid;
+    Check(package.registry.BindCallContext(request.context) != nullptr, "projection digest binds actual UUID");
+    request.arguments.push_back({"value", s::SblrValueFromProjectionArgument(argument)});
+    const auto computed = f::DispatchCryptoHashFunction(request);
+    Check(computed.result.ok() && computed.result.scalar_values.size() == 1, "real digest executes through strict projection argument");
+    if (computed.result.scalar_values.size() == 1) {
+      const auto output = s::EngineTypedValueFromSblrValue(computed.result.scalar_values.front());
+      const std::uint8_t expected[]{0x3a,0x98,0x5d,0xa7,0x4f,0xe2,0x25,0xb2,0x04,0x5c,0x17,0x2d,0x6b,0xd3,0x90,0xbd,
+                                  0x85,0x5f,0x08,0x6e,0x3e,0x9d,0x52,0x5b,0x46,0xbf,0xe2,0x45,0x11,0x43,0x15,0x32};
+      Check(output.binary_value.size() == sizeof(expected) && std::equal(output.binary_value.begin(), output.binary_value.end(), expected) &&
+            output.encoded_value.empty(), "known SHA3 result has exact bytes and no secret hex copy");
+    }
+  }
+  const auto* scrypt_entry = package.registry.Lookup("sb.crypto.scrypt");
+  Check(scrypt_entry != nullptr, "projection scrypt seed exists");
+  if (scrypt_entry) {
+    std::vector<api::EngineTypedValue> values(6);
+    const char* types[]{"character", "binary", "uint64", "uint32", "uint32", "uint16"};
+    for (unsigned i = 0; i < 6; ++i) values[i].descriptor.canonical_type_name = types[i];
+    values[0].encoded_value = std::string("a\0b", 3); values[1].binary_value = {0, 255, 1, 128};
+    values[2].encoded_value = "16"; values[3].encoded_value = "1"; values[4].encoded_value = "1"; values[5].encoded_value = "64";
+    std::array<unsigned char, 64> expected{};
+    Check(__real_EVP_PBE_scrypt(values[0].encoded_value.data(), 3, values[1].binary_value.data(), 4, 16, 1, 1,
+                              1024 * 1024, expected.data(), expected.size()) == 1, "independent scrypt oracle computes nonempty opaque salt");
+    f::FunctionCallRequest request; request.context.function_uuid = scrypt_entry->function_uuid;
+    Check(package.registry.BindCallContext(request.context) != nullptr, "projection scrypt binds binary function UUID");
+    for (const auto& value : values) {
+      const auto argument = api::MakeProjectionFunctionArgument("arg", value);
+      Check(s::ProjectionArgumentEncodingValid(argument), "scrypt argument survives actual producer validation");
+      request.arguments.push_back({"arg", s::SblrValueFromProjectionArgument(argument)});
+    }
+    const auto result = f::DispatchCryptoHashFunction(request);
+    Check(result.result.ok() && result.result.scalar_values.size() == 1, "native scrypt executes raw nonempty salt from projection producer");
+    if (result.result.scalar_values.size() == 1) {
+      const auto output = s::EngineTypedValueFromSblrValue(result.result.scalar_values[0]);
+      Check(output.binary_value.size() == expected.size() && std::equal(output.binary_value.begin(), output.binary_value.end(), expected.begin()) &&
+            output.encoded_value.empty(), "projection scrypt response matches entire independent key without hex encoding");
+    }
+  }
+}
+
 int main() {
   static_assert(sizeof(f::FunctionUuid) == 16);
   static_assert(std::is_same_v<decltype(f::FunctionRegistryEntry{}.function_uuid), f::FunctionUuid>);
@@ -1319,6 +1481,7 @@ int main() {
   BinaryDiagnostics();
   BinaryAggregate();
   BinaryUuidValues();
+  ProjectionBinaryValues();
   CryptoUuidGeneration();
   CryptoFixedDigests();
   Blake3KnownAnswers();
