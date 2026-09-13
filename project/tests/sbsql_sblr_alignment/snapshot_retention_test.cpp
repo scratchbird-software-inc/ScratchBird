@@ -384,8 +384,9 @@ int main() try {
   ArchivedCreatorProjectionCases();
   Fixture f;
   const auto plain = mga::ComputeLocalTransactionHorizons(f.inventory);
-  Check(plain.ok() && plain.horizons.oldest_snapshot_transaction.value == 3,
-        "pure inventory calculator remains deterministic and has no runtime pins");
+  Check(plain.ok() && plain.horizons.oldest_snapshot_transaction.value == 2 &&
+        plain.horizons.oldest_active_transaction.value == 2,
+        "pure inventory calculator has no runtime pins and defaults OST to OAT");
   const auto retained = f.Cleanup();
   Check(retained.ok() && retained.cleanup_horizon.value == 1,
         "actual cleanup service must retain the published statement snapshot");

@@ -3,6 +3,7 @@
 #include "filespace_page_zero.hpp"
 #include "catalog_page.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "transaction_inventory_page.hpp"
 #include "disk_device.hpp"
 #include <openssl/evp.h>
 #include <openssl/sha.h>
@@ -851,7 +852,210 @@ void CatalogLeafFiles() {
   }
 }
 }  // namespace
+namespace mga=scratchbird::transaction::mga;
+page::NativeTransactionInventoryPage InventoryExample(unsigned profile=0) {
+  page::NativeTransactionInventoryPage p;
+  p.header={sizes[profile],0x0301,Id(1),Id(2),Id(92),14,104,0,Profile(profile)};
+  p.object_uuid=Id(44); p.inventory_generation=19;
+  p.inventory.next_local_transaction_id=3; p.inventory.next_commit_sequence=1;
+  mga::TransactionInventoryEntry e; e.identity.local_id=mga::MakeLocalTransactionId(1);
+  e.identity.transaction_uuid={scratchbird::core::platform::UuidKind::transaction,Id(93)};
+  e.identity.scope=mga::TransactionScope::local_node; e.state=mga::TransactionState::active;
+  e.begin_unix_epoch_millis=1790000000123ull;
+  p.inventory.entries.push_back(e); return p;
+}
+disk::NativePageReference InventoryRef(const page::NativeTransactionInventoryPage& p) {
+  return {p.header.filespace_uuid,p.header.page_number,p.header.page_generation,p.header.page_size_profile_uuid};
+}
+void InventorySeal(Bytes& b) {
+  std::fill(b.begin()+320,b.begin()+352,0); std::array<byte,32> digest{};
+  Check(SHA256(b.data(),b.size(),digest.data())!=nullptr,"independent inventory SHA256");
+  std::copy(digest.begin(),digest.end(),b.begin()+320);
+}
+// Independent framing/number packing. The fixture deliberately controls the
+// expected summaries; this oracle never calls production inventory/horizon code.
+Bytes InventoryOracle(const page::NativeTransactionInventoryPage& p,u64 oit,u64 oat,u64 ost) {
+  auto common=RootExample(); common.header=p.header;
+  auto b=RootOracle(common); std::fill(b.begin()+128,b.end(),0);
+  const std::string_view magic="SBTINV01"; std::copy(magic.begin(),magic.end(),b.begin()+128);
+  Number(b,136,2,1); Number(b,138,2,256); Number(b,140,4,384+72*p.inventory.entries.size());
+  PutUuid(b,144,p.object_uuid); Number(b,160,8,p.inventory_generation);
+  Number(b,168,8,p.inventory.next_local_transaction_id); Number(b,176,8,p.inventory.next_commit_sequence);
+  Number(b,184,4,p.inventory.entries.size());
+  const auto ref=[&](std::size_t at,const disk::NativePageReference& r) {
+    PutUuid(b,at,r.filespace_uuid); Number(b,at+16,8,r.page_number);
+    Number(b,at+24,8,r.page_generation); PutUuid(b,at+32,r.page_size_profile_uuid);
+  };
+  if(p.previous) ref(192,*p.previous); if(p.next) ref(240,*p.next);
+  Number(b,288,8,oit); Number(b,296,8,oat); Number(b,304,8,ost);
+  for(std::size_t i=0;i<p.inventory.entries.size();++i) {
+    const auto& e=p.inventory.entries[i]; const auto at=384+72*i;
+    Number(b,at,8,e.identity.local_id.value); PutUuid(b,at+8,e.identity.transaction_uuid.value);
+    Number(b,at+24,2,static_cast<unsigned>(e.identity.scope)); Number(b,at+26,2,static_cast<unsigned>(e.state));
+    const unsigned origin=e.archived_from_state==mga::TransactionState::committed?1:
+      e.archived_from_state==mga::TransactionState::rolled_back?2:e.archived_from_state==mga::TransactionState::failed_terminal?3:0;
+    Number(b,at+28,4,(e.evidence_record_required?1:0)|(e.evidence_record_written?2:0)|(e.rollback_only?4:0)|(origin<<3));
+    Number(b,at+32,8,e.begin_unix_epoch_millis); Number(b,at+40,8,e.final_unix_epoch_millis);
+    Number(b,at+48,8,e.begin_visible_through_local_transaction_id);
+    Number(b,at+56,8,e.begin_visible_through_commit_sequence); Number(b,at+64,8,e.commit_sequence);
+  }
+  InventorySeal(b); return b;
+}
+void InventoryReject(const page::NativeTransactionInventoryPageResult& r) {
+  Check(!r.ok()&&!r.page&&r.bytes.empty(),"invalid inventory returns no page prefix");
+}
+void CanonicalInventoryImages() {
+  using E=page::NativeInventoryError;
+  for(unsigned profile=0;profile<5;++profile) {
+    auto p=InventoryExample(profile); const auto oracle=InventoryOracle(p,1,1,1);
+    const auto encoded=page::EncodeNativeTransactionInventoryPage(p);
+    if(!encoded.ok()) std::cerr<<"inventory_encode_error="<<static_cast<unsigned>(encoded.error)<<'\n';
+    else if(encoded.bytes!=oracle) {
+      const auto mismatch=std::mismatch(encoded.bytes.begin(),encoded.bytes.end(),oracle.begin());
+      std::cerr<<"inventory_oracle_offset="<<(mismatch.first-encoded.bytes.begin())
+        <<" actual="<<static_cast<unsigned>(*mismatch.first)<<" expected="<<static_cast<unsigned>(*mismatch.second)<<'\n';
+    }
+    Check(encoded.ok()&&encoded.bytes==oracle,"independent canonical inventory bytes all profiles");
+    const auto decoded=page::DecodeNativeTransactionInventoryPage(oracle);
+    Check(decoded.ok()&&decoded.page->inventory.entries.size()==1
+      &&decoded.page->inventory.entries[0].identity.transaction_uuid.value==Id(93)
+      &&!decoded.page->inventory.publication_base,"decode binary identity without invented publication base");
+    p.inventory.entries.clear(); const auto empty=InventoryOracle(p,3,3,3);
+    Check(page::EncodeNativeTransactionInventoryPage(p).bytes==empty
+      &&page::DecodeNativeTransactionInventoryPage(empty).ok(),"empty allocated native inventory slice");
+    const auto capacity=(sizes[profile]-384)/72;
+    for(unsigned i=0;i<capacity;++i) {
+      auto e=InventoryExample().inventory.entries[0]; e.identity.local_id=mga::MakeLocalTransactionId(i+1);
+      e.identity.transaction_uuid.value=Id(93); e.identity.transaction_uuid.value.bytes[14]=static_cast<byte>(i>>8);
+      e.identity.transaction_uuid.value.bytes[15]=static_cast<byte>(i);
+      p.inventory.entries.push_back(e);
+    }
+    p.inventory.next_local_transaction_id=capacity+1;
+    const auto full=page::EncodeNativeTransactionInventoryPage(p);
+    Check(full.ok()&&full.bytes==InventoryOracle(p,1,1,1)
+      &&page::DecodeNativeTransactionInventoryPage(full.bytes).page->inventory.entries.size()==capacity,"exact full inventory capacity");
+    p.inventory.entries.push_back(p.inventory.entries.back()); InventoryReject(page::EncodeNativeTransactionInventoryPage(p));
+  }
+  auto p=InventoryExample(); const auto good=InventoryOracle(p,1,1,1);
+  for(std::size_t i=0;i<good.size();++i) { auto b=good;b[i]^=1;InventoryReject(page::DecodeNativeTransactionInventoryPage(b)); }
+  for(std::size_t at:{128u,136u,138u,140u,176u,184u,188u,192u,240u,288u,296u,304u,312u,352u,456u}) {
+    auto b=good; b[at]^=1; InventorySeal(b); InventoryReject(page::DecodeNativeTransactionInventoryPage(b));
+  }
+  for(std::size_t at:{144u,160u,168u}) {
+    auto b=good;std::fill_n(b.begin()+at,at==144?16:8,0);InventorySeal(b);InventoryReject(page::DecodeNativeTransactionInventoryPage(b));
+  }
+  for(unsigned state:{0u,14u,65535u}) { auto b=good;Number(b,410,2,state);InventorySeal(b);InventoryReject(page::DecodeNativeTransactionInventoryPage(b)); }
+  for(unsigned scope:{2u,65535u}) { auto b=good;Number(b,408,2,scope);InventorySeal(b);InventoryReject(page::DecodeNativeTransactionInventoryPage(b)); }
+  for(std::size_t at:{398u,400u,412u,448u}) {
+    auto b=good; b[at]=255; InventorySeal(b); InventoryReject(page::DecodeNativeTransactionInventoryPage(b));
+  }
+  for(std::size_t size:{0u,127u,8191u,8193u}) {auto b=good;b.resize(size);InventoryReject(page::DecodeNativeTransactionInventoryPage(b));}
+  for(auto origin:{mga::TransactionState::committed,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal}) {
+    auto archived=p;auto& e=archived.inventory.entries[0];e.state=mga::TransactionState::archived;e.archived_from_state=origin;
+    if(origin==mga::TransactionState::committed) {e.commit_sequence=1;archived.inventory.next_commit_sequence=2;}
+    const auto bytes=InventoryOracle(archived,3,3,3);const auto r=page::DecodeNativeTransactionInventoryPage(bytes);
+    Check(r.ok()&&r.page->inventory.entries[0].archived_from_state==origin
+      &&page::EncodeNativeTransactionInventoryPage(archived).bytes==bytes,"archive terminal origin survives canonical inventory");
+  }
+  for(unsigned fault=1;fault<=4;++fault) {
+    hash_fault=fault;const auto r=page::DecodeNativeTransactionInventoryPage(good);
+    Check(!r.ok()&&r.error==E::hash_failure&&hash_fault==0&&!r.page&&r.bytes.empty(),"inventory digest backend failure");
+  }
+  for(unsigned mode=0;mode<2;++mode) {
+    bool success=false;
+    for(long budget=0;budget<100;++budget) {
+      allocation_budget=budget;const auto r=mode?page::DecodeNativeTransactionInventoryPage(good):page::EncodeNativeTransactionInventoryPage(p);allocation_budget=-1;
+      if(r.ok()){success=true;break;} Check(r.error==E::resource_exhausted&&!r.page&&r.bytes.empty(),"inventory allocation fails atomically");
+    }
+    Check(success,"inventory all allocation positions complete");
+  }
+}
+void CanonicalInventoryChains() {
+  using E=page::NativeInventoryError; Fixture fixture; disk::FileDevice first,second;
+  auto head=InventoryExample(),tail=InventoryExample(1);
+  tail.header.filespace_uuid=Id(7);tail.header.page_number=17;tail.header.page_uuid=Id(94);
+  tail.inventory.entries[0].identity.local_id=mga::MakeLocalTransactionId(2);
+  tail.inventory.entries[0].identity.transaction_uuid.value=Id(95);tail.inventory.entries[0].state=mga::TransactionState::rolled_back;
+  head.next=InventoryRef(tail);tail.previous=InventoryRef(head);
+  auto z1=Example(),z2=Example(1);z2.bootstrap.filespace_uuid=Id(7);
+  for(auto& root:z2.roots)root.filespace_uuid=Id(7);
+  const auto path1=(fixture.root/"inventory-primary").string(),path2=(fixture.root/"inventory-secondary-primary").string();
+  Check(first.Open(path1,disk::FileOpenMode::create_new).ok()&&second.Open(path2,disk::FileOpenMode::create_new).ok(),"own both inventory filespaces");
+  auto persist=[&](disk::FileDevice& d,const auto& zero,const auto& p,u64 horizon) {
+    const auto z=Oracle(zero),b=InventoryOracle(p,horizon,horizon,horizon);const byte v=0;
+    Check(d.WriteAt(0,z.data(),z.size()).ok()&&d.WriteAt(zero.total_pages*zero.bootstrap.page_size_bytes-1,&v,1).ok()
+      &&d.WriteAt(p.header.page_number*p.header.page_size_bytes,b.data(),b.size()).ok()&&d.Sync().ok(),"persist actual canonical inventory images");
+  };
+  persist(first,z1,head,1);persist(second,z2,tail,3);
+  const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(1),&second},{Id(2),Profile(0),&first}};
+  const auto root=z1.roots[3];
+  const auto read=[&](u64 budget=24576) {return page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),devices,root,budget);};
+  const auto check_empty=[&](const auto& r) {Check(!r.ok()&&r.pages.empty()&&r.inventory.entries.empty()&&!r.inventory.publication_base&&!r.horizons.valid&&r.retained_image_bytes==0,"chain failure retains no prefix or authority");};
+  auto r=read();Check(r.ok()&&r.pages.size()==2&&r.inventory.entries.size()==2&&r.retained_image_bytes==24576
+    &&r.horizons.oldest_active_transaction.value==1&&!r.inventory.publication_base,"full mixed-profile binary chain and horizons");
+  r=read(24575);check_empty(r);Check(r.error==E::resource_exhausted,"exact retained image budget");
+  for(unsigned field=0;field<7;++field) {
+    auto bad=tail;
+    if(field==0)bad.previous.reset();if(field==1)++bad.previous->page_generation;
+    if(field==2)++bad.inventory_generation;if(field==3)++bad.inventory.next_local_transaction_id;
+    if(field==4)bad.header.page_uuid=head.header.page_uuid;
+    if(field==5)bad.inventory.entries[0].identity.transaction_uuid=head.inventory.entries[0].identity.transaction_uuid;
+    if(field==6)bad.inventory.entries[0].identity.local_id=mga::MakeLocalTransactionId(1);
+    persist(second,z2,bad,bad.inventory.next_local_transaction_id);check_empty(read());
+  }
+  persist(second,z2,tail,3);
+  auto duplicate=devices;duplicate.push_back(devices[0]);
+  check_empty(page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),duplicate,root,24576));
+  for(unsigned field=0;field<4;++field){auto bad=root;if(field==0)++bad.page_generation;if(field==1)bad.object_uuid=Id(98);if(field==2)bad.kind=2;if(field==3)bad.filespace_uuid=Id(98);check_empty(page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),devices,bad,24576));}
+  for(unsigned fault=1;fault<=4;++fault){hash_fault=fault;r=read();Check(hash_fault==0,"chain hash fault consumed");check_empty(r);Check(r.error==E::hash_failure,"chain hash backend refusal");}
+  reads=0;track_reads=true;r=read();track_reads=false;const auto read_count=reads;
+  Check(r.ok()&&read_count>3,"measure complete actual chain reads");
+  for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;r=read();track_reads=false;Check(read_fault==0,"chain actual read fault consumed");check_empty(r);}
+  observed_allocations=0;count_allocations=true;r=read();count_allocations=false;
+  const auto allocation_count=observed_allocations;Check(r.ok(),"measure complete chain allocations");
+  bool success=false;
+  for(unsigned long budget=0;budget<=allocation_count;++budget){allocation_budget=static_cast<long>(budget);r=read();allocation_budget=-1;if(r.ok()){success=true;break;}check_empty(r);Check(r.error==E::resource_exhausted,"chain allocation diagnostic");}
+  Check(success,"complete chain under all allocation positions");
+  auto bad_tail=InventoryOracle(tail,3,3,3);bad_tail[420]^=1;
+  Check(second.WriteAt(tail.header.page_number*tail.header.page_size_bytes,bad_tail.data(),bad_tail.size()).ok()&&second.Sync().ok(),"persist late-page corruption");
+  r=read();check_empty(r);Check(r.error==E::invalid_integrity,"late-page corruption rejects earlier inventory prefix");
+  persist(second,z2,tail,3);
+  auto committed_head=head,committed_tail=tail;
+  for(auto* p:{&committed_head,&committed_tail}){p->inventory.entries[0].state=mga::TransactionState::committed;p->inventory.entries[0].commit_sequence=1;p->inventory.next_commit_sequence=2;}
+  persist(first,z1,committed_head,3);persist(second,z2,committed_tail,3);
+  r=read();check_empty(r);Check(r.error==E::invalid_inventory,"duplicate commit order across individually valid pages refused");
+  committed_tail.inventory.entries[0].commit_sequence=2;committed_head.inventory.next_commit_sequence=committed_tail.inventory.next_commit_sequence=3;
+  persist(first,z1,committed_head,3);persist(second,z2,committed_tail,3);
+  r=read();Check(r.ok()&&r.inventory.entries[1].commit_sequence==2,"distinct global committed order admitted");
+  persist(first,z1,head,1);persist(second,z2,tail,3);
+  auto encrypted=tail;encrypted.header.flags=1;persist(second,z2,encrypted,3);
+  r=read();check_empty(r);Check(r.error==E::encrypted_requires_crypto_authority,"raw encrypted inventory never interpreted as plaintext");
+  persist(second,z2,tail,3);
+  auto missing=devices;missing.erase(missing.begin());check_empty(page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),missing,root,24576));
+  auto mismatched=devices;mismatched[0].page_size_profile_uuid=Profile(0);check_empty(page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),mismatched,root,24576));
+  std::atomic<unsigned> completed=0;
+  auto reverse=devices;std::reverse(reverse.begin(),reverse.end());
+  const auto concurrent=[&](const auto& owners){for(unsigned n=0;n<16;++n){const auto result=page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),owners,root,24576);if(result.ok()&&result.inventory.entries.size()==2)++completed;}};
+  std::thread one([&]{concurrent(devices);}),two([&]{concurrent(reverse);});one.join();two.join();
+  Check(completed==32,"opposite supplied device orders converge on one binary lock order");
+  Exclusive(path1);Exclusive(path2);
+  Check(first.Close().ok()&&second.Close().ok(),"close canonical inventory filespaces");
+  Check(first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"reopen canonical inventory filespaces");
+  r=read();Check(r.ok()&&r.inventory.entries[1].state==mga::TransactionState::rolled_back,"reopened canonical inventory exact outcomes");
+  Check(first.Close().ok()&&second.Close().ok(),"release before fresh process inventory reader");
+  const auto child=::fork();Check(child>=0,"fork independent inventory reader");
+  if(child==0){::execl("/proc/self/exe","inventory-chain-probe","--inventory-chain-probe",fixture.root.c_str(),nullptr);::_exit(125);}
+  int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable reads actual canonical inventory chain");
+}
 int main(int argc,char** argv) {
+  if(argc==3&&std::string_view(argv[1])=="--inventory-chain-probe") {
+    disk::FileDevice first,second;const std::filesystem::path root=argv[2];
+    if(!first.Open((root/"inventory-primary").string(),disk::FileOpenMode::open_existing_read_only).ok()
+      ||!second.Open((root/"inventory-secondary-primary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 2;
+    const auto r=page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),{{Id(2),Profile(0),&first},{Id(7),Profile(1),&second}},Example().roots[3],24576);
+    return r.ok()&&r.pages.size()==2&&r.inventory.entries.size()==2&&!r.inventory.publication_base
+      &&r.inventory.entries[0].state==mga::TransactionState::active&&r.inventory.entries[1].state==mga::TransactionState::rolled_back?0:3;
+  }
   if(argc==4&&std::string_view(argv[1])=="--leaf-probe") {
     if(std::string_view(argv[3]).size()!=1||argv[3][0]<'0'||argv[3][0]>'4') return 2;
     const auto p=static_cast<unsigned>(argv[3][0]-'0');disk::FileDevice d;
@@ -878,7 +1082,7 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
-  try { Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
-    std::cout<<"PASS checks="<<checks<<" page_zero_and_catalog_root_image_only=true\n"; return 0; }
+  try { CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
+    std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }

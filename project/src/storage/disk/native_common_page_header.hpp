@@ -10,6 +10,19 @@ using scratchbird::core::platform::u64;
 // admit a family body, role, provider, encryption key or MGA publication.
 inline constexpr std::size_t kNativeCommonPageHeaderBytes = 128;
 using NativeCommonPageHeaderBytes = std::array<byte, kNativeCommonPageHeaderBytes>;
+// Shared generation/profile-bound PageRefV2, independent of a page family.
+struct NativePageReference {
+  Uuid filespace_uuid;
+  u64 page_number = 0;
+  u64 page_generation = 0;
+  Uuid page_size_profile_uuid;
+  bool operator==(const NativePageReference&) const = default;
+};
+struct NativeFilespaceDevice {
+  Uuid filespace_uuid;
+  Uuid page_size_profile_uuid;
+  FileDevice* device = nullptr;
+};
 struct NativeCommonPageHeader {
   u32 page_size_bytes = 0;
   u32 page_type = 0; // Core uint16 identity, not the prototype PageType enum.

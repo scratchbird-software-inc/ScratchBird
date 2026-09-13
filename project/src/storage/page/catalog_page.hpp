@@ -20,12 +20,7 @@
 
 namespace scratchbird::storage::page {
 
-struct NativeCatalogPageReference {
-  scratchbird::core::platform::Uuid filespace_uuid;
-  scratchbird::core::platform::u64 page_number = 0;
-  scratchbird::core::platform::u64 page_generation = 0;
-  scratchbird::core::platform::Uuid page_size_profile_uuid;
-};
+using NativeCatalogPageReference = scratchbird::storage::disk::NativePageReference;
 struct NativeCatalogRootReference {
   scratchbird::core::platform::u16 role = 0;
   scratchbird::core::platform::u32 page_type = 0;
@@ -69,11 +64,7 @@ NativeCatalogRootResult ReadNativeCatalogRootFromOpenDevice(
     const scratchbird::core::platform::Uuid& database_uuid,
     const scratchbird::storage::disk::FilespaceRootReference&) noexcept;
 
-struct NativeCatalogFilespaceDevice {
-  scratchbird::core::platform::Uuid filespace_uuid;
-  scratchbird::core::platform::Uuid page_size_profile_uuid;
-  scratchbird::storage::disk::FileDevice* device = nullptr;
-};
+using NativeCatalogFilespaceDevice = scratchbird::storage::disk::NativeFilespaceDevice;
 struct NativeCatalogRootRangeResult {
   NativeCatalogRootError error = NativeCatalogRootError::invalid_reference;
   // Exact requested head through terminal, newest first. Never a partial range.

@@ -91,6 +91,9 @@ TransactionHorizonResult ComputeLocalTransactionHorizons(const LocalTransactionH
     }
   }
 
+  // Without a retained snapshot, OST follows OAT, not the next transaction
+  // counter. Otherwise an active reader can disappear from snapshot age.
+  if (request.active_snapshot_horizons.empty()) ost = oat;
   for (const LocalTransactionId& snapshot_horizon : request.active_snapshot_horizons) {
     if (!snapshot_horizon.valid()) {
       result.status = HorizonErrorStatus();
