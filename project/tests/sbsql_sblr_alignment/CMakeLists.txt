@@ -10,6 +10,17 @@ else()
   add_compile_options(-UNDEBUG)
 endif()
 
+add_executable(sbsql_sblr_alignment_real128_binary_codec real128_binary_codec_test.cpp)
+target_compile_features(sbsql_sblr_alignment_real128_binary_codec PRIVATE cxx_std_17)
+target_include_directories(sbsql_sblr_alignment_real128_binary_codec PRIVATE
+  ${SBL_NUMERIC_MPFR_INCLUDE_DIR} ${SBL_NUMERIC_GMP_INCLUDE_DIR})
+target_link_libraries(sbsql_sblr_alignment_real128_binary_codec PRIVATE sbl_numeric)
+add_test(NAME sbsql_sblr_alignment_real128_binary_codec
+  COMMAND sbsql_sblr_alignment_real128_binary_codec)
+set_tests_properties(sbsql_sblr_alignment_real128_binary_codec PROPERTIES
+  LABELS "sbsql_sblr_alignment;numeric_reference;binary_codec;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
 add_executable(sbsql_sblr_alignment_numeric_consumer_reference numeric_consumer_reference_test.cpp)
 target_compile_features(sbsql_sblr_alignment_numeric_consumer_reference PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_numeric_consumer_reference PRIVATE sb_core_datatypes)

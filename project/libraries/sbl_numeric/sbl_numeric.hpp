@@ -13,6 +13,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -102,6 +103,27 @@ bool Real128BackendAvailable() noexcept;
 // Runtime thread owner calls this only after its MPFR work has quiesced.
 void ReleaseReal128ThreadCache() noexcept;
 NumericResult ApplyNumericOperation(const NumericRequest& request);
+using Real128Bytes = std::array<std::uint8_t, 16>;
+struct Real128BinaryResult {
+  NumericResult numeric;
+  // Present only for a successful numeric value; compare returns only the
+  // comparison outcome. An error is never represented by zero-filled bytes.
+  std::optional<Real128Bytes> bytes;
+};
+struct Real128BinaryRequest {
+  NumericOperation operation = NumericOperation::canonicalize;
+  std::optional<Real128Bytes> left;
+  std::optional<Real128Bytes> right;
+  NumericContext context;
+};
+// Value codecs only. SQL NULL and descriptor/resource authority are carried by
+// the caller's typed envelope, not by an IEEE bit pattern or this context.
+Real128BinaryResult EncodeReal128LittleEndian(
+    std::string_view text, const NumericContext& context = {});
+Real128BinaryResult DecodeReal128LittleEndian(
+    const std::uint8_t* bytes, std::size_t size, const NumericContext& context = {},
+    bool render_canonical_text = false);
+Real128BinaryResult ApplyReal128BinaryOperation(const Real128BinaryRequest& request);
 // Canonical signed two's-complement storage payload; no host encoding accepted.
 NumericResult DecodeInt128LittleEndian(const std::vector<std::uint8_t>& payload);
 inline constexpr std::size_t kExactDecimalBinaryBytes = 24;
