@@ -1777,6 +1777,15 @@ void CanonicalCheckpointHistory() {
   if(child==0){::execl("/proc/self/exe","checkpoint-history-probe","--checkpoint-history-probe",fixture.root.c_str(),nullptr);::_exit(125);}
   int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable verifies complete retained history");
 }
+struct CatalogTestPin {
+  mga::SnapshotVectorResult published;
+  mga::PublishedSnapshotPin pin;
+  CatalogTestPin(const mga::LocalTransactionInventory& inventory,u64 reader) {
+    published=mga::PublishStatementStableSnapshotVector(inventory,mga::MakeLocalTransactionId(reader),1790000001000ull);
+    Check(published.ok(),"publish actual inventory snapshot");pin=mga::RetainPublishedSnapshotVector(published.descriptor.snapshot_uuid);Check(pin.valid(),"retain actual engine snapshot pin");
+  }
+  ~CatalogTestPin(){mga::RevokePublishedSnapshotVector(published.descriptor.snapshot_uuid);mga::ReleasePublishedSnapshotVector(published.descriptor.snapshot_uuid);}
+};
 void CheckpointCatalogRelations() {
   using E=db::NativeCheckpointCatalogRelationError;
   const auto empty=[](const auto& r){Check(!r.ok()&&!r.checkpoint.checkpoint_inventory.checkpoint&&r.checkpoint.catalogs.empty()
@@ -1850,7 +1859,92 @@ void CheckpointCatalogRelations() {
       std::thread reader([&]{paused=read(budget);done=true;});while(!tree_read_paused.load()&&!done.load())std::this_thread::yield();bool held=tree_read_paused.load();
       for(auto* mutex:mutexes)if(mutex->try_lock()){held=false;mutex->unlock();}resume_tree_read=true;reader.join();pause_next_tree_read=false;Check(held&&paused.ok(),"all filespace guards span checkpoint and creator join");
     }
-    persist();Exclusive(first.path());Exclusive(second.path());Exclusive(base.path());Check(first.Close().ok()&&second.Close().ok()&&base.Close().ok(),"close before independent process");
+    const auto saved_inventory=inventory;const auto saved_cp=cp;
+    using PE=db::NativePinnedCatalogReadError;
+    const auto no_rows=[](const auto& r){Check(!r.ok()&&r.rows.empty()&&r.observations.empty()&&r.snapshot_uuid.is_nil()
+      &&r.source.row_creators.empty()&&r.source.relation.catalogs.empty()&&!r.source.relation.index
+      &&r.source.checkpoint.catalogs.empty()&&!r.source.checkpoint.checkpoint_inventory.checkpoint
+      &&r.source.checkpoint.checkpoint_inventory.inventory.entries.empty(),"pinned refusal exposes no snapshot source or rows");};
+    const auto pinned=[&](const auto& pin,const auto& identity){return db::ReadNativePinnedCatalogVersionsFromOpenDevices(Id(1),devices,CheckpointRef(cp),2,1,binding,identity,pin,budget);};
+    inventory.inventory.entries[1].state=mga::TransactionState::active;inventory.inventory.entries[1].commit_sequence=0;persist(false,13,13);
+    auto loaded=read(budget);Check(loaded.ok(),"actual own-writer inventory loaded");const auto own_identity=loaded.checkpoint.checkpoint_inventory.inventory.entries[1].identity;
+    CatalogTestPin own_pin(loaded.checkpoint.checkpoint_inventory.inventory,13);
+    auto selected=pinned(own_pin.pin,own_identity);Check(selected.ok()&&selected.rows.size()==8&&selected.snapshot_uuid==own_pin.published.descriptor.snapshot_uuid.value,"native pinned own versions selected across filespaces");
+    for(const auto& row:selected.rows)Check(row.provisional&&row.effective_lifecycle==catalog::CatalogObjectLifecycle::creating&&row.effective_status==catalog::CatalogObjectStatus::proposed,"own creating versions never inherit committed checkpoint status");
+    mga::ReleasePublishedSnapshotVector(own_pin.published.descriptor.snapshot_uuid);selected=pinned(own_pin.pin,own_identity);Check(selected.ok(),"retained pin survives publication owner release");
+    mga::PublishedSnapshotPin absent;selected=pinned(absent,own_identity);no_rows(selected);Check(selected.error==PE::snapshot_failure&&selected.diagnostic.diagnostic_code=="SB-MGA-SNAPSHOT-VECTOR-UNKNOWN","absent pin keeps native diagnostic");
+    auto foreign=own_identity;foreign.transaction_uuid.value=Id(240);selected=pinned(own_pin.pin,foreign);no_rows(selected);Check(selected.error==PE::reader_mismatch,"pin exact owner UUID required");
+    foreign=own_identity;foreign.transaction_uuid.value.bytes[6]=0x41;selected=pinned(own_pin.pin,foreign);no_rows(selected);Check(selected.error==PE::invalid_reader,"non-v7 system reader rejected");
+    mga::RevokePublishedSnapshotVector(own_pin.published.descriptor.snapshot_uuid);selected=pinned(own_pin.pin,own_identity);no_rows(selected);Check(selected.error==PE::snapshot_failure&&selected.diagnostic.diagnostic_code=="SB-MGA-SNAPSHOT-VECTOR-REVOKED","revocation keeps native diagnostic");
+    inventory=saved_inventory;cp=saved_cp;
+    if(p==0){
+      auto writer=inventory.inventory.entries[1];writer.identity.local_id=mga::MakeLocalTransactionId(15);writer.identity.transaction_uuid.value=Id(215);writer.state=mga::TransactionState::active;writer.commit_sequence=0;
+      inventory.inventory.entries.insert(inventory.inventory.entries.begin()+2,writer);auto reader=writer;reader.identity.local_id=mga::MakeLocalTransactionId(19);reader.identity.transaction_uuid.value=Id(219);
+      inventory.inventory.entries.push_back(reader);inventory.inventory.next_local_transaction_id=20;cp.selected_local_transaction_id=19;
+      const auto rewrite=[](auto& row,const auto& edit){auto metadata=catalog::DecodeCatalogMetadataVersion(row.cells[0].value.payload);Check(metadata.ok(),"decode common history fixture");
+        metadata.record.record.header.row_uuid=row.row_uuid;metadata.record.creator_transaction_uuid=row.transaction_uuid;metadata.record.creator_local_transaction_id=row.local_transaction_id;edit(metadata.record);
+        const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"encode common history fixture");row.cells[0].value.payload=encoded.bytes;};
+      rewrite(images.leaves[0].body.rows[0],[](auto& metadata){metadata.schema_epoch=2;});
+      const auto old=images.leaves[0].body.rows[0];auto& next=images.leaves[3].body.rows[0];next.row_uuid=old.row_uuid;next.row_version=2;next.previous_row_version=1;next.previous_version_uuid=old.version_uuid;
+      next.transaction_uuid=writer.identity.transaction_uuid;next.local_transaction_id=15;images.nodes[6].cells[0].key.row_uuid=old.row_uuid.value;
+      images.nodes[6].cells[0].key.encoded_key={61}; // Strictly above the retained key60 lower fence after changing its row tie-breaker.
+      rewrite(next,[&](auto& metadata){metadata.record.header.object_uuid.value=Id(180);metadata.definition_version=2;metadata.schema_epoch=3;});const auto next_version=next.version_uuid;
+      // A well-formed unrelated retained row is not a candidate of this index.
+      auto extra=images.leaves[3].body.rows[1];extra.row_uuid.value=Id(242);extra.version_uuid=Id(243);extra.internal_row_ordinal=extra.stable_slot_id=3;
+      rewrite(extra,[](auto& metadata){metadata.record.header.object_uuid.value=Id(244);});images.leaves[3].body.rows.push_back(extra);
+      persist(false,15,15);loaded=read(budget);Check(loaded.ok(),"load multi-page catalog history and active exclusions error="+std::to_string(static_cast<unsigned>(loaded.error))+" relation="+std::to_string(static_cast<unsigned>(loaded.relation.error))+" tree="+std::to_string(static_cast<unsigned>(loaded.relation.tree_error)));CatalogTestPin history_pin(loaded.checkpoint.checkpoint_inventory.inventory,19);
+      inventory.inventory.entries[2].state=mga::TransactionState::prepared;persist(false,15,15);loaded=read(budget);Check(loaded.ok(),"actual prepared catalog writer inventory");
+      CatalogTestPin doubt_pin(loaded.checkpoint.checkpoint_inventory.inventory,19);const auto& excluded=doubt_pin.published.descriptor.in_doubt_excluded_local_transaction_ids;
+      Check(std::find(excluded.begin(),excluded.end(),15)!=excluded.end(),"actual published in-doubt exclusion contains prepared writer");
+      inventory.inventory.entries[2].state=mga::TransactionState::active;persist(false,15,15);
+      const auto expected=[&](const auto& value,const auto& version,bool retirement=false,bool provisional=false){Check(value.ok()&&value.rows.size()==7,"one snapshot-selected version per actual candidate, unrelated retained row excluded");
+        Check(std::is_sorted(value.rows.begin(),value.rows.end(),[](const auto& a,const auto& b){return a.metadata.record.header.row_uuid.value<b.metadata.record.header.row_uuid.value;}),"selected catalog rows have deterministic binary UUID order");
+        const auto found=std::find_if(value.rows.begin(),value.rows.end(),[&](const auto& row){return row.metadata.record.header.row_uuid.value==old.row_uuid.value;});
+        Check(found!=value.rows.end()&&found->version_uuid==version&&found->metadata.record.header.deleted==retirement&&found->provisional==provisional,"independent expected catalog version and retirement outcome");};
+      selected=pinned(history_pin.pin,reader.identity);expected(selected,old.version_uuid);Check(std::any_of(selected.observations.begin(),selected.observations.end(),[](const auto& o){return o.decision==mga::VisibilityDecision::wait_for_transaction;}),"other writer wait observation retained");
+      inventory.inventory.entries[2].state=mga::TransactionState::committed;inventory.inventory.entries[2].commit_sequence=4;inventory.inventory.next_commit_sequence=5;persist(false,19,19);
+      selected=pinned(history_pin.pin,reader.identity);expected(selected,old.version_uuid);
+      selected=pinned(doubt_pin.pin,reader.identity);expected(selected,old.version_uuid);
+      loaded=read(budget);Check(loaded.ok(),"actual later committed catalog inventory");CatalogTestPin fresh_pin(loaded.checkpoint.checkpoint_inventory.inventory,19);
+      selected=pinned(fresh_pin.pin,reader.identity);expected(selected,next_version);
+      inventory.inventory.entries[2].state=mga::TransactionState::archived;inventory.inventory.entries[2].archived_from_state=mga::TransactionState::committed;persist(false,19,19);
+      selected=pinned(history_pin.pin,reader.identity);expected(selected,old.version_uuid);selected=pinned(fresh_pin.pin,reader.identity);expected(selected,next_version);
+      rewrite(images.leaves[3].body.rows[0],[](auto& metadata){metadata.record.header.deleted=true;metadata.retired_transaction_uuid=metadata.creator_transaction_uuid;metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;metadata.status=catalog::CatalogObjectStatus::retired;});persist(false,19,19);
+      selected=pinned(history_pin.pin,reader.identity);expected(selected,old.version_uuid);selected=pinned(fresh_pin.pin,reader.identity);expected(selected,next_version,true);
+      auto& owned=images.leaves[3].body.rows[0];owned.transaction_uuid=reader.identity.transaction_uuid;owned.local_transaction_id=19;rewrite(owned,[](auto& metadata){metadata.retired_transaction_uuid=metadata.creator_transaction_uuid;});persist(false,19,19);
+      selected=pinned(history_pin.pin,reader.identity);expected(selected,next_version,true,true);
+      for(const auto& row:selected.rows)if(row.version_uuid==next_version)Check(row.effective_lifecycle==catalog::CatalogObjectLifecycle::dropping&&row.effective_status==catalog::CatalogObjectStatus::proposed,"own retirement remains provisional dropping");
+      rewrite(owned,[](auto& metadata){metadata.record.header.deleted=false;metadata.retired_transaction_uuid={};metadata.lifecycle=catalog::CatalogObjectLifecycle::active;metadata.status=catalog::CatalogObjectStatus::active;});persist(false,19,19);
+      selected=pinned(history_pin.pin,reader.identity);expected(selected,next_version,false,true);
+      for(const auto& row:selected.rows)if(row.version_uuid==next_version)Check(row.effective_lifecycle==catalog::CatalogObjectLifecycle::altering,"own successor is provisional altering");
+      owned.transaction_uuid=writer.identity.transaction_uuid;owned.local_transaction_id=15;rewrite(owned,[](auto&){});const auto history_images=images;
+      for(unsigned fault=0;fault<6;++fault){images=history_images;auto& bad=images.leaves[3].body.rows[0];
+        if(fault==0){bad.row_version=1;bad.previous_row_version=0;bad.previous_version_uuid={};}
+        if(fault==1)rewrite(bad,[](auto& metadata){metadata.record.header.object_uuid.value=Id(245);});
+        if(fault==2)bad.previous_version_uuid=images.leaves[0].body.rows[1].version_uuid;
+        if(fault==3)rewrite(bad,[](auto& metadata){metadata.definition_version=1;});
+        if(fault==4)rewrite(bad,[](auto& metadata){metadata.definition_version=3;});
+        if(fault==5)rewrite(bad,[](auto& metadata){metadata.schema_epoch=1;});
+        persist(false,19,19);selected=pinned(fresh_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::invalid_chain,"hidden cross-page catalog identity/sequence mismatch");}
+      images=history_images;images.leaves[0].body.rows.erase(images.leaves[0].body.rows.begin());images.leaves[0].body.rows[0].internal_row_ordinal=1;
+      images.nodes[3].cells.erase(images.nodes[3].cells.begin(),images.nodes[3].cells.begin()+2);persist(false,19,19);selected=pinned(history_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::missing_version,"missing excluded successor predecessor is not invented absence");
+      images=history_images;inventory.inventory.entries[2].state=mga::TransactionState::limbo;inventory.inventory.entries[2].archived_from_state=mga::TransactionState::none;inventory.inventory.entries[2].commit_sequence=0;persist(false,15,15);
+      selected=pinned(history_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::requires_recovery,"traversed limbo metadata requires recovery without prefix");
+      inventory.inventory.entries[2].state=mga::TransactionState::committed;inventory.inventory.entries[2].commit_sequence=4;persist(false,19,19);
+      inventory.inventory.entries.back().state=mga::TransactionState::committed;inventory.inventory.entries.back().commit_sequence=5;inventory.inventory.next_commit_sequence=6;persist(false,20,20);
+      selected=pinned(fresh_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::reader_mismatch,"terminal actual reader cannot reuse a live pin");
+      inventory.inventory.entries.back().state=mga::TransactionState::active;inventory.inventory.entries.back().commit_sequence=0;persist(false,19,19);
+      reads=0;track_reads=true;selected=pinned(history_pin.pin,reader.identity);track_reads=false;const auto read_count=reads;expected(selected,old.version_uuid);
+      for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;selected=pinned(history_pin.pin,reader.identity);track_reads=false;Check(!read_fault,"pinned physical read fault consumed");no_rows(selected);}
+      observed_allocations=0;count_allocations=true;selected=pinned(history_pin.pin,reader.identity);count_allocations=false;const auto allocations=observed_allocations;expected(selected,old.version_uuid);bool success=false;
+      for(unsigned long n=0;n<=allocations;++n){allocation_budget=n;selected=pinned(history_pin.pin,reader.identity);allocation_budget=-1;if(selected.ok()){success=true;break;}no_rows(selected);}Check(success,"all pinned selection allocation failures are atomic");
+      tree_read_paused=false;resume_tree_read=false;pause_next_tree_read=true;std::atomic<bool> done=false;db::NativePinnedCatalogReadResult revoked;
+      std::thread reading([&]{revoked=pinned(history_pin.pin,reader.identity);done=true;});while(!tree_read_paused.load()&&!done.load())std::this_thread::yield();const bool paused=tree_read_paused.load();
+      mga::RevokePublishedSnapshotVector(history_pin.published.descriptor.snapshot_uuid);resume_tree_read=true;reading.join();pause_next_tree_read=false;Check(paused,"physical pinned read paused before concurrent revoke");no_rows(revoked);Check(revoked.error==PE::snapshot_failure,"pin revoked during physical read cannot publish rows");
+      inventory=saved_inventory;cp=saved_cp;images=original;
+    }
+    inventory.inventory.entries[1].state=mga::TransactionState::active;inventory.inventory.entries[1].commit_sequence=0;
+    persist(false,13,13);Exclusive(first.path());Exclusive(second.path());Exclusive(base.path());Check(first.Close().ok()&&second.Close().ok()&&base.Close().ok(),"close before independent process");
     const auto child=::fork();Check(child>=0,"fork checkpoint relation reader");if(child==0){const auto profile=std::to_string(p);
       ::execl("/proc/self/exe","checkpoint-relation-probe","--checkpoint-relation-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process follows checkpoint through relation creators");
@@ -1864,7 +1958,11 @@ int main(int argc,char** argv) {
     auto cp=CheckpointExample(s);cp.header.filespace_uuid=Id(9);const auto expected=CatalogBindingImages(p);
     const auto r=db::ReadNativeCheckpointCatalogRelationFromOpenDevices(Id(1),{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},CheckpointRef(cp),2,1,
       {Id(101),expected.nodes[0].dependencies},4*sizes[p]+4*sizes[q]+6*sizes[s]);
-    return r.ok()&&r.row_creators.size()==8&&r.navigation_creator_entries.size()==7&&r.relation.bindings.size()==9?0:3;
+    if(!r.ok()||r.row_creators.size()!=8||r.navigation_creator_entries.size()!=7||r.relation.bindings.size()!=9)return 3;
+    CatalogTestPin pin(r.checkpoint.checkpoint_inventory.inventory,13);
+    const auto selected=db::ReadNativePinnedCatalogVersionsFromOpenDevices(Id(1),{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},CheckpointRef(cp),2,1,
+      {Id(101),expected.nodes[0].dependencies},r.checkpoint.checkpoint_inventory.inventory.entries[1].identity,pin.pin,4*sizes[p]+4*sizes[q]+6*sizes[s]);
+    return selected.ok()&&selected.rows.size()==8&&std::all_of(selected.rows.begin(),selected.rows.end(),[](const auto& row){return row.provisional&&row.effective_lifecycle==catalog::CatalogObjectLifecycle::creating;})?0:4;
   }
   if(argc==4&&std::string_view(argv[1])=="--catalog-relation-probe") {
     const auto p=static_cast<unsigned>(std::stoul(argv[3])),q=(p+1)%5,s=(p+2)%5;const std::filesystem::path dir=argv[2];disk::FileDevice first,second,base;

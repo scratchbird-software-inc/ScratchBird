@@ -2030,6 +2030,146 @@ NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpe
     catch (...) { return fail(E::io_failure); }
 }
 
+NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding& binding,
+    const scratchbird::transaction::mga::TransactionIdentity& reader,
+    const scratchbird::transaction::mga::PublishedSnapshotPin& pin,
+    u64 maximum_retained_image_bytes) noexcept {
+  namespace mga = scratchbird::transaction::mga;
+  namespace catalog = scratchbird::core::catalog;
+  namespace disk = scratchbird::storage::disk;
+  using Uuid = scratchbird::core::platform::Uuid;
+  using E = NativePinnedCatalogReadError;
+  const auto fail = [](E error) { NativePinnedCatalogReadResult r; r.error=error; return r; };
+  try {
+    if (!reader.valid() || reader.scope!=mga::TransactionScope::local_node ||
+        !IsTypedEngineIdentity(reader.transaction_uuid, UuidKind::transaction)) return fail(E::invalid_reader);
+    const auto captured = pin.Resolve();
+    if (!captured.ok()) { auto r=fail(E::snapshot_failure); r.diagnostic=captured.diagnostic; return r; }
+    const auto& snapshot = captured.descriptor;
+    if (!SameUuid(snapshot.owning_transaction_uuid, reader.transaction_uuid) ||
+        snapshot.owning_transaction.value!=reader.local_id.value) return fail(E::reader_mismatch);
+
+    auto ordered=devices;
+    std::sort(ordered.begin(),ordered.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
+    for (std::size_t i=0;i<ordered.size();++i) {
+      const auto& fs=ordered[i];
+      if (!fs.device || !scratchbird::core::uuid::IsEngineIdentityUuid(fs.filespace_uuid) ||
+          !disk::FindCanonicalFilespacePageProfile(fs.page_size_profile_uuid) ||
+          (i && ordered[i-1].filespace_uuid==fs.filespace_uuid)) return fail(E::invalid_filespace);
+      for (std::size_t j=0;j<i;++j) if (ordered[j].device==fs.device) return fail(E::invalid_filespace);
+    }
+    std::vector<std::unique_lock<std::recursive_mutex>> guards;
+    guards.reserve(ordered.size());
+    for (const auto& fs:ordered) guards.push_back(fs.device->AcquireOperationGuard());
+    NativePinnedCatalogReadResult result;
+    result.source=ReadNativeCheckpointCatalogRelationFromOpenDevices(database_uuid,ordered,checkpoint,
+        catalog_selector,relation_role,binding,maximum_retained_image_bytes);
+    if (!result.source.ok()) { auto r=fail(E::source_failure); r.source=std::move(result.source); return r; }
+    const auto& inventory=result.source.checkpoint.checkpoint_inventory.inventory;
+    const auto owner=LookupLocalTransaction(inventory,reader.local_id);
+    if (!owner.ok() || !SameUuid(owner.entry.identity.transaction_uuid,reader.transaction_uuid) ||
+        owner.entry.identity.scope!=reader.scope ||
+        (owner.entry.state!=TransactionState::active && owner.entry.state!=TransactionState::read_only_active) ||
+        inventory.next_local_transaction_id<snapshot.publication_inventory_next_local_transaction_id)
+      return fail(E::reader_mismatch);
+    VisibilitySnapshot visibility;
+    visibility.reader_transaction=reader.local_id;
+    visibility.visible_through_local_transaction_id=snapshot.visible_committed_high_watermark;
+    visibility.visible_through_local_transaction_id_is_boundary=true;
+    visibility.active_excluded_local_transaction_ids=snapshot.active_excluded_local_transaction_ids;
+    visibility.in_doubt_excluded_local_transaction_ids=snapshot.in_doubt_excluded_local_transaction_ids;
+
+    const auto& sources=result.source.row_creators;
+    const auto row_at=[&](std::size_t index)->const RowDataRecord& {
+      const auto& source=sources[index];
+      return result.source.relation.catalogs[source.catalog_page_index].page->body.rows[source.catalog_row_index];
+    };
+    const auto metadata_at=[&](std::size_t index)->const catalog::CatalogMetadataVersion& {
+      return result.source.relation.catalogs[sources[index].catalog_page_index].metadata.at(row_at(index).version_uuid);
+    };
+    std::map<Uuid,std::map<u64,std::size_t,std::greater<u64>>> by_row;
+    std::map<Uuid,std::size_t> by_version;
+    for (std::size_t i=0;i<sources.size();++i) {
+      const auto& row=row_at(i); auto& versions=by_row[row.row_uuid.value];
+      if (!versions.empty()) {
+        const auto& prior=metadata_at(versions.begin()->second);
+        const auto& current=metadata_at(i);
+        if (!SameUuid(prior.record.header.object_uuid,current.record.header.object_uuid) ||
+            prior.record.header.kind!=current.record.header.kind) return fail(E::invalid_chain);
+      }
+      if (!versions.emplace(row.row_version,i).second || !by_version.emplace(row.version_uuid,i).second)
+        return fail(E::invalid_chain);
+      const auto validated=ValidateRowVersionMetadata(MetadataForRow(row,inventory.entries[sources[i].inventory_entry_index]));
+      if (!validated.ok()) { auto r=fail(E::visibility_failure); r.diagnostic=validated.diagnostic; return r; }
+    }
+    for (std::size_t i=0;i<sources.size();++i) {
+      const auto& row=row_at(i);
+      if (!row.previous_row_version) continue;
+      const auto previous=by_version.find(row.previous_version_uuid);
+      if (previous!=by_version.end() && (row_at(previous->second).row_uuid.value!=row.row_uuid.value ||
+          row_at(previous->second).row_version!=row.previous_row_version)) return fail(E::invalid_chain);
+      if (previous!=by_version.end()) {
+        const auto& before=metadata_at(previous->second);
+        const auto& after=metadata_at(i);
+        if (before.definition_version==std::numeric_limits<u64>::max() || after.definition_version!=before.definition_version+1 ||
+            after.schema_epoch<before.schema_epoch || after.security_epoch<before.security_epoch || after.resource_epoch<before.resource_epoch ||
+            after.catalog_generation<before.catalog_generation || after.dependency_generation<before.dependency_generation ||
+            after.invalidation_generation<before.invalidation_generation) return fail(E::invalid_chain);
+      }
+      const auto& versions=by_row.at(row.row_uuid.value);
+      const auto sequence=versions.find(row.previous_row_version);
+      if (sequence!=versions.end() && row_at(sequence->second).version_uuid!=row.previous_version_uuid)
+        return fail(E::invalid_chain);
+    }
+    std::set<Uuid> candidates;
+    for (const auto& bound:result.source.relation.bindings)
+      candidates.insert(result.source.relation.catalogs[bound.catalog_page_index].page->body.rows[bound.catalog_row_index].row_uuid.value);
+    for (const auto& row_uuid:candidates) {
+      for (const auto& [sequence,index]:by_row.at(row_uuid)) {
+        (void)sequence;
+        const auto& row=row_at(index);
+        const auto& creator=inventory.entries[sources[index].inventory_entry_index];
+        const auto decision=EvaluateVersionEffectVisibility(MetadataForRow(row,creator),visibility);
+        if (decision.decision==VisibilityDecision::requires_recovery) {
+          auto r=fail(E::requires_recovery); r.diagnostic=decision.diagnostic; return r;
+        }
+        if (!decision.ok() && decision.decision!=VisibilityDecision::wait_for_transaction) {
+          auto r=fail(E::visibility_failure); r.diagnostic=decision.diagnostic; return r;
+        }
+        result.observations.push_back({index,decision.decision});
+        if (decision.decision!=VisibilityDecision::visible) {
+          if (row.previous_row_version && !by_version.contains(row.previous_version_uuid)) return fail(E::missing_version);
+          continue;
+        }
+        NativeCatalogVersionRow selected;
+        selected.metadata=metadata_at(index); selected.version_uuid=row.version_uuid;
+        selected.previous_version_uuid=row.previous_version_uuid;
+        selected.provisional=!mga::HasCommittedInventoryOutcome(creator);
+        selected.effective_lifecycle=selected.metadata.lifecycle;
+        selected.effective_status=selected.metadata.status;
+        if (selected.provisional) {
+          selected.effective_status=catalog::CatalogObjectStatus::proposed;
+          selected.effective_lifecycle=selected.metadata.record.header.deleted?catalog::CatalogObjectLifecycle::dropping:
+              selected.metadata.definition_version==1?catalog::CatalogObjectLifecycle::creating:catalog::CatalogObjectLifecycle::altering;
+        }
+        result.rows.push_back(std::move(selected));
+        break;
+      }
+    }
+    const auto final_pin=pin.Resolve();
+    if (!final_pin.ok()) { auto r=fail(E::snapshot_failure); r.diagnostic=final_pin.diagnostic; return r; }
+    result.snapshot_uuid=snapshot.snapshot_uuid.value;
+    result.error=E::none;
+    return result;
+  } catch (const std::bad_alloc&) { return fail(E::resource_exhausted); }
+    catch (const std::length_error&) { return fail(E::resource_exhausted); }
+    catch (...) { return fail(E::io_failure); }
+}
+
 NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
     FileDevice& device, const TypedUuid& relation_uuid, u64 page_number,
     const VisibilitySnapshot& snapshot, bool latest_committed,

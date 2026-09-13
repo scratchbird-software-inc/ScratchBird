@@ -173,6 +173,35 @@ struct NativeCatalogVersionReadResult {
   bool ok() const { return status.ok(); }
 };
 
+enum class NativePinnedCatalogReadError {
+  none, invalid_reader, invalid_filespace, snapshot_failure, reader_mismatch,
+  source_failure, invalid_chain, missing_version, visibility_failure,
+  requires_recovery, resource_exhausted, io_failure
+};
+struct NativeCatalogVisibilityObservation {
+  std::size_t retained_row_index = 0;
+  scratchbird::transaction::mga::VisibilityDecision decision =
+      scratchbird::transaction::mga::VisibilityDecision::unknown;
+};
+struct NativePinnedCatalogReadResult {
+  NativePinnedCatalogReadError error = NativePinnedCatalogReadError::invalid_reader;
+  NativeCheckpointCatalogRelationResult source;
+  scratchbird::core::platform::Uuid snapshot_uuid;
+  std::vector<NativeCatalogVersionRow> rows;
+  std::vector<NativeCatalogVisibilityObservation> observations;
+  DiagnosticRecord diagnostic;
+  bool ok() const noexcept { return error==NativePinnedCatalogReadError::none && source.ok(); }
+};
+// Native pinned selection, not catalog membership/security or root publication.
+NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding&,
+    const scratchbird::transaction::mga::TransactionIdentity& reader,
+    const scratchbird::transaction::mga::PublishedSnapshotPin&,
+    u64 maximum_retained_image_bytes) noexcept;
+
 // Path-free mutation fields for an already-owned node device. A storage
 // operation cannot select or open a second node through this payload.
 struct PhysicalMgaCowMutation {
