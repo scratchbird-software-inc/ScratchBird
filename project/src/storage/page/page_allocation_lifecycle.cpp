@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
+#include <map>
 #include <utility>
 
 namespace scratchbird::storage::page {
@@ -42,7 +44,14 @@ bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind kind) {
 }
 
 bool IsOptionalObjectIdentity(const TypedUuid& uuid) {
-  return !uuid.valid() || IsTypedEngineIdentity(uuid, UuidKind::object);
+  return uuid.value.is_nil()
+      ? uuid.kind==UuidKind::unknown || uuid.kind==UuidKind::object
+      : IsTypedEngineIdentity(uuid, UuidKind::object);
+}
+
+bool ValidAllocationRecoveryRange(const PageAllocationEntry& entry) {
+  return entry.start_page!=0 && entry.page_count!=0 &&
+      entry.page_count<=std::numeric_limits<u64>::max()-entry.start_page;
 }
 
 bool SameTypedUuid(const TypedUuid& left, const TypedUuid& right) {
@@ -239,11 +248,11 @@ PageAllocationMutationResult MutationError(std::string diagnostic_code,
 }
 
 PageAllocationEntry* FindMutable(PageAllocationLedger* ledger, const TypedUuid& allocation_uuid) {
-  if (ledger == nullptr) {
+  if (ledger == nullptr || !IsTypedEngineIdentity(allocation_uuid,UuidKind::object)) {
     return nullptr;
   }
   for (auto& allocation : ledger->allocations) {
-    if (allocation.allocation_uuid.value == allocation_uuid.value) {
+    if (SameTypedUuid(allocation.allocation_uuid, allocation_uuid)) {
       return &allocation;
     }
   }
@@ -863,6 +872,25 @@ PageAllocationRecoveryClassification ClassifyPageAllocationForRecovery(
   PageAllocationRecoveryClassification classification;
   classification.allocation_uuid = allocation.allocation_uuid;
   classification.observed_state = allocation.state;
+  if (!IsTypedEngineIdentity(allocation.allocation_uuid,UuidKind::object) ||
+      !IsTypedEngineIdentity(allocation.database_uuid,UuidKind::database) ||
+      !IsTypedEngineIdentity(allocation.filespace_uuid,UuidKind::filespace) ||
+      !IsTypedEngineIdentity(allocation.creator_transaction_uuid,UuidKind::transaction) ||
+      !IsOptionalObjectIdentity(allocation.owner_object_uuid) ||
+      !IsOptionalObjectIdentity(allocation.policy_uuid) ||
+      !IsOptionalObjectIdentity(allocation.capacity_evidence_uuid)) {
+    classification.stable_reason="allocation recovery identity is invalid";
+    return classification;
+  }
+  if (!ValidAllocationRecoveryRange(allocation) || !allocation.creator_local_transaction_id ||
+      !IsKnownPageFamilyForAllocation(allocation.page_family) ||
+      (allocation.state==PageAllocationLifecycleState::preallocated &&
+       !IsTypedEngineIdentity(allocation.policy_uuid,UuidKind::object)) ||
+      ((allocation.state==PageAllocationLifecycleState::reusable_pending_mga ||
+        allocation.state==PageAllocationLifecycleState::reusable_free) && !allocation.reusable_after_local_transaction_id)) {
+    classification.stable_reason="allocation recovery extent or metadata is invalid";
+    return classification;
+  }
   if (!allocation.durability_fence_satisfied ||
       allocation.published_page_generation == 0 ||
       allocation.durable_page_generation < allocation.published_page_generation) {
@@ -875,19 +903,23 @@ PageAllocationRecoveryClassification ClassifyPageAllocationForRecovery(
     case PageAllocationLifecycleState::free:
     case PageAllocationLifecycleState::reusable_free:
       classification.action = PageAllocationRecoveryAction::release_to_free_map;
+      classification.fail_closed = false;
       classification.stable_reason = "free allocation can rebuild free-space map";
       break;
     case PageAllocationLifecycleState::allocated:
       classification.action = PageAllocationRecoveryAction::retain;
       classification.stable_reason = "allocated page ownership must be retained";
+      classification.fail_closed = false;
       break;
     case PageAllocationLifecycleState::preallocated:
       classification.action = PageAllocationRecoveryAction::retain;
       classification.stable_reason = "preallocated page-family pool must not become unsafe reuse";
+      classification.fail_closed = false;
       break;
     case PageAllocationLifecycleState::reusable_pending_mga:
       classification.action = PageAllocationRecoveryAction::retain;
       classification.stable_reason = "MGA cleanup horizon has not authorized reuse";
+      classification.fail_closed = false;
       break;
     case PageAllocationLifecycleState::reserved:
     case PageAllocationLifecycleState::compacting:
@@ -900,6 +932,9 @@ PageAllocationRecoveryClassification ClassifyPageAllocationForRecovery(
       classification.fail_closed = true;
       classification.stable_reason = "quarantined page ownership cannot be reused";
       break;
+    default:
+      classification.stable_reason = "allocation recovery state is unknown";
+      break;
   }
   return classification;
 }
@@ -907,17 +942,69 @@ PageAllocationRecoveryClassification ClassifyPageAllocationForRecovery(
 PageAllocationRecoveryResult ClassifyPageAllocationLedgerForRecovery(
     const PageAllocationLedger& ledger) {
   PageAllocationRecoveryResult result;
+  if (!IsTypedEngineIdentity(ledger.database_uuid,UuidKind::database) ||
+      !IsTypedEngineIdentity(ledger.filespace_uuid,UuidKind::filespace)) {
+    result.status=AllocationErrorStatus();
+    result.diagnostic=MakePageAllocationLifecycleDiagnostic(result.status,"CATALOG.INVALID_INPUT",
+        "storage.page_allocation.recovery_ledger_identity_invalid");
+    return result;
+  }
   result.status = AllocationOkStatus();
-  for (const auto& allocation : ledger.allocations) {
+  result.classifications.reserve(ledger.allocations.size());
+  std::map<scratchbird::core::platform::Uuid,std::size_t> identities;
+  std::vector<std::pair<u64,u64>> retained_ranges;
+  bool malformed_retained_range=false;
+  const auto refuse=[](auto& classification,const char* reason) {
+    classification.action=PageAllocationRecoveryAction::fail_closed;
+    classification.fail_closed=true;
+    classification.stable_reason=reason;
+  };
+  for (std::size_t i=0;i<ledger.allocations.size();++i) {
+    const auto& allocation=ledger.allocations[i];
     result.classifications.push_back(ClassifyPageAllocationForRecovery(allocation));
+    auto& classification=result.classifications.back();
+    if (!SameTypedUuid(allocation.database_uuid,ledger.database_uuid) ||
+        !SameTypedUuid(allocation.filespace_uuid,ledger.filespace_uuid))
+      refuse(classification,"allocation does not belong to recovery ledger");
+    const auto [prior,inserted]=identities.emplace(allocation.allocation_uuid.value,i);
+    if (!inserted) {
+      refuse(classification,"duplicate allocation recovery identity");
+      refuse(result.classifications[prior->second],"duplicate allocation recovery identity");
+    }
+    if (allocation.state!=PageAllocationLifecycleState::free && allocation.state!=PageAllocationLifecycleState::reusable_free) {
+      if (!ValidAllocationRecoveryRange(allocation)) malformed_retained_range=true;
+      else retained_ranges.emplace_back(allocation.start_page,allocation.start_page+allocation.page_count);
+    }
+  }
+  // Prefix maximum ends permit logarithmic overlap checks even for nested or
+  // overlapping retained ranges. An old released record may overlap a new owner.
+  std::sort(retained_ranges.begin(),retained_ranges.end());
+  for (std::size_t i=1;i<retained_ranges.size();++i)
+    retained_ranges[i].second=std::max(retained_ranges[i].second,retained_ranges[i-1].second);
+  for (std::size_t i=0;i<ledger.allocations.size();++i) {
+    auto& classification=result.classifications[i];
+    if (classification.action!=PageAllocationRecoveryAction::release_to_free_map) continue;
+    if (malformed_retained_range) {
+      refuse(classification,"malformed retained extent prevents free-map reconstruction");
+      continue;
+    }
+    const auto& allocation=ledger.allocations[i];
+    const auto end=allocation.start_page+allocation.page_count;
+    auto next=std::lower_bound(retained_ranges.begin(),retained_ranges.end(),end,
+        [](const auto& range,u64 boundary){return range.first<boundary;});
+    if (next!=retained_ranges.begin() && std::prev(next)->second>allocation.start_page) {
+      classification.action=PageAllocationRecoveryAction::retain;
+      classification.stable_reason="released history overlaps retained allocation ownership";
+    }
   }
   return result;
 }
 
 const PageAllocationEntry* FindPageAllocation(const PageAllocationLedger& ledger,
                                               const TypedUuid& allocation_uuid) {
+  if (!IsTypedEngineIdentity(allocation_uuid,UuidKind::object)) return nullptr;
   for (const auto& allocation : ledger.allocations) {
-    if (allocation.allocation_uuid.value == allocation_uuid.value) {
+    if (SameTypedUuid(allocation.allocation_uuid, allocation_uuid)) {
       return &allocation;
     }
   }

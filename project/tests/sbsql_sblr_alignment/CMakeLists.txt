@@ -11,6 +11,17 @@ else()
 endif()
 
 # Canonical outer layout coverage does not establish endpoint admission.
+add_executable(sbsql_sblr_alignment_allocation_recovery
+  ../database_lifecycle/storage_allocation_conformance.cpp)
+target_compile_features(sbsql_sblr_alignment_allocation_recovery PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_allocation_recovery PRIVATE
+  sb_core_platform sb_core_uuid sb_storage_page)
+add_test(NAME sbsql_sblr_alignment_allocation_recovery
+  COMMAND sbsql_sblr_alignment_allocation_recovery)
+set_tests_properties(sbsql_sblr_alignment_allocation_recovery PROPERTIES
+  LABELS "sbsql_sblr_alignment;allocation_recovery;binary_uuid;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SB_BUILD_SBSQL_PARSER_WORKER)
   add_executable(sbsql_sblr_alignment_cte_clause_structure cte_clause_structure_test.cpp)
   target_compile_features(sbsql_sblr_alignment_cte_clause_structure PRIVATE cxx_std_23)

@@ -181,7 +181,7 @@ struct PageAllocationRecoveryClassification {
   TypedUuid allocation_uuid;
   PageAllocationLifecycleState observed_state = PageAllocationLifecycleState::free;
   PageAllocationRecoveryAction action = PageAllocationRecoveryAction::fail_closed;
-  bool fail_closed = false;
+  bool fail_closed = true;
   std::string stable_reason;
 };
 
@@ -208,6 +208,8 @@ PageAllocationMutationResult ReclaimReusablePageAllocation(PageAllocationLedger*
                                                            const PageReleaseRequest& request);
 PageAllocationMutationResult CompactPageFreeSpace(PageAllocationLedger* ledger,
                                                   const PageCompactionRequest& request);
+// Structural recovery projection only. Native page/map/inventory/retention
+// evidence is still required before acting; caller flags are not that proof.
 PageAllocationRecoveryClassification ClassifyPageAllocationForRecovery(
     const PageAllocationEntry& allocation);
 PageAllocationRecoveryResult ClassifyPageAllocationLedgerForRecovery(
