@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "visibility_status_cache.hpp"
+#include "uuid.hpp"
 
 #include <utility>
 
@@ -137,9 +138,7 @@ VisibilityStatusCacheDecision ValidateEntryFreshness(VisibilityStatusCacheDecisi
     ++decision.counters.stale_refusals;
     return Refuse(std::move(decision), "visibility_status_cache_missing");
   }
-  if (entry.status == VisibilityStatusCacheEntryStatus::stale ||
-      entry.status == VisibilityStatusCacheEntryStatus::uncertain ||
-      entry.status == VisibilityStatusCacheEntryStatus::incompatible) {
+  if (entry.status != VisibilityStatusCacheEntryStatus::current) {
     ++decision.counters.stale_refusals;
     return Refuse(std::move(decision), "visibility_status_cache_not_current");
   }
@@ -323,7 +322,7 @@ VisibilityStatusCacheDecision CachePageVisibilityStatus(
       StartDecision(VisibilityStatusCacheProbe::page_all_visible),
       request.facts);
   if (IsRefused(decision)) { return decision; }
-  if (cache == nullptr || request.relation_uuid.empty() ||
+  if (cache == nullptr || !scratchbird::core::uuid::IsEngineIdentityUuid(request.relation_uuid) ||
       request.page_generation == 0 || request.extent_epoch == 0 ||
       !RelationFactsPresent(request.facts)) {
     ++decision.counters.epoch_refusals;
@@ -340,6 +339,18 @@ VisibilityStatusCacheDecision CachePageVisibilityStatus(
       !page_finality.durable_mga_inventory_remains_authority) {
     ++decision.counters.authority_refusals;
     return Refuse(std::move(decision), "page_finality_evidence_not_acceptable_for_cache");
+  }
+  if (!page_finality.bound_entry || page_finality.bound_entry->scope != PageFinalityScope::page ||
+      page_finality.bound_entry->relation_uuid != request.relation_uuid ||
+      page_finality.bound_entry->page_number != request.page_number ||
+      page_finality.bound_entry->page_generation != request.page_generation ||
+      page_finality.bound_entry->extent_id != request.extent_id ||
+      page_finality.bound_entry->extent_epoch != request.extent_epoch ||
+      page_finality.bound_entry->relation_epoch != request.facts.relation_epoch ||
+      page_finality.bound_entry->catalog_epoch != request.facts.catalog_epoch ||
+      page_finality.bound_entry->final_through_local_transaction_id.value != request.final_through_local_transaction_id.value) {
+    ++decision.counters.authority_refusals;
+    return Refuse(std::move(decision), "page_finality_evidence_binding_mismatch");
   }
   if (!ReaderAndActiveHorizonsCover(request.facts,
                                     request.final_through_local_transaction_id)) {
@@ -385,7 +396,7 @@ VisibilityStatusCacheDecision EvaluateCachedPageVisibilityStatus(
       probe != VisibilityStatusCacheProbe::page_all_committed) {
     return Refuse(std::move(decision), "page_visibility_probe_incompatible");
   }
-  if (cache == nullptr || request.relation_uuid.empty()) {
+  if (cache == nullptr || !scratchbird::core::uuid::IsEngineIdentityUuid(request.relation_uuid)) {
     ++decision.counters.stale_refusals;
     return Refuse(std::move(decision), "visibility_status_cache_missing");
   }
@@ -456,7 +467,7 @@ VisibilityStatusCacheDecision CacheRelationNoOlderReaderStatus(
       StartDecision(VisibilityStatusCacheProbe::relation_no_older_reader),
       request.facts);
   if (IsRefused(decision)) { return decision; }
-  if (cache == nullptr || request.relation_uuid.empty() ||
+  if (cache == nullptr || !scratchbird::core::uuid::IsEngineIdentityUuid(request.relation_uuid) ||
       !request.no_reader_older_than_local_transaction_id.valid() ||
       !RelationFactsPresent(request.facts)) {
     ++decision.counters.epoch_refusals;
@@ -502,7 +513,7 @@ VisibilityStatusCacheDecision EvaluateCachedRelationNoOlderReaderStatus(
       StartDecision(VisibilityStatusCacheProbe::relation_no_older_reader),
       request.facts);
   if (IsRefused(decision)) { return decision; }
-  if (cache == nullptr || request.relation_uuid.empty() ||
+  if (cache == nullptr || !scratchbird::core::uuid::IsEngineIdentityUuid(request.relation_uuid) ||
       !request.no_reader_older_than_local_transaction_id.valid()) {
     ++decision.counters.stale_refusals;
     return Refuse(std::move(decision), "visibility_status_cache_missing");

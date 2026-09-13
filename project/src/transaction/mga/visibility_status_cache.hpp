@@ -96,7 +96,7 @@ struct TransactionStatusRangeCacheEntry {
 };
 
 struct PageVisibilityStatusCacheRequest {
-  std::string relation_uuid;
+  scratchbird::core::platform::Uuid relation_uuid;
   u64 page_number = 0;
   u64 page_generation = 0;
   u64 extent_id = 0;
@@ -108,7 +108,7 @@ struct PageVisibilityStatusCacheRequest {
 struct PageVisibilityStatusCacheEntry {
   VisibilityStatusCacheEntryStatus status = VisibilityStatusCacheEntryStatus::missing;
   PageFinalityProvenance provenance = PageFinalityProvenance::unknown;
-  std::string relation_uuid;
+  scratchbird::core::platform::Uuid relation_uuid;
   u64 page_number = 0;
   u64 page_generation = 0;
   u64 extent_id = 0;
@@ -125,7 +125,7 @@ struct PageVisibilityStatusCacheEntry {
 };
 
 struct RelationNoOlderReaderCacheRequest {
-  std::string relation_uuid;
+  scratchbird::core::platform::Uuid relation_uuid;
   LocalTransactionId no_reader_older_than_local_transaction_id;
   VisibilityStatusCacheFacts facts;
 };
@@ -133,7 +133,7 @@ struct RelationNoOlderReaderCacheRequest {
 struct RelationNoOlderReaderCacheEntry {
   VisibilityStatusCacheEntryStatus status = VisibilityStatusCacheEntryStatus::missing;
   PageFinalityProvenance provenance = PageFinalityProvenance::unknown;
-  std::string relation_uuid;
+  scratchbird::core::platform::Uuid relation_uuid;
   u64 relation_epoch = 0;
   u64 catalog_epoch = 0;
   LocalTransactionId no_reader_older_than_local_transaction_id;

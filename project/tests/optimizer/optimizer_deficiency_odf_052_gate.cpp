@@ -52,8 +52,7 @@ struct Fixture {
       NewUuid(platform::UuidKind::object, 52001);
   platform::TypedUuid table_uuid =
       NewUuid(platform::UuidKind::object, 52002);
-  std::string relation_uuid =
-      uuid::UuidToString(NewUuid(platform::UuidKind::object, 52003).value);
+  platform::Uuid relation_uuid = NewUuid(platform::UuidKind::object, 52003).value;
 };
 
 mga::PageFinalityObservedFacts Observed(const Fixture& fixture) {

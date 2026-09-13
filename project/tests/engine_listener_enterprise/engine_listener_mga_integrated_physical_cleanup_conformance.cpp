@@ -481,7 +481,7 @@ void PageFinality(const Fixture& fixture,
   entry->scope = txn::PageFinalityScope::extent;
   entry->status = txn::PageFinalityMapStatus::current;
   entry->provenance = txn::PageFinalityProvenance::engine_mga_cleanup_horizon;
-  entry->relation_uuid = uuid::UuidToString(fixture.relation_uuid.value);
+  entry->relation_uuid = fixture.relation_uuid.value;
   entry->page_number = 5;
   entry->page_generation = 7;
   entry->extent_id = 1;

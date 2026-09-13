@@ -48,12 +48,8 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
-}
-
 struct Fixture {
-  std::string relation_uuid = NewUuidText(platform::UuidKind::object, 51001);
+  platform::Uuid relation_uuid = NewUuid(platform::UuidKind::object, 51001).value;
   platform::u64 page_number = 42;
   platform::u64 page_generation = 7;
   platform::u64 extent_id = 3;

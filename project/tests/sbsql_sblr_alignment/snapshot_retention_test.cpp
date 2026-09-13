@@ -4,6 +4,8 @@
 #include "transaction_inventory_validation.hpp"
 #include "transaction_evidence.hpp"
 #include "transaction/local_commit_publication.hpp"
+#include "page_finality_evidence.hpp"
+#include "visibility_status_cache.hpp"
 #include "transaction_cleanup_horizon_service.hpp"
 #include "transaction_cleanup.hpp"
 #include "uuid.hpp"
@@ -198,6 +200,124 @@ static void PublicationOutcomeCases() {
   }
   std::cout << "publication_outcome encoded_cases=196608\n";
 }
+static void PageFinalityAdmissionCases() {
+  mga::PageFinalityMapEntry entry;
+  entry.scope = mga::PageFinalityScope::page;
+  entry.status = mga::PageFinalityMapStatus::current;
+  entry.provenance = mga::PageFinalityProvenance::engine_mga_transaction_inventory;
+  const auto relation = uuid::GenerateDurableEngineIdentityV7(platform::UuidKind::object, 1300);
+  Check(relation.ok(), "page finality binary identity issuance");
+  entry.relation_uuid = relation.value.value;
+  entry.page_number = 3; entry.page_generation = 4; entry.extent_id = 5;
+  entry.extent_epoch = 6; entry.relation_epoch = 7; entry.catalog_epoch = 8;
+  entry.map_generation = 9; entry.final_through_local_transaction_id = mga::MakeLocalTransactionId(10);
+  entry.persisted_record_present = true; entry.checksum_valid = true;
+  entry.all_visible = true; entry.all_final = true;
+  mga::PageFinalityObservedFacts facts;
+  facts.requested_scope = entry.scope; facts.relation_uuid = entry.relation_uuid;
+  facts.page_number = entry.page_number; facts.page_generation = entry.page_generation;
+  facts.extent_id = entry.extent_id; facts.extent_epoch = entry.extent_epoch;
+  facts.relation_epoch = entry.relation_epoch; facts.catalog_epoch = entry.catalog_epoch;
+  facts.reader_visible_through_local_transaction_id = mga::MakeLocalTransactionId(11);
+  facts.oldest_active_local_transaction_id = mga::MakeLocalTransactionId(12);
+  facts.transaction_horizon_authoritative = true; facts.transaction_inventory_authoritative = true;
+  facts.normal_mga_visibility_authority_available = true;
+  Check(mga::EvaluatePageFinalityEvidence(entry, facts, mga::PageFinalityConsumer::index_only_scan).accepted,
+      "valid page finality component fixture");
+  Check(!mga::EvaluatePageFinalityEvidence(entry, facts, static_cast<mga::PageFinalityConsumer>(65535)).accepted,
+      "unknown finality consumer admitted a shortcut");
+  static_assert(sizeof(entry.relation_uuid) == 16);
+  static_assert(sizeof(mga::PageVisibilityStatusCacheEntry{}.relation_uuid) == 16);
+  static_assert(sizeof(mga::RelationNoOlderReaderCacheEntry{}.relation_uuid) == 16);
+  for (unsigned encoded = 0; encoded <= 65535; ++encoded) {
+    auto variant = entry; auto observed = facts;
+    const auto consumer = static_cast<mga::PageFinalityConsumer>(encoded);
+    Check(mga::EvaluatePageFinalityEvidence(entry, facts, consumer).accepted == (encoded < 4),
+        "finality consumer enum membership drifted");
+    variant.status = static_cast<mga::PageFinalityMapStatus>(encoded);
+    Check(mga::EvaluatePageFinalityEvidence(variant, facts, mga::PageFinalityConsumer::index_only_scan).accepted == (encoded == 0),
+        "noncurrent/unknown finality status admitted");
+    variant = entry;
+    variant.scope = observed.requested_scope = static_cast<mga::PageFinalityScope>(encoded);
+    Check(mga::EvaluatePageFinalityEvidence(variant, observed, mga::PageFinalityConsumer::index_only_scan).accepted == (encoded < 2),
+        "unknown matching finality scopes admitted");
+  }
+  mga::VisibilityStatusCacheFacts cache_facts;
+  cache_facts.cache_generation = 1; cache_facts.invalidation_generation = 1;
+  cache_facts.horizon_epoch = 1; cache_facts.snapshot_epoch = 1;
+  cache_facts.relation_epoch = facts.relation_epoch; cache_facts.catalog_epoch = facts.catalog_epoch;
+  cache_facts.reader_visible_through_local_transaction_id = facts.reader_visible_through_local_transaction_id;
+  cache_facts.oldest_active_local_transaction_id = facts.oldest_active_local_transaction_id;
+  cache_facts.oldest_snapshot_local_transaction_id = mga::MakeLocalTransactionId(13);
+  cache_facts.transaction_inventory_authoritative = true; cache_facts.transaction_horizon_authoritative = true;
+  cache_facts.normal_mga_visibility_authority_available = true;
+  mga::PageVisibilityStatusCacheRequest page_request;
+  page_request.relation_uuid = entry.relation_uuid; page_request.page_number = entry.page_number;
+  page_request.page_generation = entry.page_generation; page_request.extent_id = entry.extent_id;
+  page_request.extent_epoch = entry.extent_epoch; page_request.final_through_local_transaction_id = entry.final_through_local_transaction_id;
+  page_request.facts = cache_facts;
+  auto cache = mga::MakeMgaVisibilityStatusCache(1, 1);
+  Check(mga::CachePageVisibilityStatus(&cache, page_request,
+      mga::EvaluatePageFinalityEvidence(entry, facts, mga::PageFinalityConsumer::index_only_scan), true).accepted,
+      "binary page cache admission failed");
+  auto foreign_request = page_request;
+  foreign_request.relation_uuid.bytes[15] ^= 1;
+  auto foreign_cache = mga::MakeMgaVisibilityStatusCache(1, 1);
+  Check(!mga::CachePageVisibilityStatus(&foreign_cache, foreign_request,
+      mga::EvaluatePageFinalityEvidence(entry, facts, mga::PageFinalityConsumer::index_only_scan), true).accepted &&
+      foreign_cache.page_visibility_entries.empty(), "foreign finality evidence authorized another relation cache");
+  const auto bound = mga::EvaluatePageFinalityEvidence(entry, facts, mga::PageFinalityConsumer::index_only_scan);
+  const std::vector<std::function<void(mga::PageVisibilityStatusCacheRequest&)>> misbindings{
+      [](auto& r) { ++r.page_number; }, [](auto& r) { ++r.page_generation; },
+      [](auto& r) { ++r.extent_id; }, [](auto& r) { ++r.extent_epoch; },
+      [](auto& r) { ++r.facts.relation_epoch; }, [](auto& r) { ++r.facts.catalog_epoch; },
+      [](auto& r) { --r.final_through_local_transaction_id.value; }};
+  for (const auto& mutate : misbindings) {
+    auto request = page_request; mutate(request);
+    auto empty_cache = mga::MakeMgaVisibilityStatusCache(1, 1);
+    const auto refused = mga::CachePageVisibilityStatus(&empty_cache, request, bound, true);
+    Check(!refused.accepted && empty_cache.page_visibility_entries.empty() &&
+          refused.refusal_reason == "page_finality_evidence_binding_mismatch", "cache ignored an exact finality binding field");
+  }
+  auto missing = bound; missing.bound_entry.reset();
+  Check(!mga::CachePageVisibilityStatus(&foreign_cache, page_request, missing, true).accepted &&
+      foreign_cache.page_visibility_entries.empty(), "unbound finality flags authorized page cache");
+  auto extent = entry; auto extent_facts = facts;
+  extent.scope = extent_facts.requested_scope = mga::PageFinalityScope::extent;
+  Check(!mga::CachePageVisibilityStatus(&foreign_cache, page_request,
+      mga::EvaluatePageFinalityEvidence(extent, extent_facts, mga::PageFinalityConsumer::summary_pruning), true).accepted,
+      "extent proof substituted for exact page cache proof");
+  mga::RelationNoOlderReaderCacheRequest relation_request;
+  relation_request.relation_uuid = entry.relation_uuid;
+  relation_request.no_reader_older_than_local_transaction_id = entry.final_through_local_transaction_id;
+  relation_request.facts = cache_facts;
+  Check(mga::CacheRelationNoOlderReaderStatus(&cache, relation_request).accepted, "binary relation cache admission failed");
+  for (unsigned encoded = 0; encoded <= 65535; ++encoded) {
+    cache.page_visibility_entries.front().status = static_cast<mga::VisibilityStatusCacheEntryStatus>(encoded);
+    cache.relation_reader_entries.front().status = static_cast<mga::VisibilityStatusCacheEntryStatus>(encoded);
+    Check(mga::EvaluateCachedPageVisibilityStatus(&cache, page_request, mga::VisibilityStatusCacheProbe::page_all_visible).accepted ==
+        (encoded == 0), "noncurrent/unknown page cache status admitted");
+    Check(mga::EvaluateCachedRelationNoOlderReaderStatus(&cache, relation_request).accepted == (encoded == 0),
+        "noncurrent/unknown relation cache status admitted");
+  }
+  cache.page_visibility_entries.front().status = mga::VisibilityStatusCacheEntryStatus::current;
+  cache.relation_reader_entries.front().status = mga::VisibilityStatusCacheEntryStatus::current;
+  for (unsigned version = 0; version < 16; ++version) for (unsigned variant = 0; variant < 16; ++variant) {
+    auto invalid = entry; auto observed = facts;
+    invalid.relation_uuid.bytes[6] = static_cast<platform::byte>((invalid.relation_uuid.bytes[6] & 15) | (version << 4));
+    invalid.relation_uuid.bytes[8] = static_cast<platform::byte>((invalid.relation_uuid.bytes[8] & 15) | (variant << 4));
+    observed.relation_uuid = invalid.relation_uuid;
+    const bool admitted = version == 7 && variant >= 8 && variant <= 11;
+    Check(mga::EvaluatePageFinalityEvidence(invalid, observed, mga::PageFinalityConsumer::index_only_scan).accepted == admitted,
+        "finality accepted non-v7/non-RFC system relation");
+    page_request.relation_uuid = cache.page_visibility_entries.front().relation_uuid = invalid.relation_uuid;
+    relation_request.relation_uuid = cache.relation_reader_entries.front().relation_uuid = invalid.relation_uuid;
+    Check(mga::EvaluateCachedPageVisibilityStatus(&cache, page_request, mga::VisibilityStatusCacheProbe::page_all_visible).accepted == admitted &&
+        mga::EvaluateCachedRelationNoOlderReaderStatus(&cache, relation_request).accepted == admitted,
+        "visibility cache accepted matching invalid system UUIDs");
+  }
+  std::cout << "page_finality encoded_membership_cases=327680 uuid_profiles=256\n";
+}
 static void ArchivedCreatorProjectionCases() {
   Fixture fixture;
   mga::RowVersionMetadata row;
@@ -258,6 +378,7 @@ static void ArchivedCreatorProjectionCases() {
   }
 }
 int main() try {
+  PageFinalityAdmissionCases();
   PublicationOutcomeCases();
   ArchivedRecoveryCases();
   ArchivedCreatorProjectionCases();

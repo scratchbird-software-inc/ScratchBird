@@ -11,6 +11,7 @@
 #include "transaction_horizon.hpp"
 
 #include <string>
+#include <optional>
 #include <vector>
 
 namespace scratchbird::transaction::mga {
@@ -53,7 +54,7 @@ struct PageFinalityMapEntry {
   PageFinalityScope scope = PageFinalityScope::unknown;
   PageFinalityMapStatus status = PageFinalityMapStatus::missing;
   PageFinalityProvenance provenance = PageFinalityProvenance::unknown;
-  std::string relation_uuid;
+  scratchbird::core::platform::Uuid relation_uuid;
   u64 page_number = 0;
   u64 page_generation = 0;
   u64 extent_id = 0;
@@ -70,7 +71,7 @@ struct PageFinalityMapEntry {
 
 struct PageFinalityObservedFacts {
   PageFinalityScope requested_scope = PageFinalityScope::unknown;
-  std::string relation_uuid;
+  scratchbird::core::platform::Uuid relation_uuid;
   u64 page_number = 0;
   u64 page_generation = 0;
   u64 extent_id = 0;
@@ -100,6 +101,8 @@ struct PageFinalityDecisionCounters {
 };
 
 struct PageFinalityEvidenceDecision {
+  // Exact evaluated source for downstream cache binding, never parser proof.
+  std::optional<PageFinalityMapEntry> bound_entry;
   bool accepted = false;
   bool all_visible = false;
   bool all_final = false;

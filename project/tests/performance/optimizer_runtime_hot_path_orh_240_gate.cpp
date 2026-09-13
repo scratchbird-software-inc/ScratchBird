@@ -51,12 +51,6 @@ platform::TypedUuid GeneratedUuid(platform::UuidKind kind,
   return typed.value;
 }
 
-std::string UuidText(platform::UuidKind kind,
-                     platform::u64 millis,
-                     platform::byte suffix) {
-  return uuid::UuidToString(GeneratedUuid(kind, millis, suffix).value);
-}
-
 bool HasEvidence(const std::vector<mga::CurrentRowMapEvidenceField>& evidence,
                  std::string_view name,
                  std::string_view value) {
@@ -124,7 +118,7 @@ mga::VisibilityStatusCacheFacts VisibilityFacts() {
   return facts;
 }
 
-mga::PageFinalityObservedFacts PageFacts(const std::string& relation_uuid) {
+mga::PageFinalityObservedFacts PageFacts(const platform::Uuid& relation_uuid) {
   mga::PageFinalityObservedFacts facts;
   facts.requested_scope = mga::PageFinalityScope::page;
   facts.relation_uuid = relation_uuid;
@@ -143,7 +137,7 @@ mga::PageFinalityObservedFacts PageFacts(const std::string& relation_uuid) {
   return facts;
 }
 
-mga::PageFinalityMapEntry PageEntry(const std::string& relation_uuid) {
+mga::PageFinalityMapEntry PageEntry(const platform::Uuid& relation_uuid) {
   mga::PageFinalityMapEntry entry;
   entry.scope = mga::PageFinalityScope::page;
   entry.status = mga::PageFinalityMapStatus::current;
@@ -164,7 +158,7 @@ mga::PageFinalityMapEntry PageEntry(const std::string& relation_uuid) {
   return entry;
 }
 
-mga::PageFinalityMapEntry ExtentEntry(const std::string& relation_uuid) {
+mga::PageFinalityMapEntry ExtentEntry(const platform::Uuid& relation_uuid) {
   auto entry = PageEntry(relation_uuid);
   entry.scope = mga::PageFinalityScope::extent;
   entry.page_number = 0;
@@ -327,8 +321,8 @@ void TestVisibilityStatusAcceleratorsAndFallback() {
 }
 
 void TestPageFinalityMapsAndCacheAdmission() {
-  const std::string relation_uuid =
-      UuidText(platform::UuidKind::object, 1702400200000ull, 0x41);
+  const platform::Uuid relation_uuid =
+      GeneratedUuid(platform::UuidKind::object, 1702400200000ull, 0x41).value;
   page::MgaPageFinalityMap finality_map;
   finality_map.entries.push_back(PageEntry(relation_uuid));
   finality_map.entries.push_back(ExtentEntry(relation_uuid));

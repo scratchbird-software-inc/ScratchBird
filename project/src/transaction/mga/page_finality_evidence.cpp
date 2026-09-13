@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "page_finality_evidence.hpp"
+#include "uuid.hpp"
 
 #include <utility>
 
@@ -43,6 +44,7 @@ void AddEvidence(ExactIndexCleanupAuthorityDecision* decision,
 PageFinalityEvidenceDecision Refuse(PageFinalityEvidenceDecision decision,
                                     std::string reason) {
   decision.accepted = false;
+  decision.bound_entry.reset();
   decision.all_visible = false;
   decision.all_final = false;
   decision.normal_mga_recheck_required = true;
@@ -116,9 +118,8 @@ PageFinalityEvidenceDecision EvaluatePageFinalityEvidence(
   AddEvidence(&decision, "authority_source", "durable_mga_transaction_inventory");
   AddEvidence(&decision, "map_transaction_finality_authority", "false");
 
-  if (consumer == PageFinalityConsumer::unknown ||
-      observed.requested_scope == PageFinalityScope::unknown ||
-      entry.scope == PageFinalityScope::unknown ||
+  if ((!RequiresAllVisible(consumer) && !RequiresAllFinal(consumer)) ||
+      (entry.scope != PageFinalityScope::page && entry.scope != PageFinalityScope::extent) ||
       observed.requested_scope != entry.scope) {
     return Refuse(std::move(decision), "scope_or_consumer_incompatible");
   }
@@ -130,9 +131,7 @@ PageFinalityEvidenceDecision EvaluatePageFinalityEvidence(
     ++decision.counters.stale_refusals;
     return Refuse(std::move(decision), "finality_map_corrupt");
   }
-  if (entry.status == PageFinalityMapStatus::stale ||
-      entry.status == PageFinalityMapStatus::uncertain ||
-      entry.status == PageFinalityMapStatus::incompatible) {
+  if (entry.status != PageFinalityMapStatus::current) {
     ++decision.counters.stale_refusals;
     return Refuse(std::move(decision), "finality_map_not_current");
   }
@@ -140,7 +139,8 @@ PageFinalityEvidenceDecision EvaluatePageFinalityEvidence(
     ++decision.counters.provenance_refusals;
     return Refuse(std::move(decision), "finality_map_external_provenance_refused");
   }
-  if (observed.relation_uuid.empty() || entry.relation_uuid.empty() ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(observed.relation_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(entry.relation_uuid) ||
       observed.relation_uuid != entry.relation_uuid) {
     return Refuse(std::move(decision), "relation_mismatch_or_missing");
   }
@@ -197,6 +197,7 @@ PageFinalityEvidenceDecision EvaluatePageFinalityEvidence(
   }
 
   decision.accepted = true;
+  decision.bound_entry = entry;
   decision.all_visible = entry.all_visible;
   decision.all_final = entry.all_final;
   decision.normal_mga_recheck_required = false;

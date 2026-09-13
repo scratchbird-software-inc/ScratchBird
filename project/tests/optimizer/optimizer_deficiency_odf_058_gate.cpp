@@ -46,10 +46,6 @@ platform::TypedUuid NewUuid(platform::UuidKind kind, platform::u64 salt) {
   return generated.value;
 }
 
-std::string NewUuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(NewUuid(kind, salt).value);
-}
-
 mga::VisibilityStatusCacheFacts Facts() {
   mga::VisibilityStatusCacheFacts facts;
   facts.cache_generation = 10;
@@ -94,7 +90,7 @@ mga::TransactionStatusRangeCacheRequest RangeRequest(
 }
 
 struct PageFixture {
-  std::string relation_uuid = NewUuidText(platform::UuidKind::object, 58100);
+  platform::Uuid relation_uuid = NewUuid(platform::UuidKind::object, 58100).value;
   platform::u64 page_number = 42;
   platform::u64 page_generation = 7;
   platform::u64 extent_id = 3;
@@ -154,7 +150,7 @@ mga::PageVisibilityStatusCacheRequest PageRequest(
 }
 
 mga::RelationNoOlderReaderCacheRequest RelationRequest(
-    const std::string& relation_uuid,
+    const platform::Uuid& relation_uuid,
     platform::u64 threshold,
     mga::VisibilityStatusCacheFacts facts = Facts()) {
   mga::RelationNoOlderReaderCacheRequest request;
