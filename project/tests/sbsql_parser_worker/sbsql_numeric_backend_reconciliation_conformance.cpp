@@ -30,9 +30,7 @@ namespace sblr = scratchbird::engine::sblr;
 constexpr std::string_view kInt128Max = "170141183460469231731687303715884105727";
 constexpr std::string_view kInt128Min = "-170141183460469231731687303715884105728";
 constexpr std::string_view kUint128Max = "340282366920938463463374607431768211455";
-constexpr std::string_view kQuadmathReal128Provider = "libquadmath::__float128";
-constexpr std::string_view kBoostReal128Provider =
-    "boost::multiprecision::cpp_bin_float_quad";
+constexpr std::string_view kReferenceReal128Provider = "MPFR/GMP binary128 reference";
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
@@ -153,8 +151,7 @@ void TestCapabilityManifest() {
   Require(saw_int128, "numeric.int128 capability missing from manifest");
   Require(saw_uint128, "numeric.uint128 capability missing from manifest");
   Require(saw_real128, "numeric.real128 capability missing from manifest");
-  Require(real128_provider == kQuadmathReal128Provider ||
-              real128_provider == kBoostReal128Provider,
+  Require(real128_provider == kReferenceReal128Provider,
           "numeric.real128 capability reports an unsupported provider");
   Require(real128_provider == numeric::Real128BackendName(),
           "numeric.real128 capability provider does not match the compiled sbl_numeric backend");
@@ -274,7 +271,7 @@ void TestSblNumericReal128AndDecimalSeparation() {
                       "1",
                       "0");
   Require(result.status == numeric::NumericStatusCode::divide_by_zero &&
-              result.diagnostic_code == "numeric.real128_divide_by_zero",
+              result.diagnostic_code == "NUMERIC.REAL128.DIVIDE_BY_ZERO",
           "real128 division by zero did not fail closed");
 
   result = RunNumeric(numeric::NumericType::real128,
@@ -282,7 +279,7 @@ void TestSblNumericReal128AndDecimalSeparation() {
                       "NaN",
                       "1");
   Require(result.status == numeric::NumericStatusCode::unordered &&
-              result.diagnostic_code == "numeric.real128_nan_unordered",
+              result.diagnostic_code == "NUMERIC.REAL128.INVALID",
           "real128 NaN compare was not unordered");
 
   result = RunNumeric(numeric::NumericType::decimal_float,

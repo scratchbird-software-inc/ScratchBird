@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "runtime_capabilities.hpp"
+#include "sbl_numeric.hpp"
 
 #include "scratchbird/core/platform/noncluster_engine_profile.hpp"
 
@@ -499,21 +500,14 @@ RuntimeCapabilityManifest DetectRuntimeCapabilities() {
       kCompilerHasInt128 ? "sbl_numeric.decfloat128" : "missing",
       "CAPABILITY.NUMERIC_DECFLOAT_MISSING"));
 
-#if defined(SCRATCHBIRD_HAS_REAL128_LIBRARY) && SCRATCHBIRD_HAS_REAL128_LIBRARY
-  constexpr bool kHasReal128Library = true;
-#else
-  constexpr bool kHasReal128Library = false;
-#endif
+  const bool kHasReal128Library =
+      libraries::sbl_numeric::Real128BackendAvailable();
   manifest.capabilities.push_back(MakeCapability(
       "numeric.real128",
       "mandatory real128 floating-point library support",
       MandatoryForReleaseComplete(),
       PresentIf(kHasReal128Library),
-#if defined(SCRATCHBIRD_REAL128_PROVIDER)
-      SCRATCHBIRD_REAL128_PROVIDER,
-#else
-      kHasReal128Library ? "configured" : "missing",
-#endif
+      libraries::sbl_numeric::Real128BackendName(),
       "CAPABILITY.NUMERIC_REAL128_MISSING"));
 
 #if defined(SCRATCHBIRD_HAS_LLVM) && SCRATCHBIRD_HAS_LLVM

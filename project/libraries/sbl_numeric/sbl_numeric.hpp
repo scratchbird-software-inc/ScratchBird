@@ -82,6 +82,14 @@ struct NumericResult {
   NumericValue value;
   int comparison = 0;
   std::string diagnostic_code;
+  // Numeric facts, not success/finality authority. Underflow denotes tiny AND
+  // inexact after rounding; exact subnormals have only the subnormal flag.
+  bool inexact = false;
+  bool underflow = false;
+  bool overflow = false;
+  bool invalid = false;
+  bool divide_by_zero = false;
+  bool subnormal = false;
 };
 
 const char* NumericStatusCodeName(NumericStatusCode status);
@@ -90,6 +98,9 @@ const char* NumericOperationName(NumericOperation operation);
 // Returns the exact real128 implementation compiled into this library.  The
 // runtime capability manifest must report the same value.
 const char* Real128BackendName();
+bool Real128BackendAvailable() noexcept;
+// Runtime thread owner calls this only after its MPFR work has quiesced.
+void ReleaseReal128ThreadCache() noexcept;
 NumericResult ApplyNumericOperation(const NumericRequest& request);
 // Canonical signed two's-complement storage payload; no host encoding accepted.
 NumericResult DecodeInt128LittleEndian(const std::vector<std::uint8_t>& payload);

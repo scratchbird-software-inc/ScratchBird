@@ -10,6 +10,18 @@ else()
   add_compile_options(-UNDEBUG)
 endif()
 
+add_executable(sbsql_sblr_alignment_real128_reference real128_reference_test.cpp)
+target_compile_features(sbsql_sblr_alignment_real128_reference PRIVATE cxx_std_17)
+target_include_directories(sbsql_sblr_alignment_real128_reference PRIVATE
+  ${SBL_NUMERIC_MPFR_INCLUDE_DIR} ${SBL_NUMERIC_GMP_INCLUDE_DIR})
+target_link_libraries(sbsql_sblr_alignment_real128_reference PRIVATE
+  sbl_numeric sb_core_platform Threads::Threads)
+add_test(NAME sbsql_sblr_alignment_real128_reference
+  COMMAND sbsql_sblr_alignment_real128_reference)
+set_tests_properties(sbsql_sblr_alignment_real128_reference PROPERTIES
+  LABELS "sbsql_sblr_alignment;numeric_reference;rounding;component_regression;not_runtime_acceptance"
+  TIMEOUT 120)
+
 # Canonical outer layout coverage does not establish endpoint admission.
 add_executable(sbsql_sblr_alignment_projection_parameter_binding
   ../sbsql_parser_worker/qow_qry_026.cpp

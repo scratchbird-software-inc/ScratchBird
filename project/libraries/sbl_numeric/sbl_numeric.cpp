@@ -11,6 +11,7 @@
 #include "sbl_numeric.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstddef>
 #include <cmath>
@@ -22,15 +23,8 @@
 
 #include <boost/multiprecision/cpp_int.hpp>
 
-#if defined(SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD) && SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD
-#include <boost/multiprecision/cpp_bin_float.hpp>
-#endif
-
-#if defined(SBL_NUMERIC_HAS_QUADMATH) && SBL_NUMERIC_HAS_QUADMATH
-#include <quadmath.h>
-#endif
-
 namespace scratchbird::libraries::sbl_numeric {
+namespace detail { NumericResult Real128ReferenceOperation(const NumericRequest& request); }
 namespace {
 
 using boost::multiprecision::cpp_int;
@@ -517,200 +511,6 @@ NumericResult DecimalFloatOperation(const NumericRequest& request) {
   return DecimalFiniteOperation(request, NumericType::decimal_float);
 }
 
-#if defined(SBL_NUMERIC_HAS_QUADMATH) && SBL_NUMERIC_HAS_QUADMATH
-bool ParseReal128(const std::string& input, __float128* out) {
-  char* end = nullptr;
-  const std::string trimmed = TrimAsciiWhitespace(input);
-  const __float128 value = strtoflt128(trimmed.c_str(), &end);
-  if (end == trimmed.c_str() || *end != '\0') { return false; }
-  *out = value;
-  return true;
-}
-
-std::string RenderReal128(__float128 value) {
-  char buffer[160];
-  quadmath_snprintf(buffer, sizeof(buffer), "%.36Qg", value);
-  std::string out(buffer);
-  if (out == "nan" || out == "+nan") { return "NaN"; }
-  if (out == "inf" || out == "+inf") { return "Infinity"; }
-  if (out == "-inf") { return "-Infinity"; }
-  return out;
-}
-#endif
-
-#if defined(SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD) && SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD
-using BoostReal128 = boost::multiprecision::cpp_bin_float_quad;
-
-bool ParseReal128Boost(const std::string& input, BoostReal128* out) {
-  const std::string trimmed = TrimAsciiWhitespace(input);
-  if (trimmed.empty()) { return false; }
-  SpecialValue special;
-  if (!ParseSpecial(trimmed, true, &special)) { return false; }
-  switch (special.kind) {
-    case SpecialKind::quiet_nan:
-    case SpecialKind::signaling_nan:
-      *out = std::numeric_limits<BoostReal128>::quiet_NaN();
-      return true;
-    case SpecialKind::positive_infinity:
-      *out = std::numeric_limits<BoostReal128>::infinity();
-      return true;
-    case SpecialKind::negative_infinity:
-      *out = -std::numeric_limits<BoostReal128>::infinity();
-      return true;
-    case SpecialKind::finite:
-      break;
-  }
-  try {
-    ParsedDecimal parsed_decimal;
-    if (!ParseDecimal(trimmed, true, &parsed_decimal)) { return false; }
-    BoostReal128 value(trimmed);
-    *out = value;
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
-std::string RenderReal128Boost(const BoostReal128& value) {
-  if (isnan(value)) { return "NaN"; }
-  if (isinf(value)) { return value < 0 ? "-Infinity" : "Infinity"; }
-  std::ostringstream out;
-  out.precision(std::numeric_limits<BoostReal128>::max_digits10);
-  out << value;
-  return out.str();
-}
-#endif
-
-NumericResult Real128Operation(const NumericRequest& request) {
-#if (defined(SBL_NUMERIC_HAS_QUADMATH) && SBL_NUMERIC_HAS_QUADMATH) || \
-    (defined(SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD) && \
-     SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD)
-  SpecialValue left_special;
-  if (!ParseSpecial(request.left.encoded, true, &left_special)) {
-    return Failure(NumericStatusCode::invalid_left, "numeric.real128_left_invalid");
-  }
-  if (request.operation == NumericOperation::canonicalize &&
-      left_special.kind != SpecialKind::finite) {
-    NumericResult result;
-    result.value = {NumericType::real128, left_special.canonical, false};
-    return result;
-  }
-  if (request.operation == NumericOperation::canonicalize) {
-    ParsedDecimal parsed_zero;
-    if (ParseDecimal(request.left.encoded, true, &parsed_zero) &&
-        parsed_zero.negative_zero) {
-      NumericResult result;
-      result.value = {NumericType::real128, "-0", false};
-      return result;
-    }
-  }
-  if (request.operation != NumericOperation::canonicalize) {
-    SpecialValue right_special;
-    if (!ParseSpecial(request.right.encoded, true, &right_special)) {
-      return Failure(NumericStatusCode::invalid_right,
-                     "numeric.real128_right_invalid");
-    }
-    const bool has_nan =
-        left_special.kind == SpecialKind::quiet_nan ||
-        left_special.kind == SpecialKind::signaling_nan ||
-        right_special.kind == SpecialKind::quiet_nan ||
-        right_special.kind == SpecialKind::signaling_nan;
-    if (has_nan) {
-      if (request.operation == NumericOperation::compare) {
-        return Failure(NumericStatusCode::unordered,
-                       "numeric.real128_nan_unordered");
-      }
-      NumericResult result;
-      result.value = {NumericType::real128, "NaN", false};
-      return result;
-    }
-  }
-#endif
-#if defined(SBL_NUMERIC_HAS_QUADMATH) && SBL_NUMERIC_HAS_QUADMATH
-  __float128 left = 0;
-  if (!ParseReal128(request.left.encoded, &left)) {
-    return Failure(NumericStatusCode::invalid_left, "numeric.real128_left_invalid");
-  }
-  if (request.operation == NumericOperation::canonicalize) {
-    NumericResult result;
-    result.value = {NumericType::real128, RenderReal128(left), false};
-    return result;
-  }
-  __float128 right = 0;
-  if (!ParseReal128(request.right.encoded, &right)) {
-    return Failure(NumericStatusCode::invalid_right, "numeric.real128_right_invalid");
-  }
-  if (isnanq(left) || isnanq(right)) {
-    if (request.operation == NumericOperation::compare) {
-      return Failure(NumericStatusCode::unordered, "numeric.real128_nan_unordered");
-    }
-    NumericResult result;
-    result.value = {NumericType::real128, "NaN", false};
-    return result;
-  }
-  NumericResult result;
-  result.value = {NumericType::real128, {}, false};
-  switch (request.operation) {
-    case NumericOperation::add: result.value.encoded = RenderReal128(left + right); return result;
-    case NumericOperation::subtract: result.value.encoded = RenderReal128(left - right); return result;
-    case NumericOperation::multiply: result.value.encoded = RenderReal128(left * right); return result;
-    case NumericOperation::divide:
-      if (right == 0) { return Failure(NumericStatusCode::divide_by_zero, "numeric.real128_divide_by_zero"); }
-      result.value.encoded = RenderReal128(left / right);
-      return result;
-    case NumericOperation::compare:
-      result.comparison = left < right ? -1 : (left > right ? 1 : 0);
-      result.value.encoded = result.comparison == 0 ? "true" : "false";
-      return result;
-    case NumericOperation::canonicalize:
-      break;
-  }
-  return Failure(NumericStatusCode::invalid_operation, "numeric.real128_operation_invalid");
-#elif defined(SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD) && SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD
-  BoostReal128 left = 0;
-  if (!ParseReal128Boost(request.left.encoded, &left)) {
-    return Failure(NumericStatusCode::invalid_left, "numeric.real128_left_invalid");
-  }
-  if (request.operation == NumericOperation::canonicalize) {
-    NumericResult result;
-    result.value = {NumericType::real128, RenderReal128Boost(left), false};
-    return result;
-  }
-  BoostReal128 right = 0;
-  if (!ParseReal128Boost(request.right.encoded, &right)) {
-    return Failure(NumericStatusCode::invalid_right, "numeric.real128_right_invalid");
-  }
-  if (isnan(left) || isnan(right)) {
-    if (request.operation == NumericOperation::compare) {
-      return Failure(NumericStatusCode::unordered, "numeric.real128_nan_unordered");
-    }
-    NumericResult result;
-    result.value = {NumericType::real128, "NaN", false};
-    return result;
-  }
-  NumericResult result;
-  result.value = {NumericType::real128, {}, false};
-  switch (request.operation) {
-    case NumericOperation::add: result.value.encoded = RenderReal128Boost(left + right); return result;
-    case NumericOperation::subtract: result.value.encoded = RenderReal128Boost(left - right); return result;
-    case NumericOperation::multiply: result.value.encoded = RenderReal128Boost(left * right); return result;
-    case NumericOperation::divide:
-      if (right == 0) { return Failure(NumericStatusCode::divide_by_zero, "numeric.real128_divide_by_zero"); }
-      result.value.encoded = RenderReal128Boost(left / right);
-      return result;
-    case NumericOperation::compare:
-      result.comparison = left < right ? -1 : (left > right ? 1 : 0);
-      result.value.encoded = result.comparison == 0 ? "true" : "false";
-      return result;
-    case NumericOperation::canonicalize:
-      break;
-  }
-  return Failure(NumericStatusCode::invalid_operation, "numeric.real128_operation_invalid");
-#else
-  (void)request;
-  return Failure(NumericStatusCode::backend_unavailable, "numeric.real128_backend_unavailable");
-#endif
-}
 
 }  // namespace
 
@@ -753,15 +553,6 @@ const char* NumericOperationName(NumericOperation operation) {
   return "unknown";
 }
 
-const char* Real128BackendName() {
-#if defined(SBL_NUMERIC_HAS_QUADMATH) && SBL_NUMERIC_HAS_QUADMATH
-  return "libquadmath::__float128";
-#elif defined(SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD) && SBL_NUMERIC_HAS_BOOST_BIN_FLOAT_QUAD
-  return "boost::multiprecision::cpp_bin_float_quad";
-#else
-  return "unavailable";
-#endif
-}
 
 
 namespace {
@@ -1000,6 +791,7 @@ NumericResult DecodeInt128LittleEndian(const std::vector<std::uint8_t>& payload)
 }
 
 NumericResult ApplyNumericOperation(const NumericRequest& request) {
+  if (request.type == NumericType::real128) return detail::Real128ReferenceOperation(request);
   NumericResult result;
   result.value = {request.type, {}, false};
   if (request.left.is_null || (request.operation != NumericOperation::canonicalize && request.right.is_null)) {
@@ -1016,7 +808,7 @@ NumericResult ApplyNumericOperation(const NumericRequest& request) {
     case NumericType::decimal_float:
       return DecimalFloatOperation(request);
     case NumericType::real128:
-      return Real128Operation(request);
+      return detail::Real128ReferenceOperation(request);
   }
   return Failure(NumericStatusCode::invalid_operation, "numeric.type_invalid");
 }
