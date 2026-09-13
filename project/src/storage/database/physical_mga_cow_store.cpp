@@ -1443,7 +1443,7 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRows(
   }
   return ReadPhysicalMgaCowRowsFromOpenDevice(
       device, request.relation_uuid, request.page_number,
-      request.visibility_snapshot, request.use_latest_committed_snapshot);
+      request.visibility_snapshot, request.use_latest_committed_snapshot, request.reader_identity);
 }
 
 PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
@@ -1451,18 +1451,32 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
     const TypedUuid& relation_uuid,
     u64 page_number,
     const VisibilitySnapshot& visibility_snapshot,
-    bool use_latest_committed_snapshot) {
+    bool use_latest_committed_snapshot,
+    const scratchbird::transaction::mga::TransactionIdentity& reader_identity) {
   PhysicalMgaCowReadRequest request;
   request.database_path = device.path();
   request.relation_uuid = relation_uuid;
   request.page_number = page_number;
   request.visibility_snapshot = visibility_snapshot;
+  request.reader_identity = reader_identity;
   request.use_latest_committed_snapshot = use_latest_committed_snapshot;
   const auto common = ValidateCommonRequest<PhysicalMgaCowReadResult>(
       request.database_path, request.relation_uuid, request.page_number);
   if (!common.ok()) {
     return common;
   }
+  const bool reader_supplied = reader_identity.local_id.value != 0 ||
+      reader_identity.transaction_uuid.kind != UuidKind::unknown ||
+      !reader_identity.transaction_uuid.value.is_nil() ||
+      reader_identity.scope != scratchbird::transaction::mga::TransactionScope::unknown;
+  if ((reader_supplied &&
+       (!reader_identity.local_id.valid() ||
+        reader_identity.local_id.value != visibility_snapshot.reader_transaction.value ||
+        !IsTypedEngineIdentity(reader_identity.transaction_uuid, UuidKind::transaction) ||
+        reader_identity.scope != scratchbird::transaction::mga::TransactionScope::local_node)) ||
+      (!reader_supplied && visibility_snapshot.reader_transaction.value != 0))
+    return ErrorResult<PhysicalMgaCowReadResult>("CATALOG.INVALID_INPUT",
+        "storage.physical_mga_cow.reader_identity_invalid");
   const auto context = LoadDatabaseContext(&device);
   if (!context.ok()) {
     return Propagate<PhysicalMgaCowReadResult>(context.status,
@@ -1473,6 +1487,15 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
   if (!loaded_inventory.ok()) {
     return Propagate<PhysicalMgaCowReadResult>(loaded_inventory.status,
                                                loaded_inventory.diagnostic);
+  }
+
+  if (reader_supplied) {
+    const auto reader = LookupLocalTransaction(loaded_inventory.inventory, reader_identity.local_id);
+    if (!reader.ok() ||
+        !SameUuid(reader.entry.identity.transaction_uuid, reader_identity.transaction_uuid) ||
+        reader.entry.identity.scope != reader_identity.scope)
+      return ErrorResult<PhysicalMgaCowReadResult>("CATALOG.INVALID_INPUT",
+          "storage.physical_mga_cow.reader_identity_mismatch");
   }
 
   RowDataPageBody row_page;

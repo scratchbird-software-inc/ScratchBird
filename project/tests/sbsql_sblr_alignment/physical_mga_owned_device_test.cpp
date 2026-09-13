@@ -149,7 +149,8 @@ struct Fixture {
     snapshot.reader_transaction = reader.local_id;
     snapshot.visible_through_local_transaction_id = boundary;
     snapshot.visible_through_local_transaction_id_is_boundary = true;
-    auto result = db::ReadPhysicalMgaCowRowsFromOpenDevice(device, relation, page, snapshot, !reader.local_id.valid() && boundary == 0);
+    auto result = db::ReadPhysicalMgaCowRowsFromOpenDevice(device, relation, page, snapshot,
+        !reader.local_id.valid() && boundary == 0, reader);
     if (!result.ok()) std::cerr << "read_line=" << at.line() << " page=" << page << ' ' << result.diagnostic.diagnostic_code
                                 << ':' << result.diagnostic.message_key << '\n';
     Check(result.ok(), "read actual owned row page");
@@ -211,6 +212,87 @@ int VerifyFinalityOracle(const std::string& path) {
   }
   return in.eof() && in.gcount() == 0 && count == 3 ? 0 : 13;
 }
+void ReaderIdentityBeforeMaterialization() {
+  Fixture f;
+  const auto writer = f.Begin();
+  const auto other = f.Begin();
+  const auto mutation = f.Mutation(writer, Id(UuidKind::row), f.first_page, "writer-private");
+  Check(db::WritePhysicalMgaCowUnpublishedMutationToOpenDevice(f.device, mutation).ok(), "create private native row");
+  Payload(f.Read(f.first_page, writer), "writer-private");
+  Check(f.Read(f.first_page, other).visible_rows.empty(), "other transaction read uncommitted writer row");
+  Check(f.Read(f.first_page).visible_rows.empty(), "anonymous reader saw uncommitted writer row");
+  const auto before = f.Bytes();
+  mga::VisibilitySnapshot snapshot;
+  snapshot.reader_transaction = writer.local_id;
+  snapshot.visible_through_local_transaction_id = other.local_id.value;
+  snapshot.visible_through_local_transaction_id_is_boundary = true;
+  const auto refused = [&](const mga::TransactionIdentity& identity,
+                           const mga::VisibilitySnapshot& requested, bool latest,
+                           std::string_view reason) {
+    const auto read = db::ReadPhysicalMgaCowRowsFromOpenDevice(
+        f.device, f.relation, f.first_page, requested, latest, identity);
+    Check(!read.ok() && read.diagnostic.diagnostic_code == "CATALOG.INVALID_INPUT" &&
+        read.diagnostic.message_key == reason, "wrong native reader identity refusal");
+    Check(read.rows.empty() && read.visible_rows.empty() && read.row_page.rows.empty() &&
+        read.version_metadata.empty() && read.visible_delete_marker_count == 0 &&
+        read.wait_for_transaction_count == 0 && read.recovery_required_count == 0 &&
+        read.rolled_back_version_count == 0, "refused reader received partial materialization");
+    Check(f.device.is_open() && f.Bytes() == before, "reader refusal changed node or owner");
+  };
+  constexpr auto invalid = "storage.physical_mga_cow.reader_identity_invalid";
+  constexpr auto mismatch = "storage.physical_mga_cow.reader_identity_mismatch";
+  for (bool latest : {false, true}) {
+    refused({}, snapshot, latest, invalid);
+    refused(other, snapshot, latest, invalid);
+    auto forged = writer; forged.transaction_uuid = other.transaction_uuid;
+    refused(forged, snapshot, latest, mismatch);
+    for (auto scope : {mga::TransactionScope::unknown, mga::TransactionScope::cluster_global,
+                       static_cast<mga::TransactionScope>(65535)}) {
+      forged = writer; forged.scope = scope;
+      refused(forged, snapshot, latest, invalid);
+    }
+    for (unsigned version = 0; version < 16; ++version) {
+      if (version == 7) continue;
+      forged = writer;
+      forged.transaction_uuid.value.bytes[6] =
+          (forged.transaction_uuid.value.bytes[6] & 0x0f) | (version << 4);
+      refused(forged, snapshot, latest, invalid);
+    }
+    forged = writer; forged.transaction_uuid.value.bytes[8] &= 0x3f;
+    refused(forged, snapshot, latest, invalid);
+    forged = writer; forged.transaction_uuid.kind = UuidKind::row;
+    refused(forged, snapshot, latest, invalid);
+    forged = writer; forged.transaction_uuid.value = {};
+    refused(forged, snapshot, latest, invalid);
+    forged = writer; forged.local_id = {};
+    refused(forged, snapshot, latest, invalid);
+    auto no_reader = snapshot; no_reader.reader_transaction = {};
+    refused(writer, no_reader, latest, invalid);
+    forged = {}; forged.scope = mga::TransactionScope::local_node;
+    refused(forged, no_reader, latest, invalid);
+    forged = writer; forged.local_id = mga::MakeLocalTransactionId(std::numeric_limits<u64>::max());
+    auto missing = snapshot; missing.reader_transaction = forged.local_id;
+    refused(forged, missing, latest, mismatch);
+  }
+  f.Locked();
+  // The path-owning API must not reconstruct the missing UUID from a number.
+  Check(f.device.Close().ok(), "release for reader path wrapper");
+  db::PhysicalMgaCowReadRequest request;
+  request.database_path = f.path; request.relation_uuid = f.relation; request.page_number = f.first_page;
+  request.use_latest_committed_snapshot = false; request.visibility_snapshot = snapshot;
+  Check(!db::ReadPhysicalMgaCowRows(request).ok(), "path reader accepted number-only authority");
+  request.reader_identity = writer;
+  Payload(db::ReadPhysicalMgaCowRows(request), "writer-private");
+  request.reader_identity.transaction_uuid = other.transaction_uuid;
+  Check(!db::ReadPhysicalMgaCowRows(request).ok(), "path reader accepted mismatched UUID");
+  Check(f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reclaim reader owner");
+  Check(f.Bytes() == before, "path read changed node bytes");
+  f.Finish(writer, true);
+  Payload(f.Read(f.first_page, other, other.local_id.value), "writer-private");
+  Payload(f.Read(f.first_page), "writer-private");
+  f.Finish(other, false);
+}
+
 void FinalizationIdentityAndOwnership() {
   Fixture f;
   const auto committed = f.Begin(), rolled_back = f.Begin();
@@ -598,6 +680,6 @@ int main(int argc, char** argv) {
     disk::FileDevice device; const auto opened = device.Open(argv[2], disk::FileOpenMode::open_existing);
     return !opened.ok() && OwnershipError(opened.diagnostic) ? 0 : 1;
   }
-  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
+  try { Run(); OwnedMutationFailureFinality(); FinalizationIdentityAndOwnership(); ReaderIdentityBeforeMaterialization(); std::cout << "owned_device checks=" << checks << " failures=0\n"; return 0; }
   catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

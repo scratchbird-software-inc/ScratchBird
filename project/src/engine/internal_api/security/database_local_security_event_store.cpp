@@ -681,7 +681,8 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
     }
     const auto read = storage::ReadPhysicalMgaCowRowsFromOpenDevice(
         device, request.relation_uuid, request.page_number,
-        request.visibility_snapshot, request.use_latest_committed_snapshot);
+        request.visibility_snapshot, request.use_latest_committed_snapshot,
+        request.use_latest_committed_snapshot ? mga::TransactionIdentity{} : reader.identity);
     if (!read.ok() || read.recovery_required_count != 0) {
       result.diagnostic = read.ok()
                               ? ErrorDiagnostic(

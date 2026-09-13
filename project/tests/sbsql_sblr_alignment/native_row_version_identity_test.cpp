@@ -345,6 +345,7 @@ void Storage(const fs::path& root,const std::string& self) {
   Good(db::WritePhysicalMgaCowUnpublishedMutationBatch(batch));
   auto own=ReadRequest(root);own.page_number=RowPage+1;own.use_latest_committed_snapshot=false;
   own.visibility_snapshot.reader_transaction=started.entry.identity.local_id;
+  own.reader_identity=started.entry.identity;
   const auto rows=db::ReadPhysicalMgaCowRows(own);Good(rows);
   Check(rows.visible_rows.size()==8,"native batch did not write eight rows");
   std::set<p::Uuid> ids;

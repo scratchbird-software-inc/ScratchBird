@@ -92,6 +92,7 @@ struct PhysicalMgaCowReadRequest {
   TypedUuid relation_uuid;
   u64 page_number = 0;
   scratchbird::transaction::mga::VisibilitySnapshot visibility_snapshot;
+  scratchbird::transaction::mga::TransactionIdentity reader_identity;
   bool use_latest_committed_snapshot = true;
 };
 
@@ -198,12 +199,15 @@ PhysicalMgaCowReadResult ReadPhysicalMgaCowRows(
     const PhysicalMgaCowReadRequest& request);
 // Borrow the caller's already-owned device without reopening or releasing it.
 // The device, never an independently supplied path, is the storage authority.
+// A nonzero snapshot reader requires its exact native inventory identity.
+// Default/empty identity is allowed only for an anonymous (zero-number) reader.
 PhysicalMgaCowReadResult ReadPhysicalMgaCowRowsFromOpenDevice(
     scratchbird::storage::disk::FileDevice& device,
     const TypedUuid& relation_uuid,
     u64 page_number,
     const scratchbird::transaction::mga::VisibilitySnapshot& visibility_snapshot,
-    bool use_latest_committed_snapshot);
+    bool use_latest_committed_snapshot,
+    const scratchbird::transaction::mga::TransactionIdentity& reader_identity = {});
 
 DiagnosticRecord MakePhysicalMgaCowDiagnostic(Status status,
                                               std::string diagnostic_code,
