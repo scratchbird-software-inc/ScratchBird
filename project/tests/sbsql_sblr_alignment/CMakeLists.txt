@@ -283,6 +283,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "sbsql_sblr_alignment;IA-00;contract;fault;NATIVE_COMMON_PAGE_HEADER_V2;binary_uuid;node_ownership"
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
+  add_test(NAME sbsql_sblr_alignment_native_filespace_initialization
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --filespace-initialization-only)
+  set_tests_properties(sbsql_sblr_alignment_native_filespace_initialization PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_allocation;actual_initialization;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   add_test(NAME sbsql_sblr_alignment_native_inventory_mixed_staging
     COMMAND sbsql_sblr_alignment_filespace_page_zero --inventory-stage-mixed-only)
   set_tests_properties(sbsql_sblr_alignment_native_inventory_mixed_staging PROPERTIES
@@ -334,6 +338,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(sbsql_sblr_alignment_filespace_page_zero PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_filespace_page_zero PRIVATE sb_storage_database OpenSSL::Crypto)
   target_link_options(sbsql_sblr_alignment_filespace_page_zero PRIVATE
+    "-Wl,--wrap=RAND_bytes"
     "-Wl,--wrap=EVP_Digest"
     "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
     "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")

@@ -32,6 +32,7 @@ add_library(sb_storage_database
   native_checkpoint_selection.cpp
   native_checkpoint_selection_binding.cpp
   native_inventory_successor_staging.cpp
+  native_filespace_initialization.cpp
   repair_event_ledger.cpp
   repair_history_inspection.cpp
   startup_state.cpp
