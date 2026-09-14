@@ -1238,8 +1238,28 @@ NativeCheckpointHorizonResult VerifyCurrentNativeCheckpointHorizonFromOpenDevice
     for(const auto& image:horizons.pages){if(checkpoint_ids.contains(image.root->header.page_uuid))return fail(Error::binding_mismatch);
       for(const auto& record:image.root->records)if(record.checkpoint){const auto at=observed.find(record.checkpoint_generation);
         if(at==observed.end()||at->second->object_uuid!=record.checkpoint_object_uuid||ref(at->second->header)!=*record.checkpoint)return fail(Error::horizon_observation_mismatch);}}
-    NativeCheckpointHorizonResult result;result.error=Error::none;result.retained_image_bytes=history.retained_image_bytes+horizons.retained_image_bytes;
-    result.checkpoints=std::move(history);result.horizons=std::move(horizons);return result;
+    const u64 used=history.retained_image_bytes+horizons.retained_image_bytes;
+    auto pins=page::ReadNativeRetentionRootFromOpenDevices(database_uuid,locked.ordered,h.retention_object_uuid,h.retention,budget-used);
+    if(!pins.ok()){auto r=fail(Error::retention_failure);r.retention_error=pins.error;return r;}
+    const auto pin_digest=hash::ComputeSha256Digest(pins.images.front().bytes);if(!pin_digest.ok())return fail(Error::hash_failure);
+    if(pin_digest.digest!=h.retention_sha256)return fail(Error::invalid_integrity);
+    const auto& root=*pins.images.front().page;const auto& inventory=history.checkpoints.front().inventory;
+    if(bool(root.flags&1)!=cluster)return fail(Error::binding_mismatch);
+    const auto pin_creator=mga::LookupLocalTransaction(inventory,mga::MakeLocalTransactionId(root.creator_local_transaction_id));
+    if(!pin_creator.ok()||pin_creator.entry.identity.transaction_uuid.value!=root.creator_transaction_uuid||
+        (!cluster&&pin_creator.entry.identity.scope!=mga::TransactionScope::local_node))return fail(Error::retention_creator_mismatch);
+    if(!mga::HasCommittedInventoryOutcome(pin_creator.entry))return fail(Error::retention_creator_not_committed);
+    std::set<Uuid> page_ids=checkpoint_ids;for(const auto& image:horizons.pages)page_ids.insert(image.root->header.page_uuid);
+    std::map<Uuid,const page::NativeRetentionPin*> pin_index;
+    for(const auto& image:pins.images){if(!page_ids.insert(image.page->header.page_uuid).second)return fail(Error::binding_mismatch);
+      for(const auto& pin:image.page->records)pin_index.emplace(pin.pin_uuid,&pin);}
+    for(const auto& image:horizons.pages)for(const auto& record:image.root->records){
+      if(record.pin_uuid.is_nil())continue;
+      const auto pin=pin_index.find(record.pin_uuid);if(pin==pin_index.end())return fail(Error::horizon_pin_missing);
+      if(pin->second->timeline_uuid!=record.timeline_uuid)return fail(Error::horizon_pin_lineage_mismatch);
+    }
+    NativeCheckpointHorizonResult result;result.error=Error::none;result.retained_image_bytes=used+pins.retained_image_bytes;
+    result.checkpoints=std::move(history);result.horizons=std::move(horizons);result.retention=std::move(pins);return result;
   }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}catch(const std::length_error&){return fail(Error::resource_exhausted);}catch(...){return fail(Error::io_failure);}
 }
 
