@@ -14,7 +14,7 @@ using scratchbird::core::platform::u16;
 using scratchbird::core::platform::u32;
 using scratchbird::core::platform::u64;
 enum class NativeRetentionKind : u16 { backup_forward=1, archive, legal_hold, cluster_replay, detached_filespace, parser_snapshot, donor_emulation, forensic };
-enum class NativeRetentionAccess : u16 { recovery_only=1, audit_queryable, temporal_queryable, legal_hold, donor_emulation, forensic_debug };
+enum class NativeRetentionAccess : u16 { recovery_only=1, audit_queryable, temporal_queryable, legal_hold, donor_emulation, forensic_debug, backup_forward_only };
 struct NativeRetentionPin {
   Uuid pin_uuid, owner_uuid;
   NativeRetentionKind kind=NativeRetentionKind::backup_forward;

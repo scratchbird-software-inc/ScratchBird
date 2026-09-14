@@ -42,10 +42,10 @@ E Validate(const NativeRetentionPage& v){const auto& h=v.header;const bool root=
   Uuid prior;
   for(const auto& r:v.records){const auto kind=static_cast<u16>(r.kind),access=static_cast<u16>(r.access);
     if(!V7(r.pin_uuid)||!(prior<r.pin_uuid)||!V7(r.owner_uuid)||!V7(r.timeline_uuid)||(!r.filespace_uuid.is_nil()&&!V7(r.filespace_uuid))||
-        !kind||kind>8||!access||access>6||!r.start_local||(r.end_local&&r.end_local<=r.start_local)||
+        !kind||kind>8||!access||access>7||!r.start_local||(r.end_local&&r.end_local<=r.start_local)||
         (r.flags&~u32{31})||!r.blocked_operations||(r.blocked_operations&~u64{31})||((r.flags&1)&&!(r.blocked_operations&1))||
         ((r.flags&4)&&((r.flags&2)||!(r.flags&1)))||(Legal(r)&&(r.flags&2))||
-        (access==1&&(r.flags&8))||(kind==4&&!(v.flags&1))||(kind==5&&r.filespace_uuid.is_nil()))return E::invalid_record;
+        ((access==1||access==7)&&(r.flags&8))||(kind==4&&!(v.flags&1))||(kind==5&&r.filespace_uuid.is_nil()))return E::invalid_record;
     prior=r.pin_uuid;
   }
   return E::none;
