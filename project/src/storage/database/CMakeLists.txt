@@ -34,6 +34,7 @@ add_library(sb_storage_database
   native_publication_coordinator.cpp
   native_publication_plan.cpp
   native_management_operation.cpp
+  native_management_extent.cpp
   native_checkpoint_selection_binding.cpp
   native_inventory_successor_staging.cpp
   native_filespace_initialization.cpp
