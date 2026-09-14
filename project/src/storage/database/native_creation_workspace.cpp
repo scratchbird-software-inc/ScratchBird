@@ -221,10 +221,8 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
       const auto error=compare(n,n<maps+selector_first?&images[n].bytes:nullptr);
       if(error!=E::none)return Fail(error);
     }
-    for(u64 n=maps+selector_first;n<=maps+selector_second;++n)
-      if(!write(n,images[n].bytes))return Fail(E::io_failure);
-    if(!device.Sync().ok())return Fail(E::io_failure);
     for(u64 n=maps+selector_first;n<=maps+selector_second;++n) {
+      if(!write(n,images[n].bytes)||!device.Sync().ok())return Fail(E::io_failure);
       const auto error=compare(n,&images[n].bytes);if(error!=E::none)return Fail(error);
     }
     images.clear();std::vector<byte>().swap(scratch);

@@ -34,12 +34,13 @@ unsigned checks=0;
 void Check(bool value,const char* what){++checks;if(!value)throw std::runtime_error(what);}
 enum Call {write_call,read_call,sync_call,random_call,hash_call,call_count};
 std::array<unsigned,call_count> calls{};
-bool armed=false;
+bool armed=false,stop_before_second_selector=false;
 unsigned fault_kind=call_count,fault_at=0,corrupt_at=0;
+unsigned selector_phase=0;
 u64 page_bytes=8192,total_pages=19,selector_page=17;
 bool ordered=true;
 bool Hit(Call kind){if(!armed)return false;return ++calls[kind]==fault_at&&kind==fault_kind;}
-void Arm(unsigned kind=call_count,unsigned at=0){calls={};fault_kind=kind;fault_at=at;corrupt_at=0;ordered=true;armed=true;}
+void Arm(unsigned kind=call_count,unsigned at=0){calls={};fault_kind=kind;fault_at=at;corrupt_at=0;selector_phase=0;ordered=true;armed=true;}
 void Disarm(){armed=false;}
 Uuid Id(unsigned n){Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
 db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=19){
@@ -184,20 +185,32 @@ extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
 extern "C" ssize_t __wrap_pwrite(int fd,const void* bytes,size_t count,off_t offset){
   if(pause_write.exchange(false)){write_paused=true;while(!resume_write.load())std::this_thread::yield();}
   if(Hit(write_call)){errno=EIO;return -1;}
-  if(armed&&offset>=static_cast<off_t>(selector_page*page_bytes)&&
-    count>=128&&static_cast<const byte*>(bytes)[0])
-    ordered&=calls[sync_call]>=1&&calls[read_call]>=total_pages;
-  return __real_pwrite(fd,bytes,count,offset);
+  const bool selector=armed&&offset>=static_cast<off_t>(selector_page*page_bytes)&&
+    count>=128&&static_cast<const byte*>(bytes)[0];
+  if(selector){
+    const bool second=offset==static_cast<off_t>((selector_page+1)*page_bytes);
+    ordered&=calls[sync_call]>=1+unsigned(second)&&calls[read_call]>=total_pages+unsigned(second);
+    if(second)ordered&=selector_phase==3;
+    if(second&&stop_before_second_selector)_exit(ordered?86:87);
+  }
+  const auto n=__real_pwrite(fd,bytes,count,offset);
+  if(selector&&n==static_cast<ssize_t>(count))selector_phase=offset==static_cast<off_t>(selector_page*page_bytes)?1:4;
+  return n;
 }
 extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
 extern "C" ssize_t __wrap_pread(int fd,void* bytes,size_t count,off_t offset){
   if(Hit(read_call)){errno=EIO;return -1;}
   const auto n=__real_pread(fd,bytes,count,offset);
+  if(armed&&n==static_cast<ssize_t>(page_bytes)&&count==page_bytes){
+    if(selector_phase==2&&offset==static_cast<off_t>(selector_page*page_bytes))selector_phase=3;
+    if(selector_phase==5&&offset==static_cast<off_t>((selector_page+1)*page_bytes))selector_phase=6;
+  }
   if(armed&&corrupt_at&&calls[read_call]==corrupt_at&&n>0)static_cast<byte*>(bytes)[n-1]^=1;
   return n;
 }
 extern "C" int __real_fsync(int);
-extern "C" int __wrap_fsync(int fd){if(Hit(sync_call)){errno=EIO;return -1;}return __real_fsync(fd);}
+extern "C" int __wrap_fsync(int fd){if(Hit(sync_call)){errno=EIO;return -1;}const auto r=__real_fsync(fd);
+  if(armed&&r==0){if(selector_phase==1)selector_phase=2;if(selector_phase==4)selector_phase=5;}return r;}
 extern "C" int __real_RAND_bytes(unsigned char*,int);
 extern "C" int __wrap_RAND_bytes(unsigned char* bytes,int count){
   if(Hit(random_call))return 0;if(repeat_entropy){std::fill_n(bytes,count,0xab);return 1;}return __real_RAND_bytes(bytes,count);}
@@ -268,7 +281,7 @@ int main(int argc,char** argv){try{
     page_bytes=request.bootstrap.page_size_bytes;total_pages=request.total_pages;selector_page=(profile?1:2)+16;
     Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,128*page_bytes);Disarm();
     if(!result.ok())std::cerr<<"creation error="<<static_cast<int>(result.error)<<" checkpoint="<<static_cast<int>(result.checkpoint_error)<<" selector="<<static_cast<int>(result.selection_error)<<'\n';
-    Check(result.ok()&&ordered,"all page profiles have real dependency-before-selection publication");Inspect(device,request);
+    Check(result.ok()&&ordered&&selector_phase==6,"all page profiles have real dependency and individual selector publication barriers");Inspect(device,request);
     const auto before=Read(device,0,page_bytes);
     const auto replay=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,128*page_bytes);
     Check(!replay.ok()&&!replay.receipt&&replay.error==db::NativeCreationWorkspaceError::device_not_empty&&
@@ -279,6 +292,28 @@ int main(int argc,char** argv){try{
     int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable reads actual construction graph");
   }
   const auto request=Request();page_bytes=8192;total_pages=19;selector_page=17;
+  {const auto path=fixture.Next();const auto child=fork();Check(child>=0,"selector publication process-loss fork");
+    if(child==0){disk::FileDevice device;
+      if(!device.Open(path.string(),disk::FileOpenMode::create_new).ok())_exit(88);
+      Arm();stop_before_second_selector=true;
+      (void)db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,21*page_bytes);_exit(89);}
+    int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,
+      "process loss before second selector follows first selector durability and verification");
+    disk::FileDevice device;Check(device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"new process owns interrupted construction");
+    const auto first=Read(device,17,page_bytes),second=Read(device,18,page_bytes);
+    Check(db::DecodeNativeCheckpointSelection(first).ok()&&std::all_of(second.begin(),second.end(),[](byte v){return !v;}),
+      "actual first selector survives while second is not yet written");
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),request.bootstrap.page_size_profile_uuid,&device}};
+    const auto classified=db::ClassifyNativeCheckpointSelectionPair(first,second);
+    Check(!classified.ok()&&!classified.selection&&classified.error==db::NativeCheckpointSelectionError::repair_required,
+      "image pair requires repair after loss between selectors");
+    const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),21*page_bytes);
+    Check(!selected.ok()&&!selected.selection&&selected.slots[0].empty()&&selected.slots[1].empty()&&
+      !selected.checkpoint_inventory.ok()&&selected.error==db::NativeCheckpointSelectionError::slot_binding_mismatch,
+      "bound reader rejects the missing second common header without granting partial current-root authority");
+    const auto replay=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,21*page_bytes);
+    Check(!replay.ok()&&!replay.receipt&&replay.error==db::NativeCreationWorkspaceError::device_not_empty&&
+      Read(device,17,page_bytes)==first&&Read(device,18,page_bytes)==second,"restart preserves interrupted pair without creation replay");}
   {const auto large=Request(0,3601);disk::FileDevice device;
     Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"cross-map control fixture");
     const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,large,81*8192);
@@ -305,12 +340,16 @@ int main(int argc,char** argv){try{
   std::array<unsigned,call_count> baseline{};
   {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"minimum capacity device");
     Arm();const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,21*page_bytes);baseline=calls;Disarm();
-    Check(r.ok()&&r.receipt->free_pages==0&&ordered,"exact minimum capacity and image budget");Inspect(device,request);}
+    Check(r.ok()&&r.receipt->free_pages==0&&ordered&&selector_phase==6,"exact minimum capacity and image budget");Inspect(device,request);}
   for(unsigned kind=0;kind<call_count;++kind)for(unsigned at=1;at<=baseline[kind];++at){
     disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"fault fixture");
     Arm(kind,at);const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,21*page_bytes);const auto observed=calls;Disarm();
     Check(!r.ok()&&!r.receipt&&observed[kind]>=at,"every injected physical/provider failure returns no receipt");
     const auto size=device.Size();Check(size.ok()&&device.is_open(),"failure preserves open owner");
+    if((kind==sync_call&&at==2)||(kind==read_call&&at==total_pages+1)){
+      const auto first=Read(device,selector_page,page_bytes),second=Read(device,selector_page+1,page_bytes);
+      Check(db::DecodeNativeCheckpointSelection(first).ok()&&std::all_of(second.begin(),second.end(),[](byte v){return !v;}),
+        "first selector sync/read failure leaves second selector untouched");}
     if(kind==random_call||(kind==hash_call&&at<=19))Check(observed[write_call]==0&&size.size_bytes==0,"preparation failure precedes all writes");
     if(size.size_bytes){const auto replay=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,21*page_bytes);
       Check(!replay.ok()&&replay.error==db::NativeCreationWorkspaceError::device_not_empty&&device.Size().size_bytes==size.size_bytes,
@@ -318,7 +357,9 @@ int main(int argc,char** argv){try{
   }
   for(unsigned at=1;at<=21;++at){disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"readback corruption fixture");
     Arm();corrupt_at=at;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,21*page_bytes);Disarm();
-    Check(!r.ok()&&!r.receipt&&r.error==db::NativeCreationWorkspaceError::readback_mismatch,"every dependency and selector readback byte mismatch refuses");}
+    Check(!r.ok()&&!r.receipt&&r.error==db::NativeCreationWorkspaceError::readback_mismatch,"every dependency and selector readback byte mismatch refuses");
+    if(at==total_pages+1){const auto second=Read(device,selector_page+1,page_bytes);
+      Check(std::all_of(second.begin(),second.end(),[](byte v){return !v;}),"first selector comparison failure prevents second publication");}}
   for(unsigned variant=0;variant<10;++variant){auto bad=request;u64 budget=21*page_bytes;
     if(variant==0)bad.creator.local_id.value=2;if(variant==1)bad.bootstrap.lifecycle_state=1;
     if(variant==2)bad.total_pages=18;if(variant==3)--budget;if(variant==4)bad.operation_uuid=bad.writer_uuid;
