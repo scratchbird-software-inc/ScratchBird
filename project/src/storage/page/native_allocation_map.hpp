@@ -30,6 +30,10 @@ struct NativeAllocationRecord {
   u64 page_generation = 0;
   u64 reuse_horizon = 0;
   u32 page_type = 0;
+  // Exactly one creator: transaction UUID + positive local number, or this
+  // operation UUID with nil transaction UUID and local number zero. This is
+  // lineage, not evidence of an authorized/durable operation.
+  Uuid creator_operation_uuid;
   bool operator==(const NativeAllocationRecord&) const = default;
 };
 struct NativeAllocationMap {
@@ -45,6 +49,7 @@ struct NativeAllocationMap {
   std::array<byte, 32> next_sha256{};
   std::vector<NativeAllocationState> states;
   std::vector<NativeAllocationRecord> records;
+  Uuid creator_operation_uuid;
 };
 enum class NativeAllocationError {
   none, invalid_header, invalid_family, invalid_identity, invalid_range,

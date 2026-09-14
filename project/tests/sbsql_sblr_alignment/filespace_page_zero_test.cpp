@@ -1739,7 +1739,9 @@ void CanonicalCheckpointCatalogRoots() {
 Bytes AllocationOracle(const page::NativeAllocationMap& map) {
   auto common=RootExample();common.header=map.header;
   auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
-  std::copy_n("SBABM001",8,b.begin()+128);Number(b,136,2,1);Number(b,138,2,256);
+  unsigned version=map.creator_operation_uuid.is_nil()?1:2;
+  for(const auto& r:map.records)if(!r.creator_operation_uuid.is_nil())version=2;
+  std::copy_n(version==1?"SBABM001":"SBABM002",8,b.begin()+128);Number(b,136,2,version);Number(b,138,2,256);
   const auto bitmap=(map.states.size()+1)/2,at=(384+bitmap+7)&~std::size_t(7);
   Number(b,140,4,at+128*map.records.size());PutUuid(b,144,map.object_uuid);
   Number(b,160,8,map.map_generation);Number(b,168,8,map.capacity_generation);
@@ -1749,12 +1751,13 @@ Bytes AllocationOracle(const page::NativeAllocationMap& map) {
     Number(b,248,8,map.next->page_generation);PutUuid(b,256,map.next->page_size_profile_uuid);}
   std::copy(map.next_sha256.begin(),map.next_sha256.end(),b.begin()+272);
   Number(b,304,4,bitmap);Number(b,308,4,map.records.size());
+  PutUuid(b,344,map.creator_operation_uuid);
   for(std::size_t i=0;i<map.states.size();++i)b[384+i/2]|=static_cast<byte>(map.states[i])<<(4*(i%2));
   for(std::size_t i=0;i<map.records.size();++i){const auto& r=map.records[i];const auto pos=at+128*i;
     Number(b,pos,8,r.page_number);PutUuid(b,pos+8,r.allocation_uuid);PutUuid(b,pos+24,r.page_uuid);
     PutUuid(b,pos+40,r.owner_uuid);PutUuid(b,pos+56,r.creator_transaction_uuid);
     Number(b,pos+72,8,r.creator_local_transaction_id);Number(b,pos+80,8,r.page_generation);
-    Number(b,pos+88,8,r.reuse_horizon);Number(b,pos+96,4,r.page_type);}
+    Number(b,pos+88,8,r.reuse_horizon);Number(b,pos+96,4,r.page_type);PutUuid(b,pos+100,r.creator_operation_uuid);}
   Check(SHA256(b.data(),b.size(),b.data()+312)!=nullptr,"independent allocation image seal");return b;
 }
 constexpr std::array<u64,5> initialization_coverage{{60,124,252,507,1017}};
@@ -1947,15 +1950,18 @@ void CanonicalCheckpointAllocation() {
       Check(success,"all measured checkpoint allocation fault positions");
       std::cout<<"checkpoint allocation fault positions="<<allocation_count<<std::endl;
     }
-    for(unsigned mutation=0;mutation<5;++mutation){auto altered=map;
+    for(unsigned mutation=0;mutation<7;++mutation){auto altered=map;
       if(mutation==0)altered.creator_transaction_uuid=Id(90);
       if(mutation==1){altered.creator_transaction_uuid=Id(99);altered.creator_local_transaction_id=16;}
       if(mutation==2)altered.records.back().creator_transaction_uuid=Id(90);
       if(mutation==3)altered.records.back().creator_local_transaction_id=15;
       if(mutation==4)altered.creator_local_transaction_id=18;
+      if(mutation==5){altered.creator_transaction_uuid={};altered.creator_local_transaction_id=0;altered.creator_operation_uuid=Id(90);}
+      if(mutation==6){auto& r=altered.records.back();r.creator_transaction_uuid={};r.creator_local_transaction_id=0;r.creator_operation_uuid=Id(90);}
+      if(mutation>=5)Check(page::DecodeNativeAllocationMap(AllocationOracle(altered)).ok(),"structural operation lineage alone is not durable operation authority");
       persist(inventory,altered,zero,checkpoint);result=read(budget);empty(result);
       Check(result.error==(mutation==1?E::allocation_creator_not_committed:
-        mutation==2||mutation==3?E::allocation_record_creator_mismatch:E::allocation_creator_mismatch),"exact map/original creator refusal");
+        mutation==2||mutation==3||mutation==6?E::allocation_record_creator_mismatch:E::allocation_creator_mismatch),"exact map/original creator refusal");
     }
     auto altered=map;altered.capacity_generation++;persist(inventory,altered,zero,checkpoint,16,16,true);
     result=read(budget);empty(result);Check(result.error==E::invalid_integrity,"resealed map cannot evade checkpoint head digest");
@@ -3462,9 +3468,13 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     for(unsigned n=0;n<5;++n){auto changed=selection;if(n==0)changed.bootstrap_uuid=Id(173);if(n==1)changed.checkpoint_sha256[0]^=1;if(n==2)changed.root_set_generation++;if(n==3)changed.timeline_uuid=Id(174);if(n==4)changed.previous_checkpoint_sha256[0]^=1;
       auto other=changed;other.header.page_number=32;other.header.page_uuid=Id(156);put(31,SelectionOracle(changed));put(32,SelectionOracle(other));empty(read(budget));consumers(CheckpointRef(current),false);persist();}
     const auto saved=map;
-    for(unsigned n=0;n<9;++n){map=saved;auto& r=*std::find_if(map.records.begin(),map.records.end(),[](const auto& r){return r.page_number==31;});if(n==0)map.states[31]=S::reserved;if(n==1)r.page_uuid=Id(175);if(n==2)r.page_generation++;if(n==3)r.owner_uuid=Id(175);if(n==4)r.page_type=6;if(n==5){r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;}
+    for(unsigned n=0;n<11;++n){map=saved;auto& r=*std::find_if(map.records.begin(),map.records.end(),[](const auto& r){return r.page_number==31;});if(n==0)map.states[31]=S::reserved;if(n==1)r.page_uuid=Id(175);if(n==2)r.page_generation++;if(n==3)r.owner_uuid=Id(175);if(n==4)r.page_type=6;if(n==5){r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;}
       if(n==6)r.allocation_uuid=map.records[0].allocation_uuid;if(n==7){map.creator_transaction_uuid=Id(162);map.creator_local_transaction_id=13;}if(n==8){map.header.page_uuid=Id(155);std::find_if(map.records.begin(),map.records.end(),[](const auto& r){return r.page_number==35;})->page_uuid=Id(155);}
-      persist();empty(read(budget));}
+      if(n==9){map.creator_transaction_uuid={};map.creator_local_transaction_id=0;map.creator_operation_uuid=Id(176);}
+      if(n==10){r.creator_transaction_uuid={};r.creator_local_transaction_id=0;r.creator_operation_uuid=Id(176);}
+      if(n>=9)Check(page::DecodeNativeAllocationMap(AllocationOracle(map)).ok(),"well-formed operation lineage fixture is not a publication grant");
+      persist();const auto rejected=read(budget);empty(rejected);
+      if(n>=9){Check(rejected.error==E::creator_mismatch,"selected publication requires actual operation evidence");consumers(CheckpointRef(current),false);}}
     for(unsigned slot:{14u,19u,36u})for(unsigned fault=0;fault<11;++fault){map=saved;
       auto it=std::find_if(map.records.begin(),map.records.end(),[&](const auto& r){return r.page_number==slot;});auto& record=*it;
       if(fault==0){map.states[slot]=S::quarantined;map.records.erase(it);}

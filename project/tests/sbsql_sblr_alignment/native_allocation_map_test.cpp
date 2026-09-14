@@ -80,7 +80,9 @@ Bytes Oracle(const p::NativeAllocationMap& m) {
   u64 fnv = 14695981039346656037ull;
   for (unsigned i=0;i<128;++i) { fnv ^= b[i]; fnv *= 1099511628211ull; } Num(b,96,8,fnv);
   const auto bitmap = (m.states.size()+1)/2, at = (384+bitmap+7)&~std::size_t(7);
-  std::copy_n("SBABM001",8,b.begin()+128); Num(b,136,2,1); Num(b,138,2,256);
+  unsigned version=m.creator_operation_uuid.is_nil()?1:2;
+  for(const auto& r:m.records)if(!r.creator_operation_uuid.is_nil())version=2;
+  std::copy_n(version==1?"SBABM001":"SBABM002",8,b.begin()+128); Num(b,136,2,version); Num(b,138,2,256);
   Num(b,140,4,at+128*m.records.size()); Put(b,144,m.object_uuid); Num(b,160,8,m.map_generation);
   Num(b,168,8,m.capacity_generation); Num(b,176,8,m.total_pages); Num(b,184,8,m.first_page);
   Num(b,192,8,m.states.size()); Put(b,200,m.creator_transaction_uuid); Num(b,216,8,m.creator_local_transaction_id);
@@ -88,11 +90,13 @@ Bytes Oracle(const p::NativeAllocationMap& m) {
     Num(b,248,8,m.next->page_generation); Put(b,256,m.next->page_size_profile_uuid); }
   std::copy(m.next_sha256.begin(),m.next_sha256.end(),b.begin()+272);
   Num(b,304,4,bitmap); Num(b,308,4,m.records.size());
+  Put(b,344,m.creator_operation_uuid);
   for (std::size_t i=0;i<m.states.size();++i) b[384+i/2] |= static_cast<byte>(m.states[i]) << (4*(i%2));
   for (std::size_t i=0;i<m.records.size();++i) { const auto& r=m.records[i]; const auto pos=at+128*i;
     Num(b,pos,8,r.page_number); Put(b,pos+8,r.allocation_uuid); Put(b,pos+24,r.page_uuid);
     Put(b,pos+40,r.owner_uuid); Put(b,pos+56,r.creator_transaction_uuid); Num(b,pos+72,8,r.creator_local_transaction_id);
-    Num(b,pos+80,8,r.page_generation); Num(b,pos+88,8,r.reuse_horizon); Num(b,pos+96,4,r.page_type); }
+    Num(b,pos+80,8,r.page_generation); Num(b,pos+88,8,r.reuse_horizon); Num(b,pos+96,4,r.page_type);
+    Put(b,pos+100,r.creator_operation_uuid); }
   Seal(b); return b;
 }
 p::NativeAllocationMap Example(unsigned profile=0) {
@@ -162,6 +166,71 @@ void Codecs() {
     Check(succeeded,"all allocation failure positions passed");
   }
 }
+template<class T> void OperationOwned(T& value, byte id=100) {
+  value.creator_transaction_uuid={};value.creator_local_transaction_id=0;value.creator_operation_uuid=Id(id);
+}
+void OperationCodecs() {
+  for(unsigned profile=0;profile<5;++profile) {
+    // Every combination of original record owners, independently of the map
+    // creator. This includes reserved/uninitialized and retained/reuse states.
+    const auto original=Example(profile);
+    for(unsigned map_owner=0;map_owner<2;++map_owner)
+      for(unsigned mask=0;mask<(1u<<original.records.size());++mask) {
+        auto m=original;if(map_owner)OperationOwned(m);
+        for(unsigned i=0;i<m.records.size();++i)if(mask&(1u<<i))OperationOwned(m.records[i],110+i);
+        const auto expected=Oracle(m);const auto encoded=p::EncodeNativeAllocationMap(m);
+        Check(encoded.ok()&&encoded.bytes==expected,"independent mixed-owner image");
+        Check(expected[135]==((mask||map_owner)?'2':'1')&&expected[136]==((mask||map_owner)?2:1),
+              "canonical version selected by actual owner presence");
+        const auto decoded=p::DecodeNativeAllocationMap(expected);
+        Check(decoded.ok()&&decoded.map->records==m.records&&
+              decoded.map->creator_transaction_uuid==m.creator_transaction_uuid&&
+              decoded.map->creator_local_transaction_id==m.creator_local_transaction_id&&
+              decoded.map->creator_operation_uuid==m.creator_operation_uuid,"exclusive binary owners preserved");
+        Check(p::EncodeNativeAllocationMap(*decoded.map).bytes==expected,"operation lineage exact re-encoding");
+      }
+    Uuid nil{},v7=Id(101),v4=v7,bad_variant=v7;v4.bytes[6]=0x41;bad_variant.bytes[8]=0x09;
+    const std::array<Uuid,4> ids{nil,v7,v4,bad_variant};
+    const std::array<u64,3> numbers{0,1,std::numeric_limits<u64>::max()};
+    for(unsigned level=0;level<2;++level)for(unsigned tx=0;tx<4;++tx)
+      for(unsigned op=0;op<4;++op)for(auto number:numbers) {
+        auto m=original;OperationOwned(m);for(auto& r:m.records)OperationOwned(r);
+        if(level==0){m.creator_transaction_uuid=ids[tx];m.creator_operation_uuid=ids[op];m.creator_local_transaction_id=number;}
+        else {auto& r=m.records[0];r.creator_transaction_uuid=ids[tx];r.creator_operation_uuid=ids[op];r.creator_local_transaction_id=number;}
+        const bool valid=(tx==1&&op==0&&number!=0)||(tx==0&&op==1&&number==0);
+        const auto encoded=p::EncodeNativeAllocationMap(m),decoded=p::DecodeNativeAllocationMap(Oracle(m));
+        Check(encoded.ok()==valid&&decoded.ok()==valid,"complete owner identity and number truth table");
+        if(!valid){Empty(encoded);Empty(decoded);}
+      }
+    auto m=original;OperationOwned(m);for(auto& r:m.records)OperationOwned(r);
+    const auto bytes=Oracle(m);
+    const auto records_at=(384+(m.states.size()+1)/2+7)&~std::size_t(7);
+    for(std::size_t at=360;at<384;++at){auto bad=bytes;bad[at]=1;Seal(bad);Empty(p::DecodeNativeAllocationMap(bad));}
+    for(unsigned i=0;i<m.records.size();++i)for(unsigned offset=116;offset<128;++offset){
+      auto bad=bytes;bad[records_at+128*i+offset]=1;Seal(bad);Empty(p::DecodeNativeAllocationMap(bad));}
+    for(unsigned mutation=0;mutation<5;++mutation){auto bad=bytes;
+      if(mutation==0)bad[135]='1';if(mutation==1)Num(bad,136,2,1);
+      if(mutation==2){bad[135]='1';Num(bad,136,2,1);}
+      if(mutation==3)Num(bad,136,2,3);
+      if(mutation==4){bad=Oracle(original);bad[135]='2';Num(bad,136,2,2);}
+      Seal(bad);Empty(p::DecodeNativeAllocationMap(bad));
+    }
+    // An operation-owned record does not waive numeric ordering for the
+    // remaining transaction-owned records of a transaction-owned map.
+    auto ordered=original;OperationOwned(ordered.records.back());
+    ordered.records.front().creator_local_transaction_id=11;
+    Empty(p::EncodeNativeAllocationMap(ordered));Empty(p::DecodeNativeAllocationMap(Oracle(ordered)));
+    for(unsigned mode=0;mode<2;++mode){
+      fail_hash=true;const auto r=mode?p::DecodeNativeAllocationMap(bytes):p::EncodeNativeAllocationMap(m);
+      Check(!fail_hash&&r.error==E::hash_failure,"operation image hash failure");Empty(r);
+      bool complete=false;
+      for(long budget=0;budget<100;++budget){allocation_budget=budget;
+        const auto result=mode?p::DecodeNativeAllocationMap(bytes):p::EncodeNativeAllocationMap(m);allocation_budget=-1;
+        if(result.ok()){complete=true;break;}Empty(result);Check(result.error==E::resource_exhausted,"operation image allocation failure");}
+      Check(complete,"operation image allocation sweep complete");
+    }
+  }
+}
 struct Fixture {
   std::filesystem::path root;
   Fixture() { std::string path=(std::filesystem::temp_directory_path()/"sb-native-allocation.XXXXXX").string();
@@ -169,9 +238,11 @@ struct Fixture {
   ~Fixture(){std::error_code e;std::filesystem::remove_all(root,e);}
 };
 void RetainedChain() {
-  for (unsigned profile=0;profile<5;++profile) {
+  for (unsigned profile=0;profile<5;++profile) for(unsigned ownership=0;ownership<4;++ownership) {
     Fixture fixture;auto full=Example(profile); full.states[2]=S::allocated;
     full.records.insert(full.records.begin()+2,{2,Id(42),Id(11),Id(20),Id(30),8,5,0,3});
+    if(ownership==1||ownership==3)OperationOwned(full);
+    if(ownership>=2)for(auto& r:full.records)if(ownership==3||r.page_number>=5)OperationOwned(r,110+r.page_number);
     auto head=full,tail=full; head.states.resize(5);
     head.records.erase(std::remove_if(head.records.begin(),head.records.end(),[](const auto& r){return r.page_number>=5;}),head.records.end());
     tail.first_page=5;tail.states.erase(tail.states.begin(),tail.states.begin()+5);
@@ -209,18 +280,23 @@ void RetainedChain() {
       Check(success,"all retained-chain allocation failure positions");
       std::cout << "retained allocation fault positions=" << allocation_count << '\n';
     }
-    for(unsigned mutation=0;mutation<9;++mutation){auto bad_head=head,bad_tail=tail;
+    for(unsigned mutation=0;mutation<10;++mutation){auto bad_head=head,bad_tail=tail;
       if(mutation==0)bad_tail.map_generation++;
       if(mutation==1)bad_tail.header.page_uuid=Id(10);
-      if(mutation==2)bad_tail.creator_transaction_uuid=Id(90);
+      if(mutation==2){if(bad_tail.creator_operation_uuid.is_nil())bad_tail.creator_transaction_uuid=Id(90);
+        else bad_tail.creator_operation_uuid=Id(90);}
       if(mutation==3)bad_head.records[1].page_uuid=Id(90);
       if(mutation==4)bad_head.records[0].page_generation++;
       if(mutation==5)bad_head.records[2].owner_uuid=Id(90);
       if(mutation==6)bad_head.next->page_generation++;
       if(mutation==7)bad_tail.object_uuid=Id(90);
       if(mutation==8){bad_head.header.page_uuid=zero.page_uuid;bad_head.records[1].page_uuid=zero.page_uuid;}
+      if(mutation==9)OperationOwned(bad_tail,101);
       const auto changed_tail=Oracle(bad_tail);bad_head.next_sha256=Hash(changed_tail);
-      write(1,Oracle(bad_head));write(2,changed_tail);Empty(read(limit));
+      if(mutation==2||mutation==9)Check(p::DecodeNativeAllocationMap(changed_tail).ok()&&
+        p::DecodeNativeAllocationMap(Oracle(bad_head)).ok(),"lineage mismatch preserves individually valid images");
+      write(1,Oracle(bad_head));write(2,changed_tail);const auto rejected=read(limit);Empty(rejected);
+      if(mutation==2||mutation==9)Check(rejected.error==E::chain_mismatch,"actual chain binds complete creator tuple");
     }
     write(1,head_bytes);write(2,tail_bytes);
     auto changed=tail_bytes;changed[392+8+15]^=1;Seal(changed);write(2,changed);Empty(read(limit));write(2,tail_bytes);
@@ -251,6 +327,6 @@ void RetainedChain() {
 }
 }  // namespace
 int main(){
-  try { Codecs();RetainedChain();std::cout<<"native allocation checks="<<checks<<" failures=0\n"; }
+  try { Codecs();OperationCodecs();RetainedChain();std::cout<<"native allocation checks="<<checks<<" failures=0\n"; }
   catch(const std::exception& error){std::cerr<<error.what()<<'\n';return 1;}
 }

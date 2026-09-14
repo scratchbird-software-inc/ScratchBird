@@ -43,12 +43,25 @@ auto Digest(const std::vector<byte>& bytes, bool zero_seal) {
   return hash::ComputeSha256DigestParts(parts, 3);
 }
 std::size_t RecordsAt(std::size_t count) { return (start + (count + 1) / 2 + 7) & ~std::size_t(7); }
+bool CreatorIdentityValid(const Uuid& transaction, const Uuid& operation) {
+  return operation.is_nil() ? V7(transaction) : transaction.is_nil() && V7(operation);
+}
+bool CreatorNumberValid(u64 number, const Uuid& operation) {
+  return operation.is_nil() ? number != 0 : number == 0;
+}
+bool HasOperationLineage(const NativeAllocationMap& map) {
+  return !map.creator_operation_uuid.is_nil() ||
+      std::any_of(map.records.begin(), map.records.end(),
+                  [](const auto& r) { return !r.creator_operation_uuid.is_nil(); });
+}
 E Validate(const NativeAllocationMap& map) {
   const auto& h = map.header;
   if (!disk::EncodeNativeCommonPageHeader(h).ok() || h.page_type != 3 || (h.flags & ~u64(2)))
     return E::invalid_header;
-  if (!V7(map.object_uuid) || !V7(map.creator_transaction_uuid)) return E::invalid_identity;
-  if (!map.map_generation || !map.capacity_generation || !map.creator_local_transaction_id)
+  if (!V7(map.object_uuid) ||
+      !CreatorIdentityValid(map.creator_transaction_uuid, map.creator_operation_uuid)) return E::invalid_identity;
+  if (!map.map_generation || !map.capacity_generation ||
+      !CreatorNumberValid(map.creator_local_transaction_id, map.creator_operation_uuid))
     return E::invalid_family;
   if (!map.total_pages || map.total_pages > std::numeric_limits<u64>::max() / h.page_size_bytes ||
       h.page_number >= map.total_pages || map.first_page >= map.total_pages || map.states.empty() ||
@@ -76,9 +89,12 @@ E Validate(const NativeAllocationMap& map) {
     if (state == S::free) { if (present) return E::invalid_record; continue; }
     if (!present) { if (state != S::quarantined) return E::invalid_record; continue; }
     const auto& r = map.records[record++];
-    if (!V7(r.allocation_uuid) || !V7(r.owner_uuid) || !V7(r.creator_transaction_uuid) ||
+    if (!V7(r.allocation_uuid) || !V7(r.owner_uuid) ||
+        !CreatorIdentityValid(r.creator_transaction_uuid, r.creator_operation_uuid) ||
         (!r.page_uuid.is_nil() && !V7(r.page_uuid))) return E::invalid_identity;
-    if (!r.creator_local_transaction_id || r.creator_local_transaction_id > map.creator_local_transaction_id ||
+    if (!CreatorNumberValid(r.creator_local_transaction_id, r.creator_operation_uuid) ||
+        (r.creator_operation_uuid.is_nil() && map.creator_operation_uuid.is_nil() &&
+         r.creator_local_transaction_id > map.creator_local_transaction_id) ||
         !r.page_type || !disk::IsRegisteredNativePageType(r.page_type)) return E::invalid_record;
     if (r.page_uuid.is_nil() != (r.page_generation == 0)) return E::invalid_record;
     if (r.page_uuid.is_nil() && state != S::reserved && state != S::preallocated && state != S::quarantined)
@@ -98,7 +114,9 @@ NativeAllocationMapResult EncodeNativeAllocationMap(const NativeAllocationMap& m
     if (!header.ok()) return Fail(E::invalid_header);
     std::copy(header.bytes->begin(), header.bytes->end(), bytes.begin());
     auto* f = bytes.data() + 128;
-    std::copy_n("SBABM001", 8, f); StoreLittle16(f + 8, 1); StoreLittle16(f + 10, 256);
+    const bool operation_lineage = HasOperationLineage(map);
+    std::copy_n(operation_lineage ? "SBABM002" : "SBABM001", 8, f);
+    StoreLittle16(f + 8, operation_lineage ? 2 : 1); StoreLittle16(f + 10, 256);
     const auto records_at = RecordsAt(map.states.size());
     StoreLittle32(f + 12, records_at + record_bytes * map.records.size());
     PutUuid(f + 16, map.object_uuid); StoreLittle64(f + 32, map.map_generation);
@@ -108,6 +126,7 @@ NativeAllocationMapResult EncodeNativeAllocationMap(const NativeAllocationMap& m
     if (map.next) PutRef(f + 96, *map.next);
     std::copy(map.next_sha256.begin(), map.next_sha256.end(), f + 144);
     StoreLittle32(f + 176, (map.states.size() + 1) / 2); StoreLittle32(f + 180, map.records.size());
+    PutUuid(f + 216, map.creator_operation_uuid);
     for (std::size_t i = 0; i < map.states.size(); ++i)
       bytes[start + i / 2] |= static_cast<byte>(map.states[i]) << (4 * (i % 2));
     for (std::size_t i = 0; i < map.records.size(); ++i) {
@@ -116,6 +135,7 @@ NativeAllocationMapResult EncodeNativeAllocationMap(const NativeAllocationMap& m
       PutUuid(p + 40, r.owner_uuid); PutUuid(p + 56, r.creator_transaction_uuid);
       StoreLittle64(p + 72, r.creator_local_transaction_id); StoreLittle64(p + 80, r.page_generation);
       StoreLittle64(p + 88, r.reuse_horizon); StoreLittle32(p + 96, r.page_type);
+      PutUuid(p + 100, r.creator_operation_uuid);
     }
     const auto digest = Digest(bytes, true); if (!digest.ok()) return Fail(E::hash_failure);
     std::copy(digest.digest.begin(), digest.digest.end(), bytes.begin() + seal);
@@ -136,10 +156,12 @@ NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>& byt
     const auto* f = bytes.data() + 128;
     const auto count = LoadLittle64(f + 64);
     const auto record_count = LoadLittle32(f + 180), used = LoadLittle32(f + 12);
-    if (std::string_view(reinterpret_cast<const char*>(f), 8) != "SBABM001" ||
-        LoadLittle16(f + 8) != 1 || LoadLittle16(f + 10) != 256 || !count ||
+    const auto magic = std::string_view(reinterpret_cast<const char*>(f), 8);
+    const auto version = LoadLittle16(f + 8);
+    if (!((magic == "SBABM001" && version == 1) || (magic == "SBABM002" && version == 2)) ||
+        LoadLittle16(f + 10) != 256 || !count ||
         count > (bytes.size() - start) * 2 || LoadLittle32(f + 176) != (count + 1) / 2 ||
-        !Zero(f + 216, 40)) return Fail(E::invalid_family);
+        !Zero(f + (version == 1 ? 216 : 232), version == 1 ? 40 : 24)) return Fail(E::invalid_family);
     const auto records_at = RecordsAt(static_cast<std::size_t>(count));
     if (records_at > bytes.size() || record_count > (bytes.size() - records_at) / record_bytes ||
         used != records_at + record_count * record_bytes ||
@@ -151,6 +173,7 @@ NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>& byt
     map.capacity_generation = LoadLittle64(f + 40); map.total_pages = LoadLittle64(f + 48);
     map.first_page = LoadLittle64(f + 56); map.creator_transaction_uuid = GetUuid(f + 72);
     map.creator_local_transaction_id = LoadLittle64(f + 88);
+    if (version == 2) map.creator_operation_uuid = GetUuid(f + 216);
     if (!Zero(f + 96, 48)) map.next = GetRef(f + 96);
     std::copy_n(f + 144, 32, map.next_sha256.begin());
     map.states.reserve(count); map.records.reserve(record_count);
@@ -158,12 +181,15 @@ NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>& byt
       map.states.push_back(static_cast<S>((bytes[start + i / 2] >> (4 * (i % 2))) & 15));
     for (u32 i = 0; i < record_count; ++i) {
       const auto* p = bytes.data() + records_at + record_bytes * i;
-      if (!Zero(p + 100, 28)) return Fail(E::invalid_record);
+      if (!Zero(p + (version == 1 ? 100 : 116), version == 1 ? 28 : 12)) return Fail(E::invalid_record);
       NativeAllocationRecord r; r.page_number = LoadLittle64(p); r.allocation_uuid = GetUuid(p + 8);
       r.page_uuid = GetUuid(p + 24); r.owner_uuid = GetUuid(p + 40); r.creator_transaction_uuid = GetUuid(p + 56);
       r.creator_local_transaction_id = LoadLittle64(p + 72); r.page_generation = LoadLittle64(p + 80);
-      r.reuse_horizon = LoadLittle64(p + 88); r.page_type = LoadLittle32(p + 96); map.records.push_back(r);
+      r.reuse_horizon = LoadLittle64(p + 88); r.page_type = LoadLittle32(p + 96);
+      if (version == 2) r.creator_operation_uuid = GetUuid(p + 100);
+      map.records.push_back(r);
     }
+    if ((version == 2) != HasOperationLineage(map)) return Fail(E::invalid_family);
     const auto valid = Validate(map); if (valid != E::none) return Fail(valid);
     return {E::none, std::move(map), bytes};
   } catch (const std::bad_alloc&) { return Fail(E::resource_exhausted); }
@@ -221,6 +247,7 @@ static NativeAllocationChainResult ReadAllocationChain(
         const auto& head = *result.pages.front().map;
         if (map.map_generation != head.map_generation || map.capacity_generation != head.capacity_generation ||
             map.creator_transaction_uuid != head.creator_transaction_uuid ||
+            map.creator_operation_uuid != head.creator_operation_uuid ||
             map.creator_local_transaction_id != head.creator_local_transaction_id) return ChainFail(E::chain_mismatch);
       }
       covered += map.states.size();
