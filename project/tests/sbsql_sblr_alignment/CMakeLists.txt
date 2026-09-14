@@ -2,6 +2,14 @@
 # SPDX-License-Identifier: MPL-2.0
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_cluster_gateway_result_transport
+    cluster_gateway_result_transport_test.cpp)
+  target_link_libraries(sbsql_sblr_alignment_cluster_gateway_result_transport PRIVATE
+    sb_cluster_gateway_result_transport)
+  add_test(NAME sbsql_sblr_alignment_cluster_gateway_result_transport
+    COMMAND sbsql_sblr_alignment_cluster_gateway_result_transport)
+  set_tests_properties(sbsql_sblr_alignment_cluster_gateway_result_transport PROPERTIES
+    TIMEOUT 60 LABELS "sbsql_sblr_alignment;cluster_gateway;production_transport_checks;not_runtime_acceptance")
   foreach(language IN ITEMS c cpp)
     set(abi_target sbsql_sblr_alignment_cluster_gateway_abi_layout_${language})
     add_executable(${abi_target} cluster_gateway_abi_layout_test.${language})

@@ -2798,6 +2798,11 @@ if(NOT TARGET sb_engine_shared)
   )
 endif()
 
+if((SB_BUILD_SERVER OR SB_BUILD_SERVER_EVENT_NOTIFICATIONS OR SB_BUILD_SBLR_EXECUTOR_FUNCTIONS)
+   AND NOT TARGET sb_cluster_gateway_result_transport)
+  add_subdirectory(src/shared/cluster_gateway_stub)
+endif()
+
 if(SB_BUILD_SERVER OR SB_BUILD_SERVER_EVENT_NOTIFICATIONS)
   add_subdirectory(src/server)
   if(BUILD_TESTING)
