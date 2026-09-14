@@ -27,6 +27,7 @@ add_library(sb_storage_database
   physical_mga_cow_store.cpp
   native_catalog_leaf_staging.cpp
   native_catalog_version_staging.cpp
+  native_checkpoint_selection.cpp
   repair_event_ledger.cpp
   repair_history_inspection.cpp
   startup_state.cpp

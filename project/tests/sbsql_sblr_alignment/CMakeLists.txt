@@ -8181,6 +8181,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_native_horizon_root PROPERTIES
     LABELS "sbsql_sblr_alignment;native_horizon;binary_UUID;retained_chain;not_SQL_E2E" TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_native_system_state native_system_state_test.cpp)
+  add_executable(sbsql_sblr_alignment_native_checkpoint_selection native_checkpoint_selection_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_checkpoint_selection PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_checkpoint_selection PRIVATE sb_storage_database)
+  target_link_options(sbsql_sblr_alignment_native_checkpoint_selection PRIVATE -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
+  add_test(NAME sbsql_sblr_alignment_native_checkpoint_selection COMMAND sbsql_sblr_alignment_native_checkpoint_selection)
+  set_tests_properties(sbsql_sblr_alignment_native_checkpoint_selection PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_checkpoint_selection;binary_UUID;image_only;not_SQL_E2E" TIMEOUT 120)
   target_compile_features(sbsql_sblr_alignment_native_system_state PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_system_state PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_native_system_state PRIVATE -Wl,--wrap=pread -Wl,--wrap=EVP_MD_CTX_new)

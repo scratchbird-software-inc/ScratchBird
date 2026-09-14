@@ -58,11 +58,11 @@ void Check(bool ok,std::string_view why,std::source_location at=std::source_loca
   if(!ok) throw std::runtime_error(std::string(why)+" line="+std::to_string(at.line()));
 }
 // Independent explicit Core entries, not runtime ranges or enum casts.
-constexpr std::array<unsigned,97> codes{{
+constexpr std::array<unsigned,98> codes{{
   0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,
   256,257,258,259,260,261,262,263,264,
   512,513,514,515,516,517,518,519,520,521,522,523,524,525,526,
-  768,769,770,771,772,773,774,775,776,777,778,779,780,781,
+  768,769,770,771,772,773,774,775,776,777,778,779,780,781,782,
   1024,1025,1026,1027,1028,1029,1030,1031,1032,
   1280,1281,1282,1283,1284,1285,1286,1287,1288,1289,1290,1291,1292,
   1293,1294,1295,1296,1297,1298,1299,1300,1301,1302,1303,1304,
@@ -123,7 +123,7 @@ void Codecs() {
     }
     ++executed_tuples;
   }
-  Check(executed_tuples==7760,"independent expected finite tuple count");
+  Check(executed_tuples==7840,"independent expected finite tuple count");
   const auto h=Example(); const auto good=Oracle(h); const auto binding=Bind(h);
   for(unsigned bit=0;bit<1024;++bit) {
     auto b=good; b[bit/8]^=static_cast<byte>(1u<<(bit%8));
@@ -255,7 +255,7 @@ int main(int argc,char** argv) {
   }
   std::string root;
   try {
-    std::cout<<"expected_header_tuples=7760;namespace_values=65537;metadata_only=true\n";
+    std::cout<<"expected_header_tuples=7840;namespace_values=65537;metadata_only=true\n";
     Codecs(); char name[]="/tmp/sbnch_XXXXXX"; auto* dir=::mkdtemp(name);
     Check(dir!=nullptr,"create isolated fixture root"); root=dir;
     Files(root);

@@ -54,7 +54,7 @@ bool IsRegisteredNativePageType(u32 code) noexcept {
   // Exact contiguous allocated sets in Core/page-types.yaml, not its wider
   // reserved code_ranges. Membership does not assert implementation status.
   return code<=0x13 || (code>=0x100&&code<=0x108)
-      ||(code>=0x200&&code<=0x20e)||(code>=0x300&&code<=0x30d)
+      ||(code>=0x200&&code<=0x20e)||(code>=0x300&&code<=0x30e)
       ||(code>=0x400&&code<=0x408)||(code>=0x500&&code<=0x518)
       ||(code>=0x600&&code<=0x602)||code==0xffe||code==0xfff;
 }
