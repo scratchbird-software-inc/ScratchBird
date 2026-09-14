@@ -3021,7 +3021,7 @@ Bytes SelectionOracle(const db::NativeCheckpointSelection& s){
   if(s.previous_checkpoint)ref(336,*s.previous_checkpoint);PutUuid(b,384,s.previous_checkpoint_object_uuid);std::copy(s.previous_checkpoint_sha256.begin(),s.previous_checkpoint_sha256.end(),b.begin()+400);
   const auto digest=WholeRootHash(b);std::copy(digest.begin(),digest.end(),b.begin()+432);return b;
 }
-void CanonicalBoundCheckpointSelection(bool inventory_staging=false){using E=db::NativeCheckpointSelectionError;using S=page::NativeAllocationState;
+void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_inventory=false){using E=db::NativeCheckpointSelectionError;using S=page::NativeAllocationState;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=4;++role){
     Fixture fixture;disk::FileDevice device,second_device;const unsigned q=(p+1)%5;const auto path=(fixture.root/"bound-selector").string();auto zero=Example(p,role);zero.free_pages=zero.preallocated_pages=0;
     auto second_zero=Example(q,5);second_zero.bootstrap.filespace_uuid=Id(7);second_zero.page_uuid=Id(8);second_zero.free_pages=second_zero.preallocated_pages=0;for(auto& r:second_zero.roots)r.filespace_uuid=Id(7);
@@ -3093,15 +3093,29 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false){using E=db:
       using IE=db::NativeInventoryStageError;
       auto head=inv,tail=inv;head.header.page_number=23;head.header.page_generation=107;head.header.page_uuid=Id(204);head.inventory_generation=20;
       tail.header.page_number=24;tail.header.page_generation=108;tail.header.page_uuid=Id(205);tail.inventory_generation=20;
+      page::NativeAllocationMap secondary_map;
+      if(mixed_inventory){
+        second_zero=Example(q,2);second_zero.bootstrap.filespace_uuid=Id(7);second_zero.page_uuid=Id(8);second_zero.free_pages=second_zero.preallocated_pages=0;
+        for(auto& r:second_zero.roots)r.filespace_uuid=Id(7);second_zero.roots[2].object_uuid=Id(179);directory.records[1].bootstrap=second_zero.bootstrap;
+        tail.header.filespace_uuid=Id(7);tail.header.page_size_bytes=sizes[q];tail.header.page_size_profile_uuid=Profile(q);
+        secondary_map.header={sizes[q],3,Id(1),Id(7),Id(202),13,103,0,Profile(q)};secondary_map.object_uuid=Id(179);
+        secondary_map.map_generation=secondary_map.capacity_generation=1;secondary_map.total_pages=64;
+        secondary_map.creator_transaction_uuid=Id(98);secondary_map.creator_local_transaction_id=17;secondary_map.states.assign(64,S::quarantined);
+        secondary_map.states[0]=secondary_map.states[13]=S::allocated;
+        secondary_map.records.push_back({0,Id(220),Id(8),Id(7),Id(98),17,7,0,1});
+        secondary_map.records.push_back({13,Id(233),Id(202),Id(179),Id(98),17,103,0,3});
+      }
       head.inventory.entries.pop_back();tail.inventory.entries.erase(tail.inventory.entries.begin());head.next=InventoryRef(tail);tail.previous=InventoryRef(head);
       std::vector<page::NativeTransactionInventoryPage> chain{head,tail};
-      for(const auto& page:chain){const auto& h=page.header;map.states[h.page_number]=S::reserved;
-        map.records.push_back({h.page_number,Id(120+h.page_number),h.page_uuid,page.object_uuid,Id(162),13,h.page_generation,0,0x301});}
-      std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});persist();
-      const u64 stage_budget=9*sizes[p];const Bytes blank(sizes[p],0);const std::vector<Bytes> expected{InventoryOracle(head,13,13,13),InventoryOracle(tail,18,18,18)};
-      const auto reset=[&](){put(23,blank);put(24,blank);};
+      for(const auto& page:chain){const auto& h=page.header;auto& owning_map=h.filespace_uuid==Id(2)?map:secondary_map;owning_map.states[h.page_number]=S::reserved;
+        owning_map.records.push_back({h.page_number,Id(120+h.page_number),h.page_uuid,page.object_uuid,Id(162),13,h.page_generation,0,0x301});}
+      std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
+      const auto persist_stage=[&](){persist();if(mixed_inventory){const auto mb=AllocationOracle(secondary_map);Check(second_device.WriteAt(13*sizes[q],mb.data(),mb.size()).ok()&&second_device.Sync().ok(),"persist mixed inventory reservation map");}};persist_stage();
+      const u64 stage_budget=mixed_inventory?std::max(8*sizes[p]+sizes[q],4*sizes[p]+3*sizes[q]):9*sizes[p];const Bytes blank(sizes[p],0),tail_blank(tail.header.page_size_bytes,0);const std::vector<Bytes> expected{InventoryOracle(head,13,13,13),InventoryOracle(tail,18,18,18)};
+      const auto put_tail=[&](const Bytes& b){auto& target=mixed_inventory?second_device:device;Check(target.WriteAt(24*u64{tail.header.page_size_bytes},b.data(),b.size()).ok()&&target.Sync().ok(),"persist inventory destination preimage");};
+      const auto reset=[&](){put(23,blank);put_tail(tail_blank);};
       const auto stage=[&](u64 limit){return db::StageNativeInventorySuccessorFromOpenDevices(devices,CheckpointRef(current),inv.inventory.entries.front().identity,chain,limit);};
-      const auto bytes=[&](unsigned slot){Bytes b(sizes[p]);Check(device.ReadAt(slot*sizes[p],b.data(),b.size()).ok(),"read staged inventory bytes");return b;};
+      const auto bytes=[&](unsigned slot){const bool second=mixed_inventory&&slot==24;const auto size=second?sizes[q]:sizes[p];auto& target=second?second_device:device;Bytes b(size);Check(target.ReadAt(slot*u64{size},b.data(),b.size()).ok(),"read staged inventory bytes");return b;};
       const auto no_receipts=[&](const auto& r){Check(!r.ok()&&r.receipts.empty(),"inventory staging failure has no successful prefix");};
       reset();Check(stage(stage_budget).ok(),"cold inventory stage initializes transition consistency");
       reset();reads=observed_allocations=observed_full_digests=0;stage_writes=stage_syncs=0;track_reads=count_allocations=count_full_digests=true;
@@ -3112,7 +3126,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false){using E=db:
       for(unsigned i=0;i<2;++i){const auto& receipt=staged.receipts[i];Check(bytes(23+i)==expected[i]&&receipt.page==InventoryRef(chain[i])&&receipt.page_uuid==chain[i].header.page_uuid&&receipt.inventory_uuid==Id(44)&&receipt.allocation_uuid==Id(143+i)&&receipt.transaction.transaction_uuid.value==Id(162)&&receipt.sha256==WholeRootHash(expected[i]),"ordered receipts match independently encoded actual inventory pages");}
       stage_writes=stage_syncs=0;Check(stage(stage_budget).ok()&&stage_writes==0&&stage_syncs==2,"idempotent complete inventory retry syncs both pages");
       Check(read(budget).checkpoint_inventory.inventory_generation==19&&bytes(14)==InventoryOracle(inv,13,13,13),"staging does not publish inventory or change old bytes");
-      reset();no_receipts(stage(stage_budget-1));Check(bytes(23)==blank&&bytes(24)==blank,"inventory preflight budget refuses before writes");
+      reset();no_receipts(stage(stage_budget-1));Check(bytes(23)==blank&&bytes(24)==tail_blank,"inventory preflight budget refuses before writes");
       const auto original=chain;
       for(unsigned fault=0;fault<12;++fault){chain=original;
         if(fault==0)chain.back().previous.reset();if(fault==1)chain.back().inventory_generation++;if(fault==2)chain.back().object_uuid=Id(206);
@@ -3123,16 +3137,16 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false){using E=db:
         if(fault==9)chain.front().inventory.entries.front().identity.transaction_uuid.value=Id(206);
         if(fault==10)chain.front().inventory.entries.front().begin_unix_epoch_millis++;
         if(fault==11){chain.back().inventory.entries.front().state=mga::TransactionState::active;chain.back().inventory.entries.front().commit_sequence=0;}
-        stage_writes=0;no_receipts(stage(stage_budget));Check(!stage_writes&&bytes(23)==blank&&bytes(24)==blank,"late invalid inventory member causes no prefix write");}
-      chain=original;auto occupied=blank;occupied[0]=1;put(24,occupied);stage_writes=0;no_receipts(stage(stage_budget));Check(!stage_writes&&bytes(23)==blank&&bytes(24)==occupied,"nonzero late destination rejected before first write");reset();
-      const auto original_map=map;
-      for(unsigned fault=0;fault<6;++fault){map=original_map;auto& record=*std::find_if(map.records.begin(),map.records.end(),[](const auto& r){return r.page_number==24;});
-        if(fault==0)map.states[24]=S::allocated;if(fault==1)record.owner_uuid=Id(206);if(fault==2){record.creator_transaction_uuid=Id(98);record.creator_local_transaction_id=17;}
+        stage_writes=0;no_receipts(stage(stage_budget));Check(!stage_writes&&bytes(23)==blank&&bytes(24)==tail_blank,"late invalid inventory member causes no prefix write");}
+      chain=original;auto occupied=tail_blank;occupied[0]=1;put_tail(occupied);stage_writes=0;no_receipts(stage(stage_budget));Check(!stage_writes&&bytes(23)==blank&&bytes(24)==occupied,"nonzero late destination rejected before first write");reset();
+      auto& reservation_map=mixed_inventory?secondary_map:map;const auto original_map=reservation_map;
+      for(unsigned fault=0;fault<6;++fault){reservation_map=original_map;auto& record=*std::find_if(reservation_map.records.begin(),reservation_map.records.end(),[](const auto& r){return r.page_number==24;});
+        if(fault==0)reservation_map.states[24]=S::allocated;if(fault==1)record.owner_uuid=Id(206);if(fault==2){record.creator_transaction_uuid=Id(98);record.creator_local_transaction_id=17;}
         if(fault==3)record.page_uuid=Id(206);if(fault==4)record.page_generation++;if(fault==5)record.page_type=6;
-        persist();stage_writes=0;no_receipts(stage(stage_budget));Check(!stage_writes&&bytes(23)==blank&&bytes(24)==blank,"late actual reservation mismatch refuses before first write");}
-      map=original_map;inv.inventory.entries.front().rollback_only=true;persist();stage_writes=0;no_receipts(stage(stage_budget));Check(!stage_writes,"rollback-only inventory owner cannot stage");
-      inv.inventory.entries.front().rollback_only=false;persist();
-      if(p==0&&role==1){
+        persist_stage();stage_writes=0;no_receipts(stage(stage_budget));Check(!stage_writes&&bytes(23)==blank&&bytes(24)==tail_blank,"late actual reservation mismatch refuses before first write");}
+      reservation_map=original_map;inv.inventory.entries.front().rollback_only=true;persist_stage();stage_writes=0;no_receipts(stage(stage_budget));Check(!stage_writes,"rollback-only inventory owner cannot stage");
+      inv.inventory.entries.front().rollback_only=false;persist_stage();
+      if(p==0&&role==1&&!mixed_inventory){
         unsigned long allocation_sites=0;bool allocation_terminal=false;
         for(unsigned long fault=0;fault<=na;++fault){reset();allocation_budget=fault;staged=stage(stage_budget);const auto remaining=allocation_budget;allocation_budget=-1;
           if(staged.ok()){Check(remaining>=0&&staged.receipts.size()==2&&bytes(23)==expected[0]&&bytes(24)==expected[1],"inventory terminal success consumed no allocation fault and wrote exact chain");allocation_sites=fault;allocation_terminal=true;break;}
@@ -3153,6 +3167,12 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false){using E=db:
         std::thread one([&]{if(stage(stage_budget).ok())++completed;}),two([&]{if(db::StageNativeInventorySuccessorFromOpenDevices(reversed,CheckpointRef(current),inv.inventory.entries.front().identity,chain,stage_budget).ok())++completed;});
         one.join();two.join();Check(completed==2&&stage_writes==2&&stage_syncs==4,"opposite-order inventory batches serialize writes and exact retry");
         std::cout<<"inventory stage allocation_sites="<<allocation_sites<<" measured_allocations="<<na<<" reads="<<nr<<" digests="<<nf<<std::endl;
+      }
+      if(mixed_inventory){
+        reset();stage_write_fault=3;stage_write_fault_after=2;no_receipts(stage(stage_budget));Check(!stage_write_fault&&!stage_write_fault_after&&bytes(23)==expected[0]&&bytes(24)!=tail_blank&&bytes(24)!=expected[1],"mixed-filespace late partial write returns no prefix receipt");
+        const auto partial=bytes(24);no_receipts(stage(stage_budget));Check(bytes(24)==partial,"mixed partial image preserved");
+        reset();stage_sync_fault=1;stage_sync_fault_after=2;no_receipts(stage(stage_budget));Check(!stage_sync_fault&&!stage_sync_fault_after&&stage(stage_budget).ok(),"mixed late sync failure permits exact retry");
+        reset();reads=0;track_reads=true;stage_corrupt_read=nr;no_receipts(stage(stage_budget));track_reads=false;Check(!stage_corrupt_read&&bytes(23)==expected[0]&&bytes(24)==expected[1],"mixed final readback corruption yields no receipt");
       }
       reset();Check(stage(stage_budget).ok(),"final inventory stage");Check(device.Close().ok()&&second_device.Close().ok(),"release inventory staging fixture");
       const auto child=::fork();Check(child>=0,"fork inventory staging probe");if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","inventory-stage-probe","--inventory-stage-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
@@ -3284,13 +3304,16 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false){using E=db:
   }
 }
 int main(int argc,char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--inventory-stage-mixed-only"){
+    try{CanonicalBoundCheckpointSelection(true,true);std::cout<<"mixed inventory stage checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--inventory-stage-only"){
     try{CanonicalBoundCheckpointSelection(true);std::cout<<"inventory stage checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==4&&std::string_view(argv[1])=="--inventory-stage-probe"){
     const std::filesystem::path root=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3]));if(p>=5)return 2;
-    disk::FileDevice device;if(!device.Open((root/"bound-selector").string(),disk::FileOpenMode::open_existing_read_only).ok())return 3;
-    const auto r=page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),{{Id(2),Profile(p),&device}},{4,0x301,Id(2),23,107,Profile(p),Id(44)},2*sizes[p]);
+    const auto q=(p+1)%5;disk::FileDevice device,second;if(!device.Open((root/"bound-selector").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((root/"bound-selector-secondary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 3;
+    const auto r=page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),{{Id(2),Profile(p),&device},{Id(7),Profile(q),&second}},{4,0x301,Id(2),23,107,Profile(p),Id(44)},2*sizes[p]+sizes[q]);
     return r.ok()&&r.pages.size()==2&&r.pages.front().page->inventory_generation==20&&r.inventory.entries.size()==2&&r.inventory.entries.front().identity.transaction_uuid.value==Id(162)?0:4;}
   if(argc==5&&std::string_view(argv[1])=="--btree-stage-probe"){
     const std::filesystem::path path=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3])),variant=static_cast<unsigned>(std::stoul(argv[4]));if(p>=5||variant>=5)return 2;const auto q=(p+1)%5;
