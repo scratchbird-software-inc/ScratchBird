@@ -631,8 +631,9 @@ bool TestBinaryPublicationContract() {
   new_inventory = archived_abort.inventory;
   ok = PersistInventory(fixture, old_inventory) && ok;
   ok = PersistInventory(fixture, new_inventory) && ok;
-  // Creation publishes1, then these two actual replacements publish2 and3.
-  const auto golden = WithDigest(BuildPublishJournalBody(fixture, "committed", old_inventory, new_inventory, 2, 3));
+  // Creation publishes1. New read-only admission first publishes starting2,
+  // then active3; the following terminal-state replacement publishes4.
+  const auto golden = WithDigest(BuildPublishJournalBody(fixture, "committed", old_inventory, new_inventory, 3, 4));
   const auto actual = ReadText(JournalPath(fixture));
   ok = Require(actual == golden, "live writer differs from independent binary byte oracle") && ok;
   for (const auto& entry : new_inventory.entries)
@@ -700,7 +701,7 @@ bool TestBinaryPublicationContract() {
   mutate(8, 2, 2); mutate(8, 3, 2); mutate(10, 80, 2);
   mutate(12, 0, 4); mutate(12, 3, 4);
   mutate(16, 0, 8); mutate(16, 2, 8);
-  mutate(96, 0, 8); mutate(96, 3, 8);
+  mutate(96, 0, 8); mutate(96, 4, 8); // Old and new generations may not be equal.
   for (std::size_t reserved = 104; reserved < 112; ++reserved) mutate(reserved, 1, 1);
   mutate(8, 4, 2);
   mutate(24, 0, 8); mutate(24, ~u64{0}, 8);

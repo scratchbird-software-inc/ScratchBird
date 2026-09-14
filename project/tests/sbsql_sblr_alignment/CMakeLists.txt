@@ -827,6 +827,19 @@ set_tests_properties(sbsql_sblr_alignment_transaction_binary_publication PROPERT
   LABELS "sbsql_sblr_alignment;IA-03;component_regression;binary_uuid;transaction_inventory;crash_recovery"
   TIMEOUT 120)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_transaction_starting_publication transaction_starting_publication_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_transaction_starting_publication PRIVATE cxx_std_23)
+  target_compile_definitions(sbsql_sblr_alignment_transaction_starting_publication PRIVATE
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+  target_link_libraries(sbsql_sblr_alignment_transaction_starting_publication PRIVATE sb_storage_database OpenSSL::Crypto)
+  target_link_options(sbsql_sblr_alignment_transaction_starting_publication PRIVATE
+    -Wl,--wrap=_ZNSt10filesystem6renameERKNS_7__cxx114pathES3_RSt10error_code -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=EVP_Digest)
+  add_test(NAME sbsql_sblr_alignment_transaction_starting_publication COMMAND sbsql_sblr_alignment_transaction_starting_publication)
+  set_tests_properties(sbsql_sblr_alignment_transaction_starting_publication PROPERTIES
+    LABELS "sbsql_sblr_alignment;transaction_starting;actual_files;crash_recovery;not_SQL_E2E" TIMEOUT 180)
+endif()
+
 add_executable(sbsql_sblr_alignment_catalog_database_record catalog_database_record_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_database_record PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_catalog_database_record PRIVATE

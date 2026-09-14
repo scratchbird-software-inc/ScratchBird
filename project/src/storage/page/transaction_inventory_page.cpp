@@ -256,8 +256,6 @@ TransactionInventoryPageBodyResult BuildTransactionInventoryPageBody(const Trans
     return TxnPageError("SB-TXN-INVENTORY-PAGE-GENERATION-INVALID",
                         "transaction_inventory_page.generation_invalid");
   }
-  const auto horizons = body.horizons.valid ? TransactionInventoryPageBodyResult{} : TransactionInventoryPageBodyResult{};
-  (void)horizons;
   const auto computed_horizons = ComputeLocalTransactionHorizons(body.inventory);
   if (!computed_horizons.ok()) {
     TransactionInventoryPageBodyResult result;
@@ -312,9 +310,14 @@ TransactionInventoryPageBodyResult BuildTransactionInventoryPageBody(const Trans
   }
 
   StoreLittle32(result.serialized.data() + kOffsetBodyBytes, offset);
-  StoreDigest(&result.serialized,
-              kOffsetChecksumDigest,
-              ComputeTransactionInventoryPageChecksumDigest(result.serialized));
+  const auto checksum = scratchbird::core::hash::ComputeSha256Digest(ChecksumDigestInput(result.serialized));
+  if (!checksum.ok()) {
+    TransactionInventoryPageBodyResult failure;
+    failure.status = checksum.status;
+    failure.diagnostic = checksum.diagnostic;
+    return failure;
+  }
+  StoreDigest(&result.serialized, kOffsetChecksumDigest, checksum.digest);
   return result;
 }
 
@@ -342,9 +345,14 @@ TransactionInventoryPageBodyResult ParseTransactionInventoryPageBody(const std::
                         "transaction_inventory_page.header_bytes_invalid");
   }
   const auto stored_checksum_digest = LoadDigest(serialized, kOffsetChecksumDigest);
-  const auto computed_checksum_digest =
-      ComputeTransactionInventoryPageChecksumDigest(serialized);
-  if (!DigestEqual(stored_checksum_digest, computed_checksum_digest)) {
+  const auto checksum = scratchbird::core::hash::ComputeSha256Digest(ChecksumDigestInput(serialized));
+  if (!checksum.ok()) {
+    TransactionInventoryPageBodyResult failure;
+    failure.status = checksum.status;
+    failure.diagnostic = checksum.diagnostic;
+    return failure;
+  }
+  if (!DigestEqual(stored_checksum_digest, checksum.digest)) {
     return TxnPageError("SB-TXN-INVENTORY-PAGE-CHECKSUM-MISMATCH",
                         "transaction_inventory_page.checksum_mismatch",
                         std::to_string(page_number));

@@ -32,7 +32,7 @@ Status HorizonErrorStatus() {
 }
 
 bool IsInteresting(TransactionState state) {
-  return state == TransactionState::active || state == TransactionState::read_only_active ||
+  return state == TransactionState::created || state == TransactionState::active || state == TransactionState::read_only_active ||
          state == TransactionState::preparing || state == TransactionState::prepared || state == TransactionState::committing ||
          state == TransactionState::limbo || state == TransactionState::recovering ||
          state == TransactionState::failed_terminal;

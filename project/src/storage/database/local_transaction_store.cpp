@@ -1358,6 +1358,35 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     return trace_and_return(StorePageError("CATALOG.INVALID_INPUT",
                                            "transaction_inventory_snapshot.evolution_invalid", reason));
 
+  // Allocate durable starting slots before exposing new active identities.
+  // Pure BeginLocalTransaction builds a candidate, not durable allocation.
+  // A failed activation must leave the already selected numbers consumed.
+  const auto newly_active = [&](const TransactionInventoryEntry& entry) {
+    return entry.identity.local_id.value >= old_inventory.next_local_transaction_id &&
+        (entry.state == TransactionState::active || entry.state == TransactionState::read_only_active);
+  };
+  if (std::any_of(inventory.entries.begin(), inventory.entries.end(), newly_active)) {
+    if (watermark > std::numeric_limits<u64>::max() - 2)
+      return trace_and_return(StorePageError("SB-TXN-INVENTORY-PAGE-GENERATION-INVALID",
+                                             "transaction_inventory_snapshot.activation_generation_exhausted"));
+    auto starting = inventory;
+    for (auto& entry : starting.entries)
+      if (newly_active(entry)) entry.state = TransactionState::created;
+    if (const auto* why = scratchbird::transaction::mga::ValidateLocalTransactionInventoryEvolution(old_inventory, starting); *why)
+      return trace_and_return(StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_snapshot.starting_invalid", why));
+    if (const auto* why = scratchbird::transaction::mga::ValidateLocalTransactionInventoryEvolution(starting, inventory); *why)
+      return trace_and_return(StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_snapshot.activation_invalid", why));
+    const auto starting_horizons = ComputeLocalTransactionHorizons(starting);
+    if (!starting_horizons.ok()) return trace_and_return(StoreError(starting_horizons.status, starting_horizons.diagnostic));
+    const auto allocated = PersistLocalTransactionInventoryToOpenDevice(device, page_size, std::move(starting));
+    mark_phase("publish_starting_allocation");
+    if (!allocated.ok()) return trace_and_return(allocated);
+    inventory.publication_base = allocated.inventory.publication_base;
+    auto activated = PersistLocalTransactionInventoryToOpenDevice(device, page_size, std::move(inventory));
+    mark_phase("publish_reserved_activation");
+    return trace_and_return(std::move(activated));
+  }
+
   const u64 required_pages =
       std::max<u64>(1, (static_cast<u64>(inventory.entries.size()) + capacity - 1) / capacity);
   u64 append_page = NextAppendPageNumber(device, page_size);

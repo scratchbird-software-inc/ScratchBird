@@ -106,6 +106,11 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
 // before writes. Initial creation uses its dedicated lifecycle publisher, never
 // this replacement API with an absent base. Use the returned
 // inventory for further changes. This provenance is not ingress authorization.
+// Newly active/read-only identities first publish created/starting allocations
+// and their counter, then activation, under one retained device guard. Failure
+// after allocation consumes the numbers and invalidates the old base even when
+// no active result is returned. Reload actual authority before retry; never
+// infer rollback of this or other entries merely from an error response.
 LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     scratchbird::storage::disk::FileDevice* device,
     u32 page_size,
