@@ -198,6 +198,8 @@ TransactionInventoryResult PrepareLocalTransaction(LocalTransactionInventory inv
                           "transaction.inventory.prepare_id_not_found",
                           std::to_string(local_id.value));
   }
+  if (entry->identity.scope != TransactionScope::local_node)
+    return InventoryError("CATALOG.INVALID_INPUT", "transaction.inventory.local_scope_required");
   DiagnosticRecord diagnostic;
   if (!TransitionOrFail(entry, TransactionState::preparing, &diagnostic) ||
       !TransitionOrFail(entry, TransactionState::prepared, &diagnostic)) {
@@ -232,6 +234,8 @@ TransactionInventoryResult CommitLocalTransaction(LocalTransactionInventory inve
                           "transaction.inventory.commit_id_not_found",
                           std::to_string(local_id.value));
   }
+  if (entry->identity.scope != TransactionScope::local_node)
+    return InventoryError("CATALOG.INVALID_INPUT", "transaction.inventory.local_scope_required");
   if (entry->rollback_only) {
     return InventoryError("SB-MGA-ROLLBACK-ONLY-COMMIT-REFUSED",
                           "transaction.inventory.rollback_only_commit_refused",
@@ -315,6 +319,8 @@ TransactionInventoryResult RollbackLocalTransaction(LocalTransactionInventory in
                           "transaction.inventory.rollback_id_not_found",
                           std::to_string(local_id.value));
   }
+  if (entry->identity.scope != TransactionScope::local_node)
+    return InventoryError("CATALOG.INVALID_INPUT", "transaction.inventory.local_scope_required");
 
   DiagnosticRecord diagnostic;
   if (!TransitionOrFail(entry, TransactionState::rolling_back, &diagnostic) ||

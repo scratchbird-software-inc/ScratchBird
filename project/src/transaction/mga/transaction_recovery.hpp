@@ -23,7 +23,8 @@ enum class TransactionRecoveryAction : u16 {
   prepared_waiting_local_decision,
   limbo_requires_operator,
   fail_closed_ambiguous,
-  unknown
+  unknown,
+  cluster_provider_required
 };
 
 enum class LimboOperatorDecision : u16 {
@@ -35,7 +36,6 @@ enum class LimboOperatorDecision : u16 {
 
 struct LimboOperatorResolutionPolicy {
   bool operator_decision_authoritative = false;
-  bool external_cluster_provider_decision_authoritative = false;
   std::string operator_evidence_reference;
 };
 
@@ -63,6 +63,9 @@ struct TransactionRecoveryResult {
 const char* TransactionRecoveryActionName(TransactionRecoveryAction action);
 const char* LimboOperatorDecisionName(LimboOperatorDecision decision);
 TransactionRecoveryClassification ClassifyLocalTransactionForRecovery(const TransactionInventoryEntry& entry);
+// Local recovery never decides unresolved cluster-global outcomes. Such entries
+// remain unchanged and write-fenced for the owning cluster recovery boundary;
+// a local evidence flag or operator policy is not a provider decision receipt.
 TransactionRecoveryResult ClassifyLocalTransactionInventoryForRecovery(const LocalTransactionInventory& inventory);
 TransactionRecoveryResult ApplyLocalTransactionInventoryRecovery(LocalTransactionInventory inventory,
                                                                 u64 recovery_unix_epoch_millis);

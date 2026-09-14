@@ -3,6 +3,7 @@
 #include "transaction_snapshot.hpp"
 #include "transaction_inventory_validation.hpp"
 #include "transaction_evidence.hpp"
+#include "transaction_recovery.hpp"
 #include "transaction/local_commit_publication.hpp"
 #include "page_finality_evidence.hpp"
 #include "visibility_status_cache.hpp"
@@ -19,6 +20,7 @@
 #include <array>
 #include <functional>
 #include <limits>
+#include <tuple>
 
 static_assert(!std::is_copy_constructible_v<scratchbird::transaction::mga::PublishedSnapshotPin>);
 static_assert(std::is_nothrow_move_constructible_v<scratchbird::transaction::mga::PublishedSnapshotPin>);
@@ -65,6 +67,95 @@ struct Fixture {
 };
 static void AdditionalCases();
 static void InventoryAdmissionCases();
+static void ClusterRecoveryOwnershipCases() {
+  const auto id = uuid::GenerateEngineIdentityV7(platform::UuidKind::transaction, 900);
+  Check(id.ok(), "cluster recovery identity fixture");
+  const auto begun = mga::BeginLocalTransaction(mga::MakeEmptyLocalTransactionInventory(), id.value, 1000);
+  Check(begun.ok(), "cluster recovery candidate fixture");
+  const auto fields = [](const mga::TransactionInventoryEntry& e) {
+    return std::make_tuple(e.identity.local_id.value, e.identity.transaction_uuid.value,
+        e.identity.transaction_uuid.kind, e.identity.scope, e.state, e.archived_from_state,
+        e.begin_unix_epoch_millis, e.final_unix_epoch_millis,
+        e.begin_visible_through_local_transaction_id, e.begin_visible_through_commit_sequence,
+        e.commit_sequence, e.evidence_record_required, e.evidence_record_written, e.rollback_only);
+  };
+  const std::array unresolved{mga::TransactionState::created, mga::TransactionState::active,
+      mga::TransactionState::read_only_active, mga::TransactionState::preparing,
+      mga::TransactionState::prepared, mga::TransactionState::committing,
+      mga::TransactionState::rolling_back, mga::TransactionState::limbo, mga::TransactionState::recovering};
+  for (const auto state : unresolved) for (unsigned flags = 0; flags != 8; ++flags) {
+    auto inventory = begun.inventory;
+    auto& entry = inventory.entries.front();
+    entry.identity.scope = mga::TransactionScope::cluster_global;
+    entry.state = state;
+    entry.rollback_only = flags & 1;
+    entry.evidence_record_required = flags & 2;
+    entry.evidence_record_written = flags & 4;
+    Check(*mga::ValidateLocalTransactionInventoryStructure(inventory) == '\0', "cluster unresolved structural fixture");
+    const auto classified = mga::ClassifyLocalTransactionForRecovery(entry);
+    Check(classified.observed_state == state && classified.fail_closed &&
+        classified.action == mga::TransactionRecoveryAction::cluster_provider_required &&
+        classified.stable_reason == "cluster_recovery_requires_provider_decision", "local evidence decided cluster finality");
+    const auto recovered = mga::ApplyLocalTransactionInventoryRecovery(inventory, 1200);
+    Check(recovered.ok() && recovered.write_admission_must_remain_fenced && !recovered.inventory_changed &&
+        recovered.recovered_inventory.entries.size() == 1 &&
+        fields(recovered.recovered_inventory.entries.front()) == fields(entry) &&
+        recovered.recovered_inventory.next_commit_sequence == inventory.next_commit_sequence &&
+        recovered.recovered_inventory.next_local_transaction_id == inventory.next_local_transaction_id &&
+        recovered.recovered_inventory.publication_base == inventory.publication_base,
+        "local recovery altered unresolved cluster identity, counters or evidence");
+    for (const auto& attempted : {mga::PrepareLocalTransaction(inventory, entry.identity.local_id),
+        mga::CommitLocalTransaction(inventory, entry.identity.local_id, 1200),
+        mga::RollbackLocalTransaction(inventory, entry.identity.local_id, 1200),
+        mga::AbortLocalTransaction(inventory, entry.identity.local_id, 1200)})
+      Check(!attempted.ok() && attempted.inventory.entries.empty() &&
+          attempted.diagnostic.message_key == "transaction.inventory.local_scope_required",
+          "local transaction transformation accepted cluster-global authority");
+  }
+  for (const auto state : {mga::TransactionState::committed, mga::TransactionState::rolled_back,
+                          mga::TransactionState::failed_terminal})
+    for (const bool archived : {false, true}) for (const bool rollback_only : {false, true}) {
+      auto inventory = begun.inventory;
+      auto& entry = inventory.entries.front();
+      entry.identity.scope = mga::TransactionScope::cluster_global;
+      entry.state = archived ? mga::TransactionState::archived : state;
+      entry.archived_from_state = archived ? state : mga::TransactionState::none;
+      entry.rollback_only = rollback_only;
+      entry.evidence_record_written = true;
+      entry.final_unix_epoch_millis = 1100;
+      if (state == mga::TransactionState::committed) {entry.commit_sequence = 1; inventory.next_commit_sequence = 2;}
+      const auto recovered = mga::ApplyLocalTransactionInventoryRecovery(inventory, 1200);
+      Check(recovered.ok() && !recovered.inventory_changed &&
+          recovered.write_admission_must_remain_fenced == (state == mga::TransactionState::failed_terminal) &&
+          fields(recovered.recovered_inventory.entries.front()) == fields(entry), "cluster terminal or archived outcome changed");
+    }
+  auto limbo = begun.inventory;
+  limbo.entries.front().identity.scope = mga::TransactionScope::cluster_global;
+  limbo.entries.front().state = mga::TransactionState::limbo;
+  for (const auto decision : {mga::LimboOperatorDecision::commit, mga::LimboOperatorDecision::rollback,
+                             mga::LimboOperatorDecision::fail_terminal}) {
+    mga::LimboOperatorResolutionPolicy policy;
+    policy.operator_decision_authoritative = true;
+    policy.operator_evidence_reference = "local-operator-is-not-cluster-provider";
+    const auto refused = mga::ResolveLimboLocalTransactionWithOperatorDecision(limbo,
+        limbo.entries.front().identity.local_id, decision, 1200, policy);
+    Check(!refused.ok() && refused.inventory.entries.empty() &&
+        refused.diagnostic.diagnostic_code == "SB-SNTXN-LIMBO-EXTERNAL-PROVIDER-REQUIRED",
+        "local operator policy became a cluster provider decision");
+  }
+  for (const auto scope : {mga::TransactionScope::unknown, static_cast<mga::TransactionScope>(65535)}) {
+    auto entry = begun.entry; entry.identity.scope = scope;
+    const auto classified = mga::ClassifyLocalTransactionForRecovery(entry);
+    Check(classified.fail_closed && classified.action == mga::TransactionRecoveryAction::fail_closed_ambiguous &&
+        classified.stable_reason == "invalid_transaction_scope", "invalid scope was implicitly local");
+  }
+  const auto local = mga::ApplyLocalTransactionInventoryRecovery(begun.inventory, 1200);
+  Check(local.ok() && local.inventory_changed && !local.write_admission_must_remain_fenced &&
+      local.recovered_inventory.entries.front().state == mga::TransactionState::rolled_back,
+      "local uncommitted recovery was disabled with cluster recovery");
+  Check(std::string_view(mga::TransactionRecoveryActionName(mga::TransactionRecoveryAction::cluster_provider_required)) ==
+      "cluster_provider_required", "cluster recovery classification has no stable name");
+}
 static void ArchivedRecoveryCases() {
   Fixture fixture;
   auto inventory = fixture.inventory;
@@ -381,6 +472,7 @@ int main() try {
   PageFinalityAdmissionCases();
   PublicationOutcomeCases();
   ArchivedRecoveryCases();
+  ClusterRecoveryOwnershipCases();
   ArchivedCreatorProjectionCases();
   Fixture f;
   const auto plain = mga::ComputeLocalTransactionHorizons(f.inventory);

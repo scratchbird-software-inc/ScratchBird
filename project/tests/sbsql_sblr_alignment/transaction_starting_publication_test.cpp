@@ -5,6 +5,7 @@
 #include "hash_digest.hpp"
 #include "memory.hpp"
 #include "transaction_inventory_page.hpp"
+#include "transaction_recovery.hpp"
 #include "uuid.hpp"
 #include <algorithm>
 #include <atomic>
@@ -184,6 +185,25 @@ int main(int argc,char** argv){try{
   Arm();const auto readonly=db::PersistLocalTransactionInventoryToOpenDevice(&device,f.page_size,candidate.inventory);armed=false;
   Check(!readonly.ok()&&!replacements&&!writes,"readonly cannot allocate or activate");
   Check(device.Close().ok()&&device.Open(f.path.string(),disk::FileOpenMode::open_existing).ok(),"multi-page publication owner");restore();
+  // Actual binary storage fixture, not a successful cluster operation. The
+  // trusted raw publisher checks snapshot consistency, not provider authority.
+  {auto cluster=candidate.inventory;cluster.entries.back().identity.scope=mga::TransactionScope::cluster_global;
+    const auto active=db::PersistLocalTransactionInventoryToOpenDevice(&device,f.page_size,cluster);
+    Check(active.ok(),"persist binary cluster-scope recovery fixture");cluster=active.inventory;
+    cluster.entries.back().state=mga::TransactionState::committing;cluster.entries.back().evidence_record_written=true;
+    Check(db::PersistLocalTransactionInventoryToOpenDevice(&device,f.page_size,cluster).ok(),"persist interrupted cluster evidence fixture");
+    Check(device.Close().ok()&&device.Open(f.path.string(),disk::FileOpenMode::open_existing_read_only).ok(),"reopen cluster recovery fixture readonly");
+    const auto loaded=db::LoadLocalTransactionInventoryFromOpenDevice(&device,f.page_size);Check(loaded.ok(),"load actual binary cluster recovery state");
+    const auto before=Get(f.path),carrier=Get(f.journal);
+    const auto recovered=mga::ApplyLocalTransactionInventoryRecovery(loaded.inventory,millis+10);
+    Check(recovered.ok()&&recovered.write_admission_must_remain_fenced&&!recovered.inventory_changed&&
+      Entry(recovered.recovered_inventory,target_id).identity.scope==mga::TransactionScope::cluster_global&&
+      Entry(recovered.recovered_inventory,target_id).state==mga::TransactionState::committing&&
+      !Entry(recovered.recovered_inventory,target_id).commit_sequence&&
+      recovered.recovered_inventory.next_commit_sequence==loaded.inventory.next_commit_sequence&&
+      recovered.recovered_inventory.publication_base==loaded.inventory.publication_base&&Get(f.path)==before&&Get(f.journal)==carrier,
+      "actual reopened cluster evidence cannot become local commit or altered provenance");
+    Check(device.Close().ok()&&device.Open(f.path.string(),disk::FileOpenMode::open_existing).ok(),"restore writable owner after cluster read");restore();}
   auto many=base.inventory;const unsigned count=scratchbird::storage::page::MaxTransactionInventoryEntriesPerPage(f.page_size)+1;
   for(unsigned i=0;i<count;++i){auto next=mga::BeginLocalTransaction(std::move(many),{UuidKind::transaction,Id(100+i)},millis+1+i);
     Check(next.ok(),"multi-page active candidate");many=std::move(next.inventory);}

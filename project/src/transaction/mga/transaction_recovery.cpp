@@ -66,6 +66,7 @@ bool ApplyRecoveryAction(TransactionInventoryEntry* entry,
     case TransactionRecoveryAction::prepared_waiting_local_decision:
     case TransactionRecoveryAction::limbo_requires_operator:
     case TransactionRecoveryAction::fail_closed_ambiguous:
+    case TransactionRecoveryAction::cluster_provider_required:
     case TransactionRecoveryAction::unknown:
       return true;
   }
@@ -114,6 +115,7 @@ const char* TransactionRecoveryActionName(TransactionRecoveryAction action) {
     case TransactionRecoveryAction::prepared_waiting_local_decision: return "prepared_waiting_local_decision";
     case TransactionRecoveryAction::limbo_requires_operator: return "limbo_requires_operator";
     case TransactionRecoveryAction::fail_closed_ambiguous: return "fail_closed_ambiguous";
+    case TransactionRecoveryAction::cluster_provider_required: return "cluster_provider_required";
     case TransactionRecoveryAction::unknown: return "unknown";
   }
   return "unknown";
@@ -134,6 +136,14 @@ TransactionRecoveryClassification ClassifyLocalTransactionForRecovery(const Tran
   classification.local_id = entry.identity.local_id;
   classification.observed_state = entry.state;
 
+  if (entry.identity.scope != TransactionScope::local_node &&
+      entry.identity.scope != TransactionScope::cluster_global) {
+    classification.action = TransactionRecoveryAction::fail_closed_ambiguous;
+    classification.fail_closed = true;
+    classification.stable_reason = "invalid_transaction_scope";
+    return classification;
+  }
+
   // Archival changes placement/lifecycle, never the terminal decision. Check
   // origin before rollback-only so that malformed or failed evidence cannot
   // acquire a new final outcome through recovery.
@@ -150,6 +160,28 @@ TransactionRecoveryClassification ClassifyLocalTransactionForRecovery(const Tran
     classification.fail_closed = true;
     classification.stable_reason = "failed_terminal_requires_review";
     return classification;
+  }
+
+  // A local rollback-only flag or local commit evidence cannot decide a
+  // cluster-global transaction. Preserve the unresolved entry for its owner.
+  if (entry.identity.scope == TransactionScope::cluster_global) {
+    switch (entry.state) {
+      case TransactionState::created:
+      case TransactionState::active:
+      case TransactionState::read_only_active:
+      case TransactionState::preparing:
+      case TransactionState::prepared:
+      case TransactionState::committing:
+      case TransactionState::rolling_back:
+      case TransactionState::limbo:
+      case TransactionState::recovering:
+        classification.action = TransactionRecoveryAction::cluster_provider_required;
+        classification.fail_closed = true;
+        classification.stable_reason = "cluster_recovery_requires_provider_decision";
+        return classification;
+      default:
+        break;
+    }
   }
 
   if (entry.rollback_only && entry.state != TransactionState::committed &&
@@ -329,8 +361,7 @@ TransactionInventoryResult ResolveLimboLocalTransactionWithOperatorDecision(
                                   "transaction.recovery.limbo_state_required",
                                   TransactionStateName(entry->state));
   }
-  if (entry->identity.scope == TransactionScope::cluster_global &&
-      !policy.external_cluster_provider_decision_authoritative) {
+  if (entry->identity.scope == TransactionScope::cluster_global) {
     return RecoveryInventoryError(
         "SB-SNTXN-LIMBO-EXTERNAL-PROVIDER-REQUIRED",
         "transaction.recovery.limbo_external_provider_required",
