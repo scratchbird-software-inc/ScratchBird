@@ -85,12 +85,7 @@ AuthoritativeCleanupHorizonResult ServiceError(const AuthoritativeCleanupHorizon
 
 bool IsActiveInventoryState(TransactionState state) {
   return state == TransactionState::active ||
-         state == TransactionState::read_only_active ||
-         state == TransactionState::preparing ||
-         state == TransactionState::prepared ||
-         state == TransactionState::committing ||
-         state == TransactionState::limbo ||
-         state == TransactionState::recovering;
+         state == TransactionState::read_only_active;
 }
 
 bool IsAlwaysActiveSessionState(TransactionState state) {
@@ -99,9 +94,11 @@ bool IsAlwaysActiveSessionState(TransactionState state) {
 }
 
 bool IsUnresolvedOutcomeState(TransactionState state) {
-  return state == TransactionState::preparing ||
+  return state == TransactionState::created ||
+         state == TransactionState::preparing ||
          state == TransactionState::prepared ||
          state == TransactionState::committing ||
+         state == TransactionState::rolling_back ||
          state == TransactionState::limbo ||
          state == TransactionState::recovering ||
          state == TransactionState::failed_terminal;
@@ -195,11 +192,12 @@ AuthoritativeCleanupHorizonResult ValidateAlwaysActiveSessions(
 void AddInventoryBlockers(const LocalTransactionInventory& inventory,
                           AuthoritativeCleanupHorizonResult* result) {
   for (const TransactionInventoryEntry& entry : inventory.entries) {
-    if (!IsActiveInventoryState(entry.state) && !IsUnresolvedOutcomeState(entry.state)) {
+    const auto outcome = InventoryVisibilityState(entry);
+    if (!IsActiveInventoryState(entry.state) && !IsUnresolvedOutcomeState(outcome)) {
       continue;
     }
     CleanupHorizonBlocker blocker;
-    blocker.kind = IsUnresolvedOutcomeState(entry.state)
+    blocker.kind = IsUnresolvedOutcomeState(outcome)
                        ? CleanupHorizonBlockerKind::unresolved_outcome
                        : CleanupHorizonBlockerKind::active_transaction;
     blocker.local_transaction_id = entry.identity.local_id;

@@ -7,10 +7,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction_horizon.hpp"
+#include "transaction_inventory_validation.hpp"
 
 #include "metric_producer.hpp"
 
 #include <algorithm>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -34,14 +36,12 @@ Status HorizonErrorStatus() {
 bool IsInteresting(TransactionState state) {
   return state == TransactionState::created || state == TransactionState::active || state == TransactionState::read_only_active ||
          state == TransactionState::preparing || state == TransactionState::prepared || state == TransactionState::committing ||
-         state == TransactionState::limbo || state == TransactionState::recovering ||
+         state == TransactionState::rolling_back || state == TransactionState::limbo || state == TransactionState::recovering ||
          state == TransactionState::failed_terminal;
 }
 
 bool IsActiveForOat(TransactionState state) {
-  return state == TransactionState::active || state == TransactionState::read_only_active ||
-         state == TransactionState::preparing || state == TransactionState::prepared || state == TransactionState::committing ||
-         state == TransactionState::limbo || state == TransactionState::recovering;
+  return state == TransactionState::active || state == TransactionState::read_only_active;
 }
 
 u64 OldestActiveBeginMillis(const LocalTransactionInventory& inventory) {
@@ -57,33 +57,23 @@ u64 OldestActiveBeginMillis(const LocalTransactionInventory& inventory) {
   return oldest;
 }
 
-}  // namespace
-
-TransactionHorizonResult ComputeLocalTransactionHorizons(const LocalTransactionInventory& inventory) {
-  LocalTransactionHorizonRequest request;
-  request.inventory = inventory;
-  return ComputeLocalTransactionHorizons(request);
-}
-
-TransactionHorizonResult ComputeLocalTransactionHorizons(const LocalTransactionHorizonRequest& request) {
-  const LocalTransactionInventory& inventory = request.inventory;
+TransactionHorizonResult CalculateLocalHorizons(const LocalTransactionInventory& inventory,
+                                               std::span<const LocalTransactionId> snapshot_horizons) {
   TransactionHorizonResult result;
   result.status = HorizonOkStatus();
-  result.horizons.next_transaction_id = MakeLocalTransactionId(inventory.next_local_transaction_id);
+  if (const auto* reason = ValidateLocalTransactionInventoryStructure(inventory); *reason) {
+    result.status = HorizonErrorStatus();
+    result.diagnostic = MakeTransactionHorizonDiagnostic(result.status,
+        "SB-TXN-HORIZON-INVALID", "transaction.horizon.inventory_invalid", reason);
+    return result;
+  }
 
   u64 oit = inventory.next_local_transaction_id;
   u64 oat = inventory.next_local_transaction_id;
   u64 ost = inventory.next_local_transaction_id;
 
   for (const TransactionInventoryEntry& entry : inventory.entries) {
-    if (!entry.identity.local_id.valid()) {
-      result.status = HorizonErrorStatus();
-      result.diagnostic = MakeTransactionHorizonDiagnostic(result.status,
-                                                           "SB-TXN-HORIZON-INVALID",
-                                                           "transaction.horizon.invalid_local_id");
-      return result;
-    }
-    if (IsInteresting(entry.state)) {
+    if (IsInteresting(InventoryVisibilityState(entry))) {
       oit = std::min(oit, entry.identity.local_id.value);
     }
     if (IsActiveForOat(entry.state)) {
@@ -93,8 +83,8 @@ TransactionHorizonResult ComputeLocalTransactionHorizons(const LocalTransactionH
 
   // Without a retained snapshot, OST follows OAT, not the next transaction
   // counter. Otherwise an active reader can disappear from snapshot age.
-  if (request.active_snapshot_horizons.empty()) ost = oat;
-  for (const LocalTransactionId& snapshot_horizon : request.active_snapshot_horizons) {
+  if (snapshot_horizons.empty()) ost = oat;
+  for (const LocalTransactionId& snapshot_horizon : snapshot_horizons) {
     if (!snapshot_horizon.valid()) {
       result.status = HorizonErrorStatus();
       result.diagnostic = MakeTransactionHorizonDiagnostic(result.status,
@@ -112,11 +102,22 @@ TransactionHorizonResult ComputeLocalTransactionHorizons(const LocalTransactionH
     ost = std::min(ost, snapshot_horizon.value);
   }
 
+  result.horizons.next_transaction_id = MakeLocalTransactionId(inventory.next_local_transaction_id);
   result.horizons.oldest_interesting_transaction = MakeLocalTransactionId(oit);
   result.horizons.oldest_active_transaction = MakeLocalTransactionId(oat);
   result.horizons.oldest_snapshot_transaction = MakeLocalTransactionId(ost);
   result.horizons.valid = true;
   return result;
+}
+
+}  // namespace
+
+TransactionHorizonResult ComputeLocalTransactionHorizons(const LocalTransactionInventory& inventory) {
+  return CalculateLocalHorizons(inventory, {});
+}
+
+TransactionHorizonResult ComputeLocalTransactionHorizons(const LocalTransactionHorizonRequest& request) {
+  return CalculateLocalHorizons(request.inventory, request.active_snapshot_horizons);
 }
 
 void PublishTransactionHorizonMetrics(const LocalTransactionInventory& inventory,

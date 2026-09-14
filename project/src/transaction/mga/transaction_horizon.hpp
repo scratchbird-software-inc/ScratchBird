@@ -38,6 +38,8 @@ struct TransactionHorizonResult {
   }
 };
 
+// Validated inventory-only projection, not published retention/cleanup authority.
+// Failure returns no horizon prefix; allocation exceptions propagate to the owner.
 TransactionHorizonResult ComputeLocalTransactionHorizons(const LocalTransactionInventory& inventory);
 TransactionHorizonResult ComputeLocalTransactionHorizons(const LocalTransactionHorizonRequest& request);
 void PublishTransactionHorizonMetrics(const LocalTransactionInventory& inventory,

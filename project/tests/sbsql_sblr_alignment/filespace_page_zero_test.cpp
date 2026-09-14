@@ -1289,6 +1289,21 @@ Bytes InventoryOracle(const page::NativeTransactionInventoryPage& p,u64 oit,u64 
   }
   InventorySeal(b); return b;
 }
+// Spec-table oracle for fixtures that vary lifecycle/archived outcomes. Kept
+// separate from the explicit-summary encoder used for malformed-summary tests.
+Bytes InventoryStateOracle(const page::NativeTransactionInventoryPage& p) {
+  auto oit=p.inventory.next_local_transaction_id,oat=oit;
+  for(const auto& e:p.inventory.entries){
+    const auto state=e.state==mga::TransactionState::archived?e.archived_from_state:e.state;
+    const bool active=e.state==mga::TransactionState::active||e.state==mga::TransactionState::read_only_active;
+    if(active)oat=std::min(oat,e.identity.local_id.value);
+    for(auto hold:{mga::TransactionState::created,mga::TransactionState::active,mga::TransactionState::read_only_active,
+        mga::TransactionState::preparing,mga::TransactionState::prepared,mga::TransactionState::committing,
+        mga::TransactionState::rolling_back,mga::TransactionState::limbo,mga::TransactionState::recovering,mga::TransactionState::failed_terminal})
+      if(state==hold)oit=std::min(oit,e.identity.local_id.value);
+  }
+  return InventoryOracle(p,oit,oat,oat);
+}
 void InventoryReject(const page::NativeTransactionInventoryPageResult& r) {
   Check(!r.ok()&&!r.page&&r.bytes.empty(),"invalid inventory returns no page prefix");
 }
@@ -1341,7 +1356,7 @@ void CanonicalInventoryImages() {
   for(auto origin:{mga::TransactionState::committed,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal}) {
     auto archived=p;auto& e=archived.inventory.entries[0];e.state=mga::TransactionState::archived;e.archived_from_state=origin;
     if(origin==mga::TransactionState::committed) {e.commit_sequence=1;archived.inventory.next_commit_sequence=2;}
-    const auto bytes=InventoryOracle(archived,3,3,3);const auto r=page::DecodeNativeTransactionInventoryPage(bytes);
+    const auto bytes=InventoryOracle(archived,origin==mga::TransactionState::failed_terminal?1:3,3,3);const auto r=page::DecodeNativeTransactionInventoryPage(bytes);
     Check(r.ok()&&r.page->inventory.entries[0].archived_from_state==origin
       &&page::EncodeNativeTransactionInventoryPage(archived).bytes==bytes,"archive terminal origin survives canonical inventory");
   }
@@ -1556,8 +1571,9 @@ void CanonicalCheckpointInventoryPair() {
   auto& entry=inventory.inventory.entries.front();entry.identity.local_id=mga::MakeLocalTransactionId(17);
   entry.identity.transaction_uuid.value=Id(98);entry.state=mga::TransactionState::committed;entry.commit_sequence=1;
   auto checkpoint=CheckpointExample();checkpoint.roots.front().page=InventoryRef(inventory);checkpoint.roots.front().object_uuid=inventory.object_uuid;
-  const auto persist=[&](const auto& actual_inventory,auto actual_checkpoint,u64 horizon) {
-    const auto image=InventoryOracle(actual_inventory,horizon,horizon,horizon);
+  const auto persist=[&](const auto& actual_inventory,auto actual_checkpoint,u64 horizon,u64 active_horizon=0) {
+    const auto oat=active_horizon?active_horizon:horizon;
+    const auto image=InventoryOracle(actual_inventory,horizon,oat,oat);
     Check(SHA256(image.data(),image.size(),actual_checkpoint.roots.front().sha256.data())!=nullptr,"actual canonical inventory head digest");
     const auto root=CheckpointOracle(actual_checkpoint);
     Check(device.WriteAt(14*sizes[0],image.data(),image.size()).ok()&&device.WriteAt(19*sizes[0],root.data(),root.size()).ok()
@@ -1577,7 +1593,7 @@ void CanonicalCheckpointInventoryPair() {
       mga::TransactionState::failed_terminal,mga::TransactionState::rolled_back}) {
     auto bad=inventory;bad.inventory.entries[0].state=state;bad.inventory.entries[0].commit_sequence=0;
     const auto horizon=state==mga::TransactionState::rolled_back?18:17;
-    auto image=InventoryOracle(bad,horizon,state==mga::TransactionState::failed_terminal?18:horizon,state==mga::TransactionState::failed_terminal?18:horizon);
+    auto image=InventoryOracle(bad,horizon,state==mga::TransactionState::active?17:18,state==mga::TransactionState::active?17:18);
     auto root=checkpoint;Check(SHA256(image.data(),image.size(),root.roots.front().sha256.data())!=nullptr,"reseal actual noncommitted inventory");const auto bytes=CheckpointOracle(root);
     Check(device.WriteAt(14*sizes[0],image.data(),image.size()).ok()&&device.WriteAt(19*sizes[0],bytes.data(),bytes.size()).ok()&&device.Sync().ok(),"persist noncommitted creator case");
     result=read();empty(result);Check(result.error==E::creator_not_committed,"noncommitted creator cannot certify checkpoint inventory");
@@ -1585,7 +1601,7 @@ void CanonicalCheckpointInventoryPair() {
   for(auto origin:{mga::TransactionState::committed,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal}) {
     auto archived=inventory;auto& e=archived.inventory.entries[0];e.state=mga::TransactionState::archived;e.archived_from_state=origin;
     if(origin!=mga::TransactionState::committed)e.commit_sequence=0;
-    persist(archived,checkpoint,18);result=read();
+    persist(archived,checkpoint,origin==mga::TransactionState::failed_terminal?17:18,18);result=read();
     if(origin==mga::TransactionState::committed)Check(result.ok()&&result.inventory.entries[0].archived_from_state==origin,"exact archived committed creator admitted");
     else{empty(result);Check(result.error==E::creator_not_committed,"archive location is not checkpoint commit authority");}
   }
@@ -1673,14 +1689,14 @@ void CanonicalCheckpointCatalogRoots() {
         mga::TransactionState::failed_terminal,mga::TransactionState::rolled_back}) {
       auto inv=inventory;auto& e=inv.inventory.entries[0];e.state=state;e.commit_sequence=0;
       const u64 oit=state==mga::TransactionState::rolled_back?18:11;
-      const u64 oat=state==mga::TransactionState::failed_terminal?18:oit;
+      const u64 oat=state==mga::TransactionState::active?11:18;
       persist(inv,catalog,feature,false,oit,oat);result=read(distinct_budget);empty(result);
       Check(result.error==E::catalog_creator_not_committed,"uncommitted catalog creator cannot borrow committed checkpoint authority");
     }
     for(auto origin:{mga::TransactionState::committed,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal}) {
       auto inv=inventory;auto& e=inv.inventory.entries[0];e.state=mga::TransactionState::archived;e.archived_from_state=origin;
       if(origin!=mga::TransactionState::committed)e.commit_sequence=0;
-      persist(inv,catalog,feature,false);result=read(distinct_budget);
+      persist(inv,catalog,feature,false,origin==mga::TransactionState::failed_terminal?11:18,18);result=read(distinct_budget);
       if(origin==mga::TransactionState::committed)Check(result.ok(),"archived committed catalog creator retained");
       else{empty(result);Check(result.error==E::catalog_creator_not_committed,"archived noncommit is not catalog publication authority");}
     }
@@ -1954,14 +1970,14 @@ void CanonicalCheckpointAllocation() {
       auto inv=inventory;auto& e=inv.inventory.entries.front();e.state=state;
       if(state==mga::TransactionState::committed){e.commit_sequence=1;inv.inventory.entries[1].commit_sequence=2;inv.inventory.next_commit_sequence=3;}
       const bool final=state==mga::TransactionState::committed||state==mga::TransactionState::rolled_back;
-      const u64 oit=final?18:16,oat=(final||state==mga::TransactionState::failed_terminal)?18:16;
+      const u64 oit=final?18:16,oat=state==mga::TransactionState::active?16:18;
       persist(inv,map,zero,checkpoint,oit,oat);Check(read(budget).ok(),"original transaction outcome does not discard retained allocation history");
       if(state==mga::TransactionState::committed||state==mga::TransactionState::rolled_back||state==mga::TransactionState::failed_terminal){
         e.archived_from_state=state;e.state=mga::TransactionState::archived;
-        persist(inv,map,zero,checkpoint,18,18);result=read(budget);
+        persist(inv,map,zero,checkpoint,oit,18);result=read(budget);
         Check(result.ok(),"archived original allocation identity preserved");
         auto archived_map=map;archived_map.creator_transaction_uuid=Id(99);archived_map.creator_local_transaction_id=16;
-        persist(inv,archived_map,zero,checkpoint,18,18);result=read(budget);
+        persist(inv,archived_map,zero,checkpoint,oit,18);result=read(budget);
         if(state==mga::TransactionState::committed)Check(result.ok(),"archived committed map creator admitted");
         else{empty(result);Check(result.error==E::allocation_creator_not_committed,"archived noncommitted map creator refused");}
       }
@@ -2005,7 +2021,7 @@ void CanonicalPolicyRoots() {
     const auto put=[&](auto& device,u64 page,unsigned size,const Bytes& bytes){const auto io=device.WriteAt(page*size,bytes.data(),bytes.size());
       Check(io.ok()&&io.bytes_transferred==bytes.size()&&device.Sync().ok(),"persist exact policy-root image");};
     const auto persist=[&](const auto& values,bool stale_digest=false){auto cp=checkpoint;
-      const auto inv=InventoryOracle(inventory,16,16,16),cat=RootOracle(catalog);
+      const auto inv=InventoryStateOracle(inventory),cat=RootOracle(catalog);
       cp.roots[0].page=InventoryRef(inventory);cp.roots[0].object_uuid=inventory.object_uuid;cp.roots[0].sha256=WholeRootHash(inv);
       const auto bind=[&](auto& target,const auto& root,const Bytes& bytes){target.page=PageRef(root);target.object_uuid=root.object_uuid;target.sha256=WholeRootHash(bytes);};
       bind(cp.roots[4],catalog,cat);cp.roots[8]=cp.roots[4];cp.roots[8].role=9;
@@ -2372,7 +2388,7 @@ void CanonicalCheckpointDirectory() {
       Check(io.ok()&&io.bytes_transferred==bytes.size()&&device.Sync().ok(),"persist independent checkpoint directory fixture");};
     const auto persist=[&](const auto& inventory,const auto& primary,auto h,auto t,bool stale=false){
       h.records[0]=record(primary,Id(120));h.next_sha256=WholeRootHash(DirectoryOracle(t));
-      auto cp=checkpoint;const auto ib=InventoryOracle(inventory,16,16,16),hb=DirectoryOracle(h);
+      auto cp=checkpoint;const auto ib=InventoryStateOracle(inventory),hb=DirectoryOracle(h);
       cp.roots[0].page=InventoryRef(inventory);cp.roots[0].object_uuid=inventory.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);
       auto& target=cp.roots[2];target.page={Id(2),15,105,Profile(p)};target.object_uuid=Id(45);target.sha256=WholeRootHash(stale?DirectoryOracle(head):hb);
       put(first,0,sizes[p],Oracle(primary));put(second,0,sizes[q],Oracle(z2));put(first,14,sizes[p],ib);
@@ -2447,7 +2463,7 @@ void CanonicalCheckpointHorizons(){using E=db::NativeCheckpointError;
     page::NativeRetentionPin pin;pin.pin_uuid=Id(90);pin.owner_uuid=Id(94);pin.timeline_uuid=Id(97);pin.start_local=4;pin.flags=1;pin.blocked_operations=3;pin.retain_until_unix_ns=1;pin_leaf.records.push_back(pin);
     pin_root.next_sha256=WholeRootHash(RetentionOracle(pin_leaf));head.retention_sha256=tail.retention_sha256=WholeRootHash(RetentionOracle(pin_root));head.records[0].pin_uuid=tail.records[0].pin_uuid=pin.pin_uuid;
     const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& bytes){const auto io=file.WriteAt(number*size,bytes.data(),bytes.size());Check(io.ok()&&io.bytes_transferred==bytes.size()&&file.Sync().ok(),"persist independently authored checkpoint horizon image");};
-    const auto persist=[&](const auto& inventory,const auto& primary,auto a,auto b,bool older=false,bool stale=false){auto cp=checkpoint;auto pr=pin_root;const auto leaf=RetentionOracle(pin_leaf);if(pr.next)pr.next_sha256=WholeRootHash(leaf);else pr.next_sha256.fill(0);const auto root=RetentionOracle(pr);cp.roots[9].sha256=WholeRootHash(root);if(a.retention_sha256==head.retention_sha256)a.retention_sha256=cp.roots[9].sha256;if(b.retention_sha256==head.retention_sha256)b.retention_sha256=cp.roots[9].sha256;put(first,40,sizes[p],root);put(second,42,sizes[q],leaf);const auto ib=InventoryOracle(inventory,16,16,16),tb=HorizonOracle(b);a.next_sha256=WholeRootHash(tb);const auto hb=HorizonOracle(a);
+    const auto persist=[&](const auto& inventory,const auto& primary,auto a,auto b,bool older=false,bool stale=false){auto cp=checkpoint;auto pr=pin_root;const auto leaf=RetentionOracle(pin_leaf);if(pr.next)pr.next_sha256=WholeRootHash(leaf);else pr.next_sha256.fill(0);const auto root=RetentionOracle(pr);cp.roots[9].sha256=WholeRootHash(root);if(a.retention_sha256==head.retention_sha256)a.retention_sha256=cp.roots[9].sha256;if(b.retention_sha256==head.retention_sha256)b.retention_sha256=cp.roots[9].sha256;put(first,40,sizes[p],root);put(second,42,sizes[q],leaf);const auto ib=InventoryStateOracle(inventory),tb=HorizonOracle(b);a.next_sha256=WholeRootHash(tb);const auto hb=HorizonOracle(a);
       cp.roots[0].page=InventoryRef(inventory);cp.roots[0].object_uuid=inventory.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);cp.roots[1].page={Id(2),24,124,Profile(p)};cp.roots[1].object_uuid=Id(112);cp.roots[1].sha256=WholeRootHash(hb);if(stale)cp.roots[1].sha256[0]^=1;
       if(older){auto old=cp;old.header.page_number=20;old.header.page_generation=110;old.header.page_uuid=Id(95);old.root_set_generation=7;const auto bytes=CheckpointOracle(old);put(first,20,sizes[p],bytes);
         auto unrelated=old;unrelated.header.page_number=21;unrelated.header.page_generation=111;unrelated.header.page_uuid=Id(94);put(first,21,sizes[p],CheckpointOracle(unrelated));cp.checkpoint_generation=2;cp.predecessor=disk::NativePageReference{Id(2),20,110,Profile(p)};cp.predecessor_sha256=WholeRootHash(bytes);}
@@ -2550,7 +2566,7 @@ void CanonicalCheckpointSystemState() {
     state.clean_transaction_uuid=Id(92);state.clean_local_transaction_id=12;state.transition_operation_uuid=Id(93);
     const auto put=[&](auto& device,u64 number,unsigned size,const Bytes& bytes){const auto io=device.WriteAt(number*size,bytes.data(),bytes.size());Check(io.ok()&&io.bytes_transferred==bytes.size()&&device.Sync().ok(),"persist independent current system-state fixture");};
     const auto persist=[&](const auto& inventory,const auto& primary,const auto& s,bool older=false,bool stale=false,bool clean_checkpoint=false){auto cp=checkpoint;
-      const auto ib=InventoryOracle(inventory,16,16,16),sb=SystemStateOracle(s);
+      const auto ib=InventoryStateOracle(inventory),sb=SystemStateOracle(s);
       cp.roots[0].page=InventoryRef(inventory);cp.roots[0].object_uuid=inventory.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);
       cp.roots[7].page={Id(7),11,101,Profile(q)};cp.roots[7].object_uuid=Id(41);cp.roots[7].sha256=WholeRootHash(stale?SystemStateOracle(state):sb);
       if(clean_checkpoint)cp.flags|=1;
@@ -2943,8 +2959,8 @@ void CheckpointCatalogRelations() {
     if(p==0){const auto saved=inventory.inventory.entries[1];
       for(auto state:{mga::TransactionState::active,mga::TransactionState::prepared,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal,mga::TransactionState::archived}){
         auto& entry=inventory.inventory.entries[1];entry=saved;entry.state=state;entry.commit_sequence=0;if(state==mga::TransactionState::archived)entry.archived_from_state=mga::TransactionState::rolled_back;
-        const bool active=state==mga::TransactionState::active||state==mga::TransactionState::prepared;
-        persist(false,active||state==mga::TransactionState::failed_terminal?13:18,active?13:18);result=read(budget);
+        const bool active=state==mga::TransactionState::active;
+        persist(false,active||state==mga::TransactionState::prepared||state==mga::TransactionState::failed_terminal?13:18,active?13:18);result=read(budget);
         Check(result.ok()&&result.checkpoint.checkpoint_inventory.inventory.entries[1].state==state,"retained actual outcome is not replaced by checkpoint commit");}
       inventory.inventory.entries[1]=saved;inventory.inventory.entries[1].identity.transaction_uuid.value=Id(240);persist();result=read(budget);empty(result);Check(result.error==E::creator_mismatch,"exact binary row creator required");
       inventory.inventory.entries[1]=saved;inventory.inventory.entries[1].identity.scope=mga::TransactionScope::cluster_global;persist();result=read(budget);empty(result);Check(result.error==E::cluster_requires_authority,"global creator requires cluster authority");inventory.inventory.entries[1]=saved;
@@ -2997,7 +3013,7 @@ void CheckpointCatalogRelations() {
       auto extra=images.leaves[3].body.rows[1];extra.row_uuid.value=Id(242);extra.version_uuid=Id(243);extra.internal_row_ordinal=extra.stable_slot_id=3;
       rewrite(extra,[](auto& metadata){metadata.record.header.object_uuid.value=Id(244);});images.leaves[3].body.rows.push_back(extra);
       persist(false,15,15);loaded=read(budget);Check(loaded.ok(),"load multi-page catalog history and active exclusions error="+std::to_string(static_cast<unsigned>(loaded.error))+" relation="+std::to_string(static_cast<unsigned>(loaded.relation.error))+" tree="+std::to_string(static_cast<unsigned>(loaded.relation.tree_error)));CatalogTestPin history_pin(loaded.checkpoint.checkpoint_inventory.inventory,19);
-      inventory.inventory.entries[2].state=mga::TransactionState::prepared;persist(false,15,15);loaded=read(budget);Check(loaded.ok(),"actual prepared catalog writer inventory");
+      inventory.inventory.entries[2].state=mga::TransactionState::prepared;persist(false,15,19);loaded=read(budget);Check(loaded.ok(),"actual prepared catalog writer inventory");
       CatalogTestPin doubt_pin(loaded.checkpoint.checkpoint_inventory.inventory,19);const auto& excluded=doubt_pin.published.descriptor.in_doubt_excluded_local_transaction_ids;
       Check(std::find(excluded.begin(),excluded.end(),15)!=excluded.end(),"actual published in-doubt exclusion contains prepared writer");
       inventory.inventory.entries[2].state=mga::TransactionState::active;persist(false,15,15);
@@ -3105,7 +3121,7 @@ void CheckpointCatalogRelations() {
         const auto outcome=state==mga::TransactionState::archived?origin:state;
         creator.commit_sequence=outcome==mga::TransactionState::committed?4:0;
         const bool pending=outcome==mga::TransactionState::active||outcome==mga::TransactionState::prepared;
-        persist(false,pending||state==mga::TransactionState::failed_terminal?15:19,pending?15:19);
+        persist(false,pending||outcome==mga::TransactionState::failed_terminal?15:19,state==mga::TransactionState::active?15:19);
         loaded=read(budget);Check(loaded.ok(),"duplicate fixture has valid physical images and native inventory state="
           +std::to_string(static_cast<unsigned>(state))+" origin="+std::to_string(static_cast<unsigned>(origin))
           +" checkpoint="+std::to_string(static_cast<unsigned>(loaded.checkpoint.error))
@@ -3126,7 +3142,7 @@ void CheckpointCatalogRelations() {
         persist(false,19,19);selected=pinned(fresh_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::invalid_chain,"hidden cross-page catalog identity/sequence mismatch");}
       images=history_images;images.leaves[0].body.rows.erase(images.leaves[0].body.rows.begin());images.leaves[0].body.rows[0].internal_row_ordinal=1;
       images.nodes[3].cells.erase(images.nodes[3].cells.begin(),images.nodes[3].cells.begin()+2);persist(false,19,19);selected=pinned(history_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::missing_version,"missing excluded successor predecessor is not invented absence");
-      images=history_images;inventory.inventory.entries[2].state=mga::TransactionState::limbo;inventory.inventory.entries[2].archived_from_state=mga::TransactionState::none;inventory.inventory.entries[2].commit_sequence=0;persist(false,15,15);
+      images=history_images;inventory.inventory.entries[2].state=mga::TransactionState::limbo;inventory.inventory.entries[2].archived_from_state=mga::TransactionState::none;inventory.inventory.entries[2].commit_sequence=0;persist(false,15,19);
       selected=pinned(history_pin.pin,reader.identity);no_rows(selected);Check(selected.error==PE::requires_recovery,"traversed limbo metadata requires recovery without prefix");
       inventory.inventory.entries[2].state=mga::TransactionState::committed;inventory.inventory.entries[2].commit_sequence=4;persist(false,19,19);
       inventory.inventory.entries.back().state=mga::TransactionState::committed;inventory.inventory.entries.back().commit_sequence=5;inventory.inventory.next_commit_sequence=6;persist(false,20,20);
@@ -3428,9 +3444,9 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
         }
       }
       for(unsigned progress=0;progress<10;++progress){reset_history();auto& active=inv.inventory.entries[0];auto& ended=inv.inventory.entries[1];
-        if(progress==0)active.state=mga::TransactionState::preparing;
-        if(progress==1)active.state=mga::TransactionState::prepared;
-        if(progress==2){active.state=mga::TransactionState::rolling_back;inventory_summary={18,18,18};}
+        if(progress==0){active.state=mga::TransactionState::preparing;inventory_summary={13,18,18};}
+        if(progress==1){active.state=mga::TransactionState::prepared;inventory_summary={13,18,18};}
+        if(progress==2){active.state=mga::TransactionState::rolling_back;inventory_summary={13,18,18};}
         if(progress==3){active.state=mga::TransactionState::committed;active.commit_sequence=3;inv.inventory.next_commit_sequence=4;inventory_summary={18,18,18};}
         if(progress==4){ended.state=mga::TransactionState::archived;ended.archived_from_state=mga::TransactionState::rolled_back;}
         if(progress==5)inv.inventory.entries.erase(inv.inventory.entries.begin()+1);
