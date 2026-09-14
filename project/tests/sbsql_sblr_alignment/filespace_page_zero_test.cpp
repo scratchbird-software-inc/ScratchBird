@@ -87,6 +87,7 @@ extern "C" ssize_t __wrap_pwrite(int fd,const void* b,size_t n,off_t offset) {
   ++stage_writes;
   if(stage_write_fault){const auto mode=stage_write_fault;stage_write_fault=0;
     if(mode==2&&n>1){const auto part=__real_pwrite(fd,b,n/2,offset);if(part<0)return part;}
+    if(mode==3&&n>64){const auto part=__real_pwrite(fd,b,64,offset);if(part<0)return part;}
     errno=EIO;return -1;}
   return __real_pwrite(fd,b,n,offset);
 }
@@ -2034,6 +2035,102 @@ void CanonicalCatalogLeafStaging(){using E=db::NativeCatalogLeafStageError;using
     Check(bytes()==expected&&db::DecodeNativeCatalogLeaf(bytes()).ok(),"reopened canonical rows and metadata");empty(stage(budget));Check(bytes()==expected,"read-only destination unchanged");
   }
 }
+Bytes SelectionOracle(const db::NativeCheckpointSelection&);
+void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using S=page::NativeAllocationState;
+  for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=4;++role)for(unsigned kind:{2u,6u,7u,8u}){
+    Fixture fixture;disk::FileDevice first,second;const unsigned q=(p+1)%5;
+    auto z1=Example(p,role),z2=Example(q);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& r:z2.roots)r.filespace_uuid=Id(7);
+    z1.free_pages=z1.preallocated_pages=z2.free_pages=z2.preallocated_pages=0;
+    const auto path1=(fixture.root/"root-stage-primary").string(),path2=(fixture.root/"root-stage-history").string();
+    Check(first.Open(path1,disk::FileOpenMode::create_new).ok()&&second.Open(path2,disk::FileOpenMode::create_new).ok(),"own root staging devices");
+    const byte pad=0;Check(first.WriteAt(64*sizes[p]-1,&pad,1).ok()&&second.WriteAt(64*sizes[q]-1,&pad,1).ok(),"root staging actual capacities");
+    auto inv=InventoryExample(p);inv.inventory.next_local_transaction_id=18;inv.inventory.next_commit_sequence=2;
+    auto& active=inv.inventory.entries[0];active.identity.local_id=mga::MakeLocalTransactionId(13);active.identity.transaction_uuid.value=Id(162);active.state=mga::TransactionState::active;active.commit_sequence=0;
+    auto committed=active;committed.identity.local_id=mga::MakeLocalTransactionId(17);committed.identity.transaction_uuid.value=Id(98);committed.state=mga::TransactionState::committed;committed.commit_sequence=1;inv.inventory.entries.push_back(committed);
+    const auto owner=inv.inventory.entries.front().identity;
+    auto old=RootExample(q);old.header.filespace_uuid=Id(7);old.root_kind=kind;old.header.page_type=kind==6?10:kind==7?11:5;old.object_uuid=Id(180+kind);old.creator_transaction_uuid=Id(98);old.resource_epoch=1;
+    for(auto& r:old.roots)r.page.filespace_uuid=Id(7);
+    if(kind!=2){const auto entry=old.roots[kind==6?4:kind==7?3:5];old.roots={entry};}
+    auto root=old;root.header={sizes[p],old.header.page_type,Id(1),Id(2),Id(150),30,7,0,Profile(p)};
+    root.creator_transaction_uuid=Id(162);root.creator_local_transaction_id=13;root.catalog_generation=2;
+    root.predecessor=disk::NativePageReference{Id(7),12,102,Profile(q)};root.predecessor_sha256=WholeRootHash(RootOracle(old));
+    auto cp=CheckpointExample(p);const unsigned selected_role=kind==2?5:kind==6?6:kind==7?7:9;
+    const bool selected=p==0&&role==1&&kind==2;
+    if(selected){z1.roots.push_back({18,0x30e,Id(2),27,1,Profile(p),Id(154)});z1.roots.push_back({19,0x30e,Id(2),28,1,Profile(p),Id(154)});}
+    page::NativeAllocationMap map;map.header={sizes[p],3,Id(1),Id(2),Id(70),13,103,0,Profile(p)};map.object_uuid=Id(43);map.map_generation=map.capacity_generation=1;
+    map.total_pages=64;map.creator_transaction_uuid=Id(98);map.creator_local_transaction_id=17;map.states.assign(64,S::quarantined);
+    for(unsigned n:{0u,13u,30u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(200+n);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;map.states[n]=S::allocated;
+      if(n==0){r.page_uuid=z1.page_uuid;r.page_generation=7;r.page_type=1;r.owner_uuid=Id(2);}
+      if(n==13){r.page_uuid=Id(70);r.page_generation=103;r.page_type=3;r.owner_uuid=Id(43);}
+      if(n==30){r.page_uuid=Id(150);r.page_generation=7;r.page_type=root.header.page_type;r.owner_uuid=root.object_uuid;r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;map.states[n]=S::reserved;}
+      map.records.push_back(r);}
+    if(selected){map.header.page_number=24;map.header.page_generation=104;map.records[1].page_number=24;map.records[1].page_generation=104;map.states[13]=S::quarantined;map.states[24]=S::allocated;
+      for(unsigned n:{27u,28u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(220+n);r.page_uuid=Id(n==27?155:156);r.page_generation=1;r.page_type=0x30e;r.owner_uuid=Id(154);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;map.records.push_back(r);map.states[n]=S::allocated;}
+      std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});}
+    page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=1;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
+    const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& b){const auto io=file.WriteAt(number*size,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size()&&file.Sync().ok(),"persist independent root staging fixture");};
+    const auto persist=[&](){directory.records.clear();for(const auto* z:{&z1,&z2})directory.records.push_back({z->bootstrap,Id(z==&z1?190:191),z->page_uuid,z->page_generation,z->root_set_generation,z->total_pages,0,{}});
+      const auto ib=InventoryOracle(inv,13,13,13),mb=AllocationOracle(map),dbb=DirectoryOracle(directory),prior=RootOracle(old);
+      cp.roots[0]={1,0x301,InventoryRef(inv),inv.object_uuid,WholeRootHash(ib)};
+      cp.roots[2]={3,9,{Id(2),15,105,Profile(p)},Id(45),WholeRootHash(dbb)};
+      cp.roots[3]={4,3,{Id(2),map.header.page_number,map.header.page_generation,Profile(p)},Id(43),WholeRootHash(mb)};
+      cp.roots[selected_role-1]={static_cast<disk::u16>(selected_role),old.header.page_type,{Id(7),12,102,Profile(q)},old.object_uuid,WholeRootHash(prior)};
+      const auto cb=CheckpointOracle(cp);
+      put(first,0,sizes[p],Oracle(z1));put(second,0,sizes[q],Oracle(z2));put(first,14,sizes[p],ib);put(first,map.header.page_number,sizes[p],mb);put(first,15,sizes[p],dbb);put(second,12,sizes[q],prior);put(first,19,sizes[p],cb);
+      if(selected){db::NativeCheckpointSelection selection;selection.header={sizes[p],0x30e,Id(1),Id(2),Id(155),27,1,0,Profile(p)};selection.object_uuid=Id(154);selection.bootstrap_uuid=z1.page_uuid;selection.publication_uuid=Id(153);selection.selection_generation=1;selection.checkpoint={Id(2),19,109,Profile(p)};selection.checkpoint_object_uuid=cp.object_uuid;selection.checkpoint_sha256=WholeRootHash(cb);selection.checkpoint_generation=1;selection.root_set_generation=8;selection.timeline_uuid=cp.timeline_uuid;
+        put(first,27,sizes[p],SelectionOracle(selection));selection.header.page_number=28;selection.header.page_uuid=Id(156);put(first,28,sizes[p],SelectionOracle(selection));}};
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+    const u64 budget=6*sizes[p]+sizes[q];const Bytes blank(sizes[p],0),expected=RootOracle(root);
+    const auto reset=[&](){put(first,30,sizes[p],blank);};
+    const auto bytes=[&](){Bytes b(sizes[p]);Check(first.ReadAt(30*sizes[p],b.data(),b.size()).ok(),"read actual staged root");return b;};
+    const auto stage=[&](u64 b){return db::StageNativeCatalogRootSuccessorFromOpenDevices(devices,CheckpointRef(cp),owner,root,b);};
+    const char* phase="initial";
+    const auto empty=[&](const auto& r){if(r.ok()||r.receipt)std::cerr<<"unexpected root stage receipt phase="<<phase<<std::endl;Check(!r.ok()&&!r.receipt,"failed root staging returns no receipt");};
+    persist();reset();reads=observed_full_digests=0;observed_allocations=0;stage_writes=stage_syncs=0;track_reads=count_allocations=count_full_digests=true;
+    auto result=stage(budget);track_reads=count_allocations=count_full_digests=false;const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
+    if(!result.ok())std::cerr<<"root stage error="<<static_cast<int>(result.error)<<" cp="<<static_cast<int>(result.checkpoint_error)<<" root="<<static_cast<int>(result.root_error)<<std::endl;
+    Check(result.ok()&&stage_writes==1&&stage_syncs==1&&result.receipt->root_uuid==root.object_uuid&&result.receipt->allocation_uuid==Id(230)&&result.receipt->sha256==WholeRootHash(expected)&&bytes()==expected,"actual staged root receipt and independent bytes");
+    stage_writes=stage_syncs=0;Check(stage(budget).ok()&&!stage_writes&&stage_syncs==1,"idempotent root retry still syncs");
+    auto conflict=expected;conflict.back()^=1;put(first,30,sizes[p],conflict);empty(stage(budget));Check(bytes()==conflict,"different reserved root data preserved");
+    reset();phase="budget";empty(stage(budget-1));Check(bytes()==blank,"root budget checked before write");
+    if(p==0&&role==1&&kind==2){
+      phase="allocation";
+      for(unsigned long n=0;n<=na;++n){reset();allocation_budget=n;result=stage(budget);allocation_budget=-1;if(result.ok())Check(bytes()==expected,"allocation sweep valid root bytes");else{empty(result);const auto b=bytes();Check(b==blank||b==expected,"allocation failure grants no root publication");}if(n==na)Check(result.ok(),"root allocation sweep terminal success");}
+      phase="read";for(unsigned n=1;n<=nr;++n){reset();reads=0;read_fault=n;track_reads=true;result=stage(budget);track_reads=false;Check(!read_fault,"root read fault consumed");empty(result);}
+      phase="full digest";for(unsigned n=1;n<=nf;++n){reset();full_digest_fault=n;result=stage(budget);Check(!full_digest_fault,"root full digest fault consumed");empty(result);Check(bytes()==blank,"root hash fault before write");}
+      phase="multipart";for(unsigned n=1;n<=5;++n){reset();hash_fault=n;result=stage(budget);Check(!hash_fault,"root multipart failure consumed");empty(result);}
+      phase="write";for(unsigned mode=1;mode<=3;++mode){reset();stage_write_fault=mode;result=stage(budget);Check(!stage_write_fault,"root write fault consumed");empty(result);
+        if(mode==2)Check(bytes()==expected&&stage(budget).ok(),"short write containing all nonzero root bytes allows exact-image retry");
+        if(mode==3){const auto partial=bytes();Check(partial!=blank&&partial!=expected,"short root header is genuinely partial");empty(stage(budget));Check(bytes()==partial,"partial root remains for recovery");}}
+      reset();stage_sync_fault=1;empty(stage(budget));Check(!stage_sync_fault&&bytes()==expected&&stage(budget).ok(),"root sync failure retry validates actual bytes");
+      reset();reads=0;stage_corrupt_read=nr;track_reads=true;result=stage(budget);track_reads=false;Check(!stage_corrupt_read&&result.error==E::readback_mismatch,"root readback corruption consumed");empty(result);
+      std::cout<<"root stage allocations="<<na<<" reads="<<nr<<" digests="<<nf<<std::endl;
+    }
+    reset();const auto saved=root;
+    for(unsigned n=0;n<9;++n){root=saved;if(n==0)root.predecessor->page_number++;if(n==1)root.predecessor_sha256[0]^=1;if(n==2)root.catalog_generation++;if(n==3)root.schema_epoch--;if(n==4)root.security_epoch--;if(n==5)root.resource_epoch--;if(n==6)root.creator_transaction_uuid=Id(98);if(n==7)root.header.flags=1;if(n==8)root.roots[0].role=0;empty(stage(budget));Check(bytes()==blank,"invalid root successor preserved destination");}
+    root=saved;const auto original_map=map;
+    for(unsigned n=0;n<6;++n){map=original_map;if(n==0)map.states[30]=S::allocated;if(n==1)map.records.back().owner_uuid=Id(202);if(n==2)map.records.back().page_generation++;if(n==3)map.records.back().page_uuid=Id(203);if(n==4)map.records.back().page_type=6;if(n==5)map.records.back().allocation_uuid=map.records.front().allocation_uuid;persist();empty(stage(budget));Check(bytes()==blank,"invalid reservation cannot stage root");}
+    map=original_map;root.header.page_uuid=old.header.page_uuid;map.records.back().page_uuid=old.header.page_uuid;persist();empty(stage(budget));Check(bytes()==blank,"new root cannot reuse predecessor page UUID");root=saved;map=original_map;
+    const auto prior_saved=old;
+    old.header.flags=2;root.predecessor_sha256=WholeRootHash(RootOracle(old));persist();result=stage(budget);empty(result);Check(result.error==E::header_requires_authority,"predecessor header policy is not silently cleared");old=prior_saved;root=saved;
+    z2.bootstrap.flags=disk::FilespaceBootstrapFlag::cluster_authority_required;persist();result=stage(budget);empty(result);Check(result.error==E::cluster_requires_authority,"cluster-owned predecessor requires its provider");z2.bootstrap.flags=0;
+    z2.bootstrap.flags=disk::FilespaceBootstrapFlag::payload_encrypted;z2.bootstrap.encryption_profile_uuid=Id(4);persist();result=stage(budget);empty(result);Check(result.error==E::header_requires_authority,"encrypted predecessor requires crypto authority");z2.bootstrap.flags=0;z2.bootstrap.encryption_profile_uuid={};
+    if(kind==8){old.root_kind=2;old.roots=RootExample(q).roots;for(auto& r:old.roots)r.page.filespace_uuid=Id(7);root.predecessor_sha256=WholeRootHash(RootOracle(old));persist();result=stage(budget);empty(result);Check(result.error==E::predecessor_mismatch,"shared feature root is not a dedicated-root predecessor");old=prior_saved;root=saved;}
+    old.creator_transaction_uuid=Id(162);old.creator_local_transaction_id=13;root.predecessor_sha256=WholeRootHash(RootOracle(old));persist();result=stage(budget);empty(result);Check(result.error==E::predecessor_creator_mismatch,"uncommitted predecessor cannot authorize successor");
+    old=prior_saved;root=saved;inv.inventory.entries[0].rollback_only=true;persist();result=stage(budget);empty(result);Check(result.error==E::creator_rollback_only,"root writer rollback-only exclusion");inv.inventory.entries[0].rollback_only=false;persist();
+    if(p==0&&role==1&&kind==2){auto duplicate=devices;duplicate.push_back(devices.front());empty(db::StageNativeCatalogRootSuccessorFromOpenDevices(duplicate,CheckpointRef(cp),owner,root,budget));
+      auto reverse=devices;std::reverse(reverse.begin(),reverse.end());std::atomic<unsigned> completed{0};stage_writes=stage_syncs=0;
+      std::thread a([&]{if(stage(budget).ok())++completed;}),b([&]{if(db::StageNativeCatalogRootSuccessorFromOpenDevices(reverse,CheckpointRef(cp),owner,root,budget).ok())++completed;});
+      a.join();b.join();Check(completed==2&&stage_writes==1&&stage_syncs==2,"opposite-order root writers serialize one write and an exact retry");}
+    Check(stage(budget).ok(),"final root staging");Bytes prior(sizes[q]);Check(second.ReadAt(12*sizes[q],prior.data(),prior.size()).ok()&&prior==RootOracle(old),"published predecessor remains unchanged");
+    Bytes checkpoint_bytes(sizes[p]);Check(first.ReadAt(19*sizes[p],checkpoint_bytes.data(),checkpoint_bytes.size()).ok()&&checkpoint_bytes==CheckpointOracle(cp),"staging never publishes a checkpoint");
+    Check(first.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok(),"independent root staging reopen");Check(bytes()==expected&&page::DecodeNativeCatalogRoot(bytes()).ok(),"reopened root exact image");empty(stage(budget));
+    Check(first.Close().ok()&&second.Close().ok(),"release root filespaces for fresh executable");const auto child=::fork();Check(child>=0,"fork actual root reader");
+    if(child==0){const auto profile=std::to_string(p),family=std::to_string(kind);::execl("/proc/self/exe","root-stage-probe","--catalog-root-stage-probe",fixture.root.c_str(),profile.c_str(),family.c_str(),nullptr);::_exit(125);}
+    int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable resolves staged root and unchanged predecessor");
+  }
+}
+
 void CanonicalCheckpointDirectory() {
   using E=db::NativeCheckpointError;
   for(unsigned p=0;p<5;++p){const unsigned q=(p+1)%5;Fixture fixture;disk::FileDevice first,second;
@@ -2965,6 +3062,18 @@ void CanonicalBoundCheckpointSelection(){using E=db::NativeCheckpointSelectionEr
   }
 }
 int main(int argc,char** argv) {
+  if(argc==5&&std::string_view(argv[1])=="--catalog-root-stage-probe"){
+    const std::filesystem::path path=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3])),kind=static_cast<unsigned>(std::stoul(argv[4]));if(p>=5||(kind!=2&&kind!=6&&kind!=7&&kind!=8))return 2;const auto q=(p+1)%5;
+    disk::FileDevice first,second;if(!first.Open((path/"root-stage-primary").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((path/"root-stage-history").string(),disk::FileOpenMode::open_existing_read_only).ok())return 3;
+    const auto type=kind==6?10u:kind==7?11u:5u;
+    const auto root=page::ReadNativeCatalogRootFromOpenDevice(first,Id(1),{static_cast<disk::u16>(kind),type,Id(2),30,7,Profile(p),Id(180+kind)});
+    const auto prior=page::ReadNativeCatalogRootFromOpenDevice(second,Id(1),{static_cast<disk::u16>(kind),type,Id(7),12,102,Profile(q),Id(180+kind)});
+    return root.ok()&&prior.ok()&&root.root->catalog_generation==2&&prior.root->catalog_generation==1&&root.root->predecessor_sha256==WholeRootHash(prior.bytes)?0:4;
+  }
+  if(argc==2&&std::string_view(argv[1])=="--catalog-root-stage-only"){
+    try{CanonicalCatalogRootStaging();std::cout<<"catalog root stage checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
+  }
   if(argc==4&&std::string_view(argv[1])=="--bound-selector-probe"){
     const std::filesystem::path root=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3]));if(p>=5)return 2;const auto q=(p+1)%5;
     disk::FileDevice first,second;
