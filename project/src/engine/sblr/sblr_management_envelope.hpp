@@ -7,14 +7,15 @@
 #include "sblr_engine_envelope.hpp"
 
 #include <cstdint>
+#include <array>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace scratchbird::engine::sblr {
 
-// MGA-CMO-ADMITTED-MANAGEMENT-ENVELOPE-WIRE-V1
-inline constexpr std::uint16_t kManagementEnvelopeWireMajor = 1;
+// MGA-CMO-BINARY-MANAGEMENT-ENVELOPE-WIRE-002
+inline constexpr std::uint16_t kManagementEnvelopeWireMajor = 2;
 inline constexpr std::uint16_t kManagementEnvelopeWireMinor = 0;
 // SBOP v1 reserves 24 bytes for the typed-literal carrier, so a management
 // frame carried by SBOP is bounded below the general 65,536-byte scalar cap.
@@ -45,7 +46,7 @@ struct SblrManagementEnvelopeCodecResult {
   bool ok = false;
   SblrManagementEnvelopeRecord record;
   std::vector<std::uint8_t> canonical_bytes;
-  std::string sha256_hex;
+  std::array<std::uint8_t,32> sha256{};
   std::string diagnostic_id;
   std::string detail;
 };

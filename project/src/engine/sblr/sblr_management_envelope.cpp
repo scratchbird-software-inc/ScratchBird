@@ -15,7 +15,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <unordered_map>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -82,21 +82,31 @@ std::uint32_t Crc32c(const std::uint8_t* data, std::size_t size) noexcept {
   return ~crc;
 }
 
-bool IsUuid(std::string_view v) {
-  if (v.size() != 36 || v[8] != '-' || v[13] != '-' || v[18] != '-' || v[23] != '-') return false;
-  bool nonzero = false;
-  for (std::size_t i = 0; i < v.size(); ++i) {
-    if (i == 8 || i == 13 || i == 18 || i == 23) continue;
-    const char c = v[i];
-    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
-    nonzero = nonzero || c != '0';
-  }
-  return nonzero;
+bool IsUuid(const Bytes& value) {
+  return value.size() == 16 && (value[6] >> 4) == 7 && (value[8] & 0xc0) == 0x80;
+}
+
+scratchbird::core::platform::Uuid FieldUuid(const SblrManagementEnvelopeRecord& record, std::string_view name) {
+  scratchbird::core::platform::Uuid result;
+  for (const auto& field : record.fields)
+    if (field.name == name && field.value.size() == 16)
+      std::copy(field.value.begin(), field.value.end(), result.bytes.begin());
+  return result;
 }
 
 bool IsText(const Bytes& v) {
   if (v.empty()) return false;
-  for (auto c : v) if (c == 0 || c < 0x20) return false;
+  for (std::size_t at=0;at<v.size();) {
+    const auto first=v[at++];std::uint32_t scalar=first;unsigned extra=0;
+    if(first>=0xc2&&first<=0xdf){scalar=first&0x1f;extra=1;}
+    else if(first>=0xe0&&first<=0xef){scalar=first&0x0f;extra=2;}
+    else if(first>=0xf0&&first<=0xf4){scalar=first&7;extra=3;}
+    else if(first>=0x80)return false;
+    if(extra>v.size()-at)return false;
+    for(unsigned i=0;i<extra;++i){const auto next=v[at++];if((next&0xc0)!=0x80)return false;scalar=(scalar<<6)|(next&0x3f);}
+    if((extra==1&&scalar<0x80)||(extra==2&&scalar<0x800)||(extra==3&&scalar<0x10000)||
+       scalar>0x10ffff||(scalar>=0xd800&&scalar<=0xdfff)||scalar<0x20||(scalar>=0x7f&&scalar<=0x9f))return false;
+  }
   return true;
 }
 
@@ -130,25 +140,30 @@ SblrManagementEnvelopeCodecResult ValidateRecord(const SblrManagementEnvelopeRec
   if (spec == nullptr) return Failure("MGA.CMO.ENVELOPE_INVALID", "record_kind_unknown");
   if (record.fields.size() > kManagementEnvelopeMaximumFields) return Failure("MGA.CMO.ENVELOPE_INVALID", "field_count_limit");
   if (record.fields.size() != spec->fields.size()) return Failure("MGA.CMO.ENVELOPE_INVALID", "field_count_not_exact");
+  std::size_t frame_bytes=52+8*record.fields.size();
   for (std::size_t i = 0; i < spec->fields.size(); ++i) {
     const auto& expected = spec->fields[i]; const auto& actual = record.fields[i];
     if (actual.name != expected.name) return Failure("MGA.CMO.ENVELOPE_INVALID", "field_order_or_name:" + actual.name);
     if (actual.value.size() > kManagementEnvelopeMaximumFieldBytes) return Failure("MGA.CMO.ENVELOPE_INVALID", "field_limit:" + actual.name);
+    if (actual.value.size() > kManagementEnvelopeMaximumBytes-frame_bytes) return Failure("MGA.CMO.ENVELOPE_INVALID", "frame_limit");
+    frame_bytes+=actual.value.size();
     if (actual.value.empty() && expected.required) return Failure(record.kind == SblrManagementEnvelopeKind::payload ? "MGA.CMO.PAYLOAD_INVALID" : "MGA.CMO.ENVELOPE_INVALID", "required_field_empty:" + actual.name);
-    if (!actual.value.empty() && actual.name != "payload_body" && !IsText(actual.value)) return Failure("MGA.CMO.ENVELOPE_INVALID", "text_invalid:" + actual.name);
-    if (!actual.value.empty() && expected.uuid && !IsUuid(FieldText(record, actual.name))) return Failure("MGA.CMO.ENVELOPE_INVALID", "uuid_invalid:" + actual.name);
+    if (!actual.value.empty() && !expected.uuid && actual.name != "payload_body" && actual.name != "canonical_serialization_hash" && !IsText(actual.value)) return Failure("MGA.CMO.ENVELOPE_INVALID", "text_invalid:" + actual.name);
+    if (!actual.value.empty() && expected.uuid && !IsUuid(actual.value)) return Failure("MGA.CMO.ENVELOPE_INVALID", "uuid_invalid:" + actual.name);
   }
   if (record.kind == SblrManagementEnvelopeKind::payload) {
-    const auto body = FieldText(record, "payload_body");
-    const auto hash = scratchbird::core::hash::ComputeSha256Digest(reinterpret_cast<const std::uint8_t*>(body.data()), body.size());
-    if (!hash.ok() || FieldText(record, "canonical_serialization_hash") != scratchbird::core::hash::HexLower(hash.digest)) return Failure("MGA.CMO.PAYLOAD_INVALID", "payload_body_sha256_mismatch");
+    const auto& body = record.fields[5].value;
+    const auto& claimed = record.fields[4].value;
+    const auto hash = scratchbird::core::hash::ComputeSha256Digest(body);
+    if (!hash.ok() || claimed.size() != hash.digest.size() ||
+        !std::equal(claimed.begin(), claimed.end(), hash.digest.begin())) return Failure("MGA.CMO.PAYLOAD_INVALID", "payload_body_sha256_mismatch");
   }
   SblrManagementEnvelopeCodecResult result; result.ok = true; result.record = record; return result;
 }
 
-struct OperationState { std::string operation_digest; std::string payload_digest; bool terminal = false; std::uint64_t generation = 0; std::uint64_t progress_work = 0; };
+struct OperationState { std::array<std::uint8_t,32> operation_digest{}; std::optional<std::array<std::uint8_t,32>> payload_digest; bool terminal = false; std::uint64_t generation = 0; std::uint64_t progress_work = 0; };
 std::mutex& StateMutex() { static std::mutex mutex; return mutex; }
-std::unordered_map<std::string, OperationState>& States() { static std::unordered_map<std::string, OperationState> states; return states; }
+std::map<scratchbird::core::platform::Uuid, OperationState>& States() { static std::map<scratchbird::core::platform::Uuid, OperationState> states; return states; }
 
 SblrManagementEnvelopeDispatchResult DispatchFailure(std::string id, std::string detail) {
   SblrManagementEnvelopeDispatchResult result; result.diagnostic_id = std::move(id); result.detail = std::move(detail); return result;
@@ -164,19 +179,19 @@ std::uint16_t ManagementEnvelopeOpcodeCode(SblrManagementEnvelopeKind kind) noex
 SblrManagementEnvelopeCodecResult EncodeSblrManagementEnvelopeRecord(const SblrManagementEnvelopeRecord& record) {
   auto validated = ValidateRecord(record); if (!validated.ok) return validated;
   Bytes out(16, 0); out[0] = 'S'; out[1] = 'B'; out[2] = 'M'; out[3] = 'G';
-  out[4] = 1; out[6] = 0; out[8] = static_cast<std::uint8_t>(record.kind); out[10] = static_cast<std::uint8_t>(record.fields.size());
+  out[4] = kManagementEnvelopeWireMajor; out[6] = 0; out[8] = static_cast<std::uint8_t>(record.kind); out[10] = static_cast<std::uint8_t>(record.fields.size());
   for (std::size_t i = 0; i < record.fields.size(); ++i) { Append16(&out, static_cast<std::uint16_t>(i + 1)); Append16(&out, 0); Append32(&out, static_cast<std::uint32_t>(record.fields[i].value.size())); out.insert(out.end(), record.fields[i].value.begin(), record.fields[i].value.end()); }
   Store32(&out, 12, static_cast<std::uint32_t>(out.size() - 16));
   if (out.size() + 36 > kManagementEnvelopeMaximumBytes) return Failure("MGA.CMO.ENVELOPE_INVALID", "frame_limit");
   const auto digest = scratchbird::core::hash::ComputeSha256Digest(out);
   if (!digest.ok()) return Failure("MGA.CMO.ENVELOPE_INVALID", "sha256_unavailable");
   out.insert(out.end(), digest.digest.begin(), digest.digest.end()); Append32(&out, Crc32c(out.data(), out.size()));
-  validated.canonical_bytes = std::move(out); validated.sha256_hex = scratchbird::core::hash::HexLower(digest.digest); return validated;
+  validated.canonical_bytes = std::move(out); validated.sha256 = digest.digest; return validated;
 }
 
 SblrManagementEnvelopeCodecResult DecodeSblrManagementEnvelopeRecord(const std::uint8_t* data, std::size_t size) {
   if (data == nullptr || size < 52 || size > kManagementEnvelopeMaximumBytes) return Failure("MGA.CMO.ENVELOPE_INVALID", "frame_size");
-  if (data[0] != 'S' || data[1] != 'B' || data[2] != 'M' || data[3] != 'G' || Load16(data + 4) != 1 || Load16(data + 6) != 0) return Failure("MGA.CMO.ENVELOPE_INVALID", "magic_or_version");
+  if (data[0] != 'S' || data[1] != 'B' || data[2] != 'M' || data[3] != 'G' || Load16(data + 4) != kManagementEnvelopeWireMajor || Load16(data + 6) != 0) return Failure("MGA.CMO.ENVELOPE_INVALID", "magic_or_version");
   const auto* spec = FindSpec(static_cast<SblrManagementEnvelopeKind>(Load16(data + 8)));
   const std::uint16_t count = Load16(data + 10); const std::uint32_t area = Load32(data + 12);
   if (spec == nullptr || count != spec->fields.size() || area + 16 + 36 != size) return Failure("MGA.CMO.ENVELOPE_INVALID", "kind_or_area");
@@ -192,7 +207,7 @@ SblrManagementEnvelopeCodecResult DecodeSblrManagementEnvelopeRecord(const std::
   }
   if (offset != size - 36) return Failure("MGA.CMO.ENVELOPE_INVALID", "field_area_mismatch");
   auto validated = ValidateRecord(record); if (!validated.ok) return validated;
-  validated.canonical_bytes.assign(data, data + size); validated.sha256_hex = scratchbird::core::hash::HexLower(digest.digest); return validated;
+  validated.canonical_bytes.assign(data, data + size); validated.sha256 = digest.digest; return validated;
 }
 
 SblrManagementEnvelopeCodecResult DecodeSblrManagementEnvelopeOperand(const SblrOperationEnvelope& envelope) {
@@ -200,6 +215,10 @@ SblrManagementEnvelopeCodecResult DecodeSblrManagementEnvelopeOperand(const Sblr
   if (spec == nullptr || envelope.opcode != spec->opcode || envelope.opcode_code != spec->code || envelope.operands.size() != 1) return Failure("MGA.CMO.ENVELOPE_INVALID", "sbop_identity_or_operand_count");
   const auto& operand = envelope.operands.front();
   if (operand.type != spec->type || operand.name != spec->slot || operand.ordinal != 1 || operand.value_kind != SblrValueKind::literal_typed || operand.value_body.size() < 24) return Failure("MGA.CMO.ENVELOPE_INVALID", "sbop_operand_carrier");
+  if (operand.value_body[0] != static_cast<std::uint8_t>(spec->kind) ||
+      !std::all_of(operand.value_body.begin() + 1, operand.value_body.begin() + 16,
+                   [](std::uint8_t byte) { return byte == 0; }))
+    return Failure("MGA.CMO.ENVELOPE_INVALID", "sbop_carrier_discriminator");
   std::uint64_t count = 0; for (unsigned i = 0; i != 8; ++i) count |= static_cast<std::uint64_t>(operand.value_body[16 + i]) << (i * 8);
   if (count != operand.value_body.size() - 24) return Failure("MGA.CMO.ENVELOPE_INVALID", "sbop_carrier_size");
   auto decoded = DecodeSblrManagementEnvelopeRecord(operand.value_body.data() + 24, static_cast<std::size_t>(count));
@@ -219,16 +238,16 @@ SblrManagementEnvelopeDispatchResult DispatchSblrManagementEnvelope(const SblrOp
   const auto registry = ValidateSblrOpcodeForEnvelope(envelope);
   if (!registry.ok) return DispatchFailure(registry.diagnostic_id, registry.detail);
   const auto decoded = DecodeSblrManagementEnvelopeOperand(envelope); if (!decoded.ok) return DispatchFailure(decoded.diagnostic_id, decoded.detail);
-  const auto operation_uuid = FieldText(decoded.record, "operation_uuid");
+  const auto operation_uuid = FieldUuid(decoded.record, "operation_uuid");
   std::lock_guard lock(StateMutex()); auto& states = States(); const auto kind = decoded.record.kind;
   if (kind == SblrManagementEnvelopeKind::operation) {
     const auto existing = states.find(operation_uuid);
-    if (existing != states.end()) { if (existing->second.operation_digest != decoded.sha256_hex) return DispatchFailure("MGA.CMO.IDEMPOTENT_PAYLOAD_MISMATCH", "operation_uuid_replay_digest_mismatch"); }
-    else states.emplace(operation_uuid, OperationState{decoded.sha256_hex, {}, false, 1, 0});
+    if (existing != states.end()) { if (existing->second.operation_digest != decoded.sha256) return DispatchFailure("MGA.CMO.IDEMPOTENT_PAYLOAD_MISMATCH", "operation_uuid_replay_digest_mismatch"); }
+    else states.emplace(operation_uuid, OperationState{decoded.sha256, {}, false, 1, 0});
   } else {
     auto found = states.find(operation_uuid); if (found == states.end()) return DispatchFailure("MGA.CMO.ENVELOPE_INVALID", "operation_not_admitted");
     auto& state = found->second; if (state.terminal) return DispatchFailure("MGA.CMO.ENVELOPE_INVALID", "publication_after_terminal");
-    if (kind == SblrManagementEnvelopeKind::payload) { if (!state.payload_digest.empty() && state.payload_digest != decoded.sha256_hex) return DispatchFailure("MGA.CMO.IDEMPOTENT_PAYLOAD_MISMATCH", "payload_republication_mismatch"); state.payload_digest = decoded.sha256_hex; }
+    if (kind == SblrManagementEnvelopeKind::payload) { if (state.payload_digest.has_value() && state.payload_digest != decoded.sha256) return DispatchFailure("MGA.CMO.IDEMPOTENT_PAYLOAD_MISMATCH", "payload_republication_mismatch"); state.payload_digest = decoded.sha256; }
     if (kind == SblrManagementEnvelopeKind::progress) {
       std::uint64_t completed = 0;
       if (!ParseU64(FieldText(decoded.record, "completed_work"), &completed) ||
@@ -243,7 +262,7 @@ SblrManagementEnvelopeDispatchResult DispatchSblrManagementEnvelope(const SblrOp
     ++state.generation;
   }
   SblrManagementEnvelopeDispatchResult result; result.accepted = true;
-  result.evidence.push_back({"management-envelope", "executor_id=" + registry.entry->executor_id + ";opcode_code=" + std::to_string(envelope.opcode_code) + ";opcode_version=1.0;record_identity=" + std::string(ManagementEnvelopeOperationId(decoded.record.kind)) + ";frame_sha256=" + decoded.sha256_hex + ";operation_uuid=" + operation_uuid});
+  result.evidence.push_back({"management-envelope", "executor_id=" + registry.entry->executor_id + ";opcode_code=" + std::to_string(envelope.opcode_code) + ";opcode_version=1.0;record_identity=" + std::string(ManagementEnvelopeOperationId(decoded.record.kind)) + ";frame_sha256=" + scratchbird::core::hash::HexLower(decoded.sha256)});
   return result;
 }
 

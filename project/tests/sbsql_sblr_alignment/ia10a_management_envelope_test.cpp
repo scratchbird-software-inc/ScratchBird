@@ -15,9 +15,10 @@ namespace hash = scratchbird::core::hash;
 
 namespace {
 
-constexpr char kUuidA[] = "11111111-1111-1111-1111-111111111111";
-constexpr char kUuidB[] = "22222222-2222-2222-2222-222222222222";
-constexpr char kUuidC[] = "33333333-3333-3333-3333-333333333333";
+scratchbird::core::platform::Uuid Id(std::uint8_t seed) {
+  scratchbird::core::platform::Uuid id; id.bytes.fill(seed); id.bytes[6]=0x70; id.bytes[8]=0x80; return id;
+}
+const auto kUuidA=Id(1),kUuidB=Id(2),kUuidC=Id(3);
 
 [[noreturn]] void Fail(const std::string& what) { std::cerr << what << '\n'; std::exit(1); }
 void Require(bool condition, const std::string& what) { if (!condition) Fail(what); }
@@ -33,13 +34,15 @@ std::vector<std::string> Names(sb::SblrManagementEnvelopeKind kind) {
 }
 
 sb::SblrManagementEnvelopeRecord Record(sb::SblrManagementEnvelopeKind kind,
-                                        const std::string& operation_uuid) {
+                                        const scratchbird::core::platform::Uuid& operation_uuid) {
   sb::SblrManagementEnvelopeRecord record; record.kind = kind;
   for (const auto& name : Names(kind)) {
     std::string value = "1";
-    if (name == "operation_uuid") value = operation_uuid;
-    else if (name.find("uuid") != std::string::npos) value = kUuidB;
-    else if (name == "opcode") value = "mga.checkpoint";
+    if (name.find("uuid") != std::string::npos) {
+      const auto& id = name == "operation_uuid" ? operation_uuid : kUuidB;
+      record.fields.push_back({name, {id.bytes.begin(), id.bytes.end()}}); continue;
+    }
+    if (name == "opcode") value = "mga.checkpoint";
     else if (name == "request_source") value = "test_harness";
     else if (name == "wait_mode") value = "try";
     else if (name == "dry_run") value = "false";
@@ -55,8 +58,7 @@ sb::SblrManagementEnvelopeRecord Record(sb::SblrManagementEnvelopeKind kind,
   if (kind == sb::SblrManagementEnvelopeKind::payload) {
     const auto digest = hash::ComputeSha256Digest(
         record.fields.back().value);
-    const auto rendered = hash::HexLower(digest.digest);
-    for (auto& field : record.fields) if (field.name == "canonical_serialization_hash") field.value.assign(rendered.begin(), rendered.end());
+    for (auto& field : record.fields) if (field.name == "canonical_serialization_hash") field.value.assign(digest.digest.begin(), digest.digest.end());
   }
   return record;
 }
@@ -81,7 +83,7 @@ sb::SblrDispatchResult Dispatch(const sb::SblrManagementEnvelopeRecord& record,
   scratchbird::engine::internal_api::EngineRequestContext context;
   context.security_context_present = security;
   context.local_transaction_id = 1;
-  context.transaction_uuid.canonical = kUuidA;
+  context.transaction_uuid = kUuidA;
   if (cancelled) context.query_cancellation_requested = [] { return true; };
   sb::SblrDispatchRequest request; request.context = std::move(context); request.envelope = Envelope(record);
   return sb::DispatchSblrOperation(std::move(request));

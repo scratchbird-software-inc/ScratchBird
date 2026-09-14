@@ -572,6 +572,22 @@ if(BUILD_TESTING)
   add_executable(sbsql_sblr_alignment_ia10a_management_envelope
     ${CMAKE_SOURCE_DIR}/tests/sbsql_sblr_alignment/ia10a_management_envelope_test.cpp
   )
+  # Linux codec qualification compiles the production TU; section collection
+  # excludes its unused legacy dispatcher, without supplying mock authority.
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    add_executable(sbsql_sblr_alignment_management_binary_codec
+      ${CMAKE_SOURCE_DIR}/tests/sbsql_sblr_alignment/management_envelope_binary_codec_test.cpp
+      sblr_management_envelope.cpp)
+    target_compile_features(sbsql_sblr_alignment_management_binary_codec PRIVATE cxx_std_23)
+    target_include_directories(sbsql_sblr_alignment_management_binary_codec PRIVATE
+      $<TARGET_PROPERTY:sb_engine_sblr,INCLUDE_DIRECTORIES>)
+    target_compile_options(sbsql_sblr_alignment_management_binary_codec PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(sbsql_sblr_alignment_management_binary_codec PRIVATE -Wl,--gc-sections -Wl,--wrap=EVP_Digest)
+    target_link_libraries(sbsql_sblr_alignment_management_binary_codec PRIVATE sb_core_hash)
+    add_test(NAME sbsql_sblr_alignment_management_binary_codec COMMAND sbsql_sblr_alignment_management_binary_codec)
+    set_tests_properties(sbsql_sblr_alignment_management_binary_codec PROPERTIES
+      LABELS "sbsql_sblr_alignment;binary_uuid;management_codec;not_SQL_E2E" TIMEOUT 60)
+  endif()
   target_compile_features(sbsql_sblr_alignment_ia10a_management_envelope PRIVATE cxx_std_20)
   target_include_directories(sbsql_sblr_alignment_ia10a_management_envelope
     PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
