@@ -46,4 +46,7 @@ NativePublicationPlanError BindNativePublicationPlanToLease(const NativePublicat
     const NativePublicationLease&,const std::vector<byte>& checkpoint) noexcept;
 NativePublicationPlanError BindNativePublicationPlanToManagementExtent(const NativePublicationPlan&,
     const std::vector<std::vector<byte>>&,u64 budget) noexcept;
+// Complete canonical record digest plus provenance binding, not authorization.
+NativePublicationPlanError BindNativePublicationPlanToManagementRecord(const NativePublicationPlan&,
+    const NativeManagementOperation&) noexcept;
 } // namespace scratchbird::storage::database

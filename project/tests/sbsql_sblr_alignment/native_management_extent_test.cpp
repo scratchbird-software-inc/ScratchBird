@@ -112,10 +112,10 @@ Pages ExtentOracle(const O& o,const std::vector<d::NativeCommonPageHeader>& head
  return pages;}
 void Rechain(Pages& pages,db::NativeManagementExtentRoot& root){std::array<byte,32> next{};for(std::size_t left=pages.size();left;--left){auto& b=pages[left-1];std::copy(next.begin(),next.end(),b.begin()+288);HeaderSeal(b);PageSeal(b);next=Sha(b);}root.first_page_sha256=next;}
 void Failed(const db::NativeManagementExtentImage& r){Check(!r.ok()&&!r.root&&r.pages.empty(),"no failed image prefix");}
-void Failed(const db::NativeManagementExtentRead& r){Check(!r.ok()&&!r.record,"no failed read prefix");}
+void Failed(const db::NativeManagementExtentRead& r){Check(!r.ok()&&!r.record&&r.page_headers.empty(),"no failed read prefix");}
 void Good(const O& o,const std::vector<d::NativeCommonPageHeader>& h){const auto expected=ExtentOracle(o,h);const auto encoded=db::EncodeNativeManagementExtent(o,Id(5000),h,budget);
  Check(encoded.ok()&&encoded.pages==expected&&encoded.root->first_page_sha256==Sha(expected[0])&&encoded.root->aggregate_sha256==Sha(Oracle(o)),"independent full extent bytes and hash layers");
- const auto decoded=db::DecodeNativeManagementExtent(expected,*encoded.root,o.database_uuid,o.bootstrap_uuid,budget);Check(decoded.ok()&&*decoded.record==o,"all reconstructed aggregate fields");}
+ const auto decoded=db::DecodeNativeManagementExtent(expected,*encoded.root,o.database_uuid,o.bootstrap_uuid,budget);Check(decoded.ok()&&*decoded.record==o&&decoded.page_headers.size()==h.size(),"all reconstructed aggregate fields and page bindings");for(std::size_t i=0;i<h.size();++i)Check(decoded.page_headers[i].page_uuid==h[i].page_uuid&&decoded.page_headers[i].page_number==h[i].page_number&&decoded.page_headers[i].page_generation==h[i].page_generation,"complete verified physical page identities");}
 void CodecFaults(const O& o,const std::vector<d::NativeCommonPageHeader>& headers){const auto baseline=db::EncodeNativeManagementExtent(o,Id(5000),headers,budget);Check(baseline.ok(),"fault baseline");const auto root=*baseline.root;
  for(unsigned mode=0;mode<2;++mode){
   const auto call=[&](){if(mode){const auto r=db::DecodeNativeManagementExtent(baseline.pages,root,o.database_uuid,o.bootstrap_uuid,budget);if(!r.ok())Failed(r);return r.error;}const auto r=db::EncodeNativeManagementExtent(o,Id(5000),headers,budget);if(!r.ok())Failed(r);return r.error;};

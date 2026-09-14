@@ -28,6 +28,7 @@ struct NativeManagementExtentImage {
 struct NativeManagementExtentRead {
   NativeManagementExtentError error=NativeManagementExtentError::invalid_request;
   std::optional<NativeManagementOperation> record;
+  std::vector<disk::NativeCommonPageHeader> page_headers;
   bool ok() const noexcept{return error==NativeManagementExtentError::none&&record.has_value();}
 };
 // Immutable physical representation only; no allocation, selection or writes.

@@ -113,18 +113,34 @@ NativePublicationPlanError BindNativePublicationPlanToLease(const NativePublicat
     const auto graph=ComputeNativePublicationTargetGraphDigest(b);if(!graph.ok())return graph.error;return graph.sha256==p.target_graph_sha256?E::none:E::binding_mismatch;
   }catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::binding_mismatch;}
 }
+namespace {
+E RecordFields(const NativePublicationPlan& p,const NativeManagementOperation& o){
+  if(!p.management_extent||o.database_uuid!=p.header.database_uuid||o.bootstrap_uuid!=p.bootstrap_uuid||o.uuid!=p.management_extent->operation_uuid||o.revision!=p.management_extent->revision)return E::binding_mismatch;
+  if(o.scope==NativeManagementScope::cluster)return E::cluster_requires_authority;
+  if(o.initiator_uuid!=p.intent.initiator_uuid||o.initiator_kind!=p.intent.initiator_kind||o.request_context_uuid!=p.intent.request_context_uuid||o.policy_snapshot_uuid!=p.intent.policy_snapshot_uuid||o.normalized_request_sha256!=p.intent.normalized_request_sha256||o.security_snapshot_uuid!=p.security_snapshot_uuid)return E::binding_mismatch;
+  const std::array<u64,3> values{p.catalog_generation,p.configuration_generation,p.security_generation};
+  for(unsigned i=0;i<3;++i)if(o.generation_guards[i].has_value()!=bool(p.generation_guard_flags&(1u<<i))||o.generation_guards[i].value_or(0)!=values[i])return E::binding_mismatch;
+  return E::none;
+}
+}
 NativePublicationPlanError BindNativePublicationPlanToManagementExtent(const NativePublicationPlan& p,const std::vector<std::vector<byte>>& pages,u64 budget) noexcept {
   try{
     const auto valid=Validate(p);if(valid!=E::none)return valid;
     if(!p.management_extent)return pages.empty()?E::none:E::binding_mismatch;
     const auto decoded=DecodeNativeManagementExtent(pages,*p.management_extent,p.header.database_uuid,p.bootstrap_uuid,budget);
     if(!decoded.ok())return decoded.error==NativeManagementExtentError::hash_failure?E::hash_failure:decoded.error==NativeManagementExtentError::resource_exhausted?E::resource_exhausted:E::binding_mismatch;
-    const auto& o=*decoded.record;if(o.scope==NativeManagementScope::cluster)return E::cluster_requires_authority;
-    if(o.initiator_uuid!=p.intent.initiator_uuid||o.initiator_kind!=p.intent.initiator_kind||o.request_context_uuid!=p.intent.request_context_uuid||o.policy_snapshot_uuid!=p.intent.policy_snapshot_uuid||o.normalized_request_sha256!=p.intent.normalized_request_sha256||o.security_snapshot_uuid!=p.security_snapshot_uuid)return E::binding_mismatch;
-    const std::array<u64,3> values{p.catalog_generation,p.configuration_generation,p.security_generation};
-    for(unsigned i=0;i<3;++i)if(o.generation_guards[i].has_value()!=bool(p.generation_guard_flags&(1u<<i))||o.generation_guards[i].value_or(0)!=values[i])return E::binding_mismatch;
+    const auto fields=RecordFields(p,*decoded.record);if(fields!=E::none)return fields;
     for(const auto& b:pages){const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);if(!h.ok()||h.header->page_uuid==p.header.page_uuid)return E::invalid_identity;}
     return E::none;
+  }catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::binding_mismatch;}
+}
+NativePublicationPlanError BindNativePublicationPlanToManagementRecord(const NativePublicationPlan& p,const NativeManagementOperation& o) noexcept {
+  try{
+    const auto valid=Validate(p);if(valid!=E::none)return valid;
+    const auto fields=RecordFields(p,o);if(fields!=E::none)return fields;
+    const auto encoded=EncodeNativeManagementOperation(o,p.management_extent->aggregate_bytes);
+    if(!encoded.ok())return encoded.error==NativeManagementOperationError::resource_exhausted?E::resource_exhausted:encoded.error==NativeManagementOperationError::hash_failure?E::hash_failure:E::binding_mismatch;
+    return encoded.bytes.size()==p.management_extent->aggregate_bytes&&encoded.sha256==p.management_extent->aggregate_sha256?E::none:E::binding_mismatch;
   }catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::binding_mismatch;}
 }
 } // namespace scratchbird::storage::database

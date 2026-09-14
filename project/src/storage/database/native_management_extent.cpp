@@ -51,8 +51,9 @@ NativeManagementExtentRead Decode(const std::vector<Bytes>& pages,const Root& r,
   const auto size=Shape(r,database,bootstrap,budget),capacity=size-384;
   Require(pages.size()==r.page_count,E::invalid_extent);
   Bytes aggregate;aggregate.reserve(r.aggregate_bytes);std::set<Uuid> ids;auto expected=r.first_page_sha256;
+  std::vector<disk::NativeCommonPageHeader> headers;headers.reserve(r.page_count);
   for(u32 i=0;i<r.page_count;++i){const auto& b=pages[i];Require(b.size()==size,E::invalid_header);
-    const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);Require(h.ok(),E::invalid_header);Common(*h.header,r,database,bootstrap,size,i,ids);
+    const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);Require(h.ok(),E::invalid_header);Common(*h.header,r,database,bootstrap,size,i,ids);headers.push_back(*h.header);
     Require(Hash(b)==expected,E::invalid_integrity);const auto seal=Seal(b);Require(std::equal(seal.begin(),seal.end(),b.begin()+320),E::invalid_integrity);
     const auto* f=b.data()+128;const u64 offset=u64{i}*capacity;const u32 length=std::min<u64>(capacity,u64{r.aggregate_bytes}-offset);
     Require(std::string_view(reinterpret_cast<const char*>(f),8)=="SBMGP001"&&LoadLittle16(f+8)==1&&LoadLittle16(f+10)==256&&
@@ -67,7 +68,7 @@ NativeManagementExtentRead Decode(const std::vector<Bytes>& pages,const Root& r,
   auto decoded=DecodeNativeManagementOperation(aggregate,r.aggregate_bytes);Require(decoded.ok(),RecordError(decoded.error));
   Require(decoded.sha256==r.aggregate_sha256&&decoded.record->database_uuid==database&&decoded.record->bootstrap_uuid==bootstrap&&
     decoded.record->uuid==r.operation_uuid&&decoded.record->revision==r.revision,E::binding_mismatch);
-  return {E::none,std::move(decoded.record)};
+  return {E::none,std::move(decoded.record),std::move(headers)};
 }
 } // namespace
 NativeManagementExtentError ValidateNativeManagementExtentRoot(const Root& root,const Uuid& database,const Uuid& bootstrap,u64 budget) noexcept {
