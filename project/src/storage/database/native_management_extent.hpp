@@ -31,6 +31,8 @@ struct NativeManagementExtentRead {
   bool ok() const noexcept{return error==NativeManagementExtentError::none&&record.has_value();}
 };
 // Immutable physical representation only; no allocation, selection or writes.
+NativeManagementExtentError ValidateNativeManagementExtentRoot(const NativeManagementExtentRoot&,
+  const Uuid& database,const Uuid& bootstrap,u64 budget) noexcept;
 NativeManagementExtentImage EncodeNativeManagementExtent(const NativeManagementOperation&,
   const Uuid& object_uuid,const std::vector<disk::NativeCommonPageHeader>&,u64 budget) noexcept;
 NativeManagementExtentRead DecodeNativeManagementExtent(const std::vector<std::vector<byte>>&,

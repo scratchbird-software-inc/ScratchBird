@@ -70,6 +70,10 @@ NativeManagementExtentRead Decode(const std::vector<Bytes>& pages,const Root& r,
   return {E::none,std::move(decoded.record)};
 }
 } // namespace
+NativeManagementExtentError ValidateNativeManagementExtentRoot(const Root& root,const Uuid& database,const Uuid& bootstrap,u64 budget) noexcept {
+  try{Shape(root,database,bootstrap,budget);return E::none;}catch(E e){return e;}
+  catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::invalid_extent;}
+}
 NativeManagementExtentImage EncodeNativeManagementExtent(const NativeManagementOperation& record,const Uuid& object,
     const std::vector<disk::NativeCommonPageHeader>& headers,u64 budget) noexcept {
   try{

@@ -27,14 +27,25 @@ E CheckpointError(NativeCheckpointError e){return e==NativeCheckpointError::reso
 auto ImageHash(const std::vector<byte>& b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),688},{zero.data(),32},{b.data()+720,b.size()-720}};return core::hash::ComputeSha256DigestParts(parts,3);}
 E Validate(const NativePublicationPlan& p){
   const auto& h=p.header;if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=0x500||h.flags)return E::invalid_header;
-  for(const auto* id:{&p.object_uuid,&p.bootstrap_uuid,&p.timeline_uuid,&p.operation_uuid,&p.security_snapshot_uuid,&p.intent.initiator_uuid,&p.intent.request_context_uuid,&p.intent.policy_snapshot_uuid,&p.base_checkpoint_object_uuid,&p.target_checkpoint_object_uuid})if(!V7(*id))return E::invalid_identity;
+  for(const auto* id:{&p.object_uuid,&p.bootstrap_uuid,&p.timeline_uuid,&p.operation_uuid,&p.intent.initiator_uuid,&p.intent.request_context_uuid,&p.intent.policy_snapshot_uuid,&p.base_checkpoint_object_uuid,&p.target_checkpoint_object_uuid})if(!V7(*id))return E::invalid_identity;
+  if(!p.management_extent){if(!V7(p.security_snapshot_uuid))return E::invalid_identity;if(p.generation_guard_flags!=7||!p.catalog_generation||!p.configuration_generation||!p.security_generation)return E::invalid_family;}
+  else {if(!p.security_snapshot_uuid.is_nil()&&!V7(p.security_snapshot_uuid))return E::invalid_identity;
+    if(p.generation_guard_flags&~7u)return E::invalid_family;
+    const std::array<u64,3> guards{p.catalog_generation,p.configuration_generation,p.security_generation};for(unsigned i=0;i<3;++i)if(!(p.generation_guard_flags&(1u<<i))&&guards[i])return E::invalid_family;}
   if(p.object_uuid==p.bootstrap_uuid||h.page_uuid==p.object_uuid||h.page_uuid==p.bootstrap_uuid||p.object_uuid==p.base_checkpoint_object_uuid||p.base_checkpoint_object_uuid!=p.target_checkpoint_object_uuid)return E::invalid_identity;
-  if(!p.base_checkpoint_generation||!p.base_root_set_generation||p.reserved_generation<=p.base_checkpoint_generation||p.target_root_set_generation<=p.base_root_set_generation||p.target_root_set_generation>p.reserved_generation||!p.catalog_generation||!p.configuration_generation||!p.security_generation||p.intent.initiator_kind<1||p.intent.initiator_kind>8)return E::invalid_family;
+  if(!p.base_checkpoint_generation||!p.base_root_set_generation||p.reserved_generation<=p.base_checkpoint_generation||p.target_root_set_generation<=p.base_root_set_generation||p.target_root_set_generation>p.reserved_generation||p.intent.initiator_kind<1||p.intent.initiator_kind>8)return E::invalid_family;
   for(const auto* sha:{&p.intent.normalized_request_sha256,&p.reservation_state_sha256,&p.base_checkpoint_sha256,&p.target_graph_sha256})if(Zero(sha->data(),32))return E::invalid_family;
   if(p.previous_plan){if(!V7(p.previous_plan_object_uuid)||p.previous_plan_object_uuid!=p.object_uuid||Zero(p.previous_plan_sha256.data(),32))return E::invalid_reference;}
   else if(!p.previous_plan_object_uuid.is_nil()||!Zero(p.previous_plan_sha256.data(),32))return E::invalid_reference;
   const std::array<disk::NativePageReference,4> refs{Self(h),p.base_checkpoint,p.target_checkpoint,p.previous_plan.value_or(Self(h))};const auto count=p.previous_plan?4u:3u;
   for(unsigned i=0;i<count;++i){if(!Ref(refs[i]))return E::invalid_reference;for(unsigned j=0;j<i;++j)if(refs[i].filespace_uuid==refs[j].filespace_uuid&&(refs[i].page_number==refs[j].page_number||refs[i].page_size_profile_uuid!=refs[j].page_size_profile_uuid))return E::invalid_reference;}
+  if(p.management_extent){const auto& r=*p.management_extent;const auto valid=ValidateNativeManagementExtentRoot(r,h.database_uuid,p.bootstrap_uuid,std::numeric_limits<u64>::max());
+    if(valid==NativeManagementExtentError::resource_exhausted)return E::resource_exhausted;
+    if(valid!=NativeManagementExtentError::none)return E::invalid_reference;
+    if(r.first.filespace_uuid!=h.filespace_uuid||r.first.page_size_profile_uuid!=h.page_size_profile_uuid||r.first.page_generation!=p.reserved_generation||h.page_generation!=p.reserved_generation)return E::binding_mismatch;
+    if(r.object_uuid==p.object_uuid||r.object_uuid==p.base_checkpoint_object_uuid||r.object_uuid==h.page_uuid||r.object_uuid==p.operation_uuid)return E::invalid_identity;
+    for(unsigned i=0;i<count;++i)if(refs[i].filespace_uuid==h.filespace_uuid&&refs[i].page_number>=r.first.page_number&&refs[i].page_number-r.first.page_number<r.page_count)return E::invalid_reference;
+  }
   return E::none;
 }
 }
@@ -43,7 +54,7 @@ NativePublicationPlanImage EncodeNativePublicationPlan(const NativePublicationPl
     const auto valid=Validate(p);if(valid!=E::none)return Fail(valid);
     const auto h=disk::EncodeNativeCommonPageHeader(p.header);if(!h.ok())return Fail(E::invalid_header);
     std::vector<byte> b(p.header.page_size_bytes,0);std::copy(h.bytes->begin(),h.bytes->end(),b.begin());auto* f=b.data()+128;
-    std::copy_n("SBPPM001",8,f);StoreLittle16(f+8,1);StoreLittle16(f+10,640);StoreLittle32(f+12,768);
+    const bool extent=p.management_extent.has_value();std::copy_n(extent?"SBPPM002":"SBPPM001",8,f);StoreLittle16(f+8,extent?2:1);StoreLittle16(f+10,extent?896:640);StoreLittle32(f+12,extent?1024:768);
     Put(f+16,p.object_uuid);Put(f+32,p.bootstrap_uuid);Put(f+48,p.timeline_uuid);Put(f+64,p.operation_uuid);Put(f+80,p.intent.initiator_uuid);Put(f+96,p.intent.request_context_uuid);Put(f+112,p.intent.policy_snapshot_uuid);Put(f+128,p.security_snapshot_uuid);
     std::copy(p.intent.normalized_request_sha256.begin(),p.intent.normalized_request_sha256.end(),f+144);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),f+176);
     StoreLittle64(f+208,p.reserved_generation);StoreLittle64(f+216,p.base_checkpoint_generation);StoreLittle64(f+224,p.base_root_set_generation);StoreLittle64(f+232,p.target_root_set_generation);
@@ -52,6 +63,7 @@ NativePublicationPlanImage EncodeNativePublicationPlan(const NativePublicationPl
     if(p.previous_plan)PutRef(f+432,*p.previous_plan);
     Put(f+480,p.previous_plan_object_uuid);std::copy(p.previous_plan_sha256.begin(),p.previous_plan_sha256.end(),f+496);
     StoreLittle64(f+528,p.catalog_generation);StoreLittle64(f+536,p.configuration_generation);StoreLittle64(f+544,p.security_generation);StoreLittle16(f+552,p.intent.initiator_kind);StoreLittle16(f+554,1);StoreLittle16(f+556,2);
+    if(extent){const auto& r=*p.management_extent;StoreLittle32(f+592,p.generation_guard_flags);PutRef(f+608,r.first);Put(f+656,r.object_uuid);Put(f+672,r.operation_uuid);StoreLittle64(f+688,r.revision);StoreLittle32(f+696,r.aggregate_bytes);StoreLittle32(f+700,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),f+704);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),f+736);}
     const auto sha=ImageHash(b);if(!sha.ok())return Fail(E::hash_failure);std::copy(sha.digest.begin(),sha.digest.end(),f+560);
     const auto reference=core::hash::ComputeSha256Digest(b);if(!reference.ok())return Fail(E::hash_failure);
     return {E::none,p,reference.digest,std::move(b)};
@@ -63,12 +75,16 @@ NativePublicationPlanImage DecodeNativePublicationPlan(const std::vector<byte>& 
     const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);
     if(!h.ok()||h.header->page_type!=0x500||h.header->flags||b.size()!=h.header->page_size_bytes)return Fail(E::invalid_header);
     const auto sha=ImageHash(b);if(!sha.ok())return Fail(E::hash_failure);if(!std::equal(sha.digest.begin(),sha.digest.end(),b.begin()+688))return Fail(E::invalid_integrity);
-    const auto* f=b.data()+128;if(std::string_view(reinterpret_cast<const char*>(f),8)!="SBPPM001"||LoadLittle16(f+8)!=1||LoadLittle16(f+10)!=640||LoadLittle32(f+12)!=768||LoadLittle16(f+554)!=1||LoadLittle16(f+556)!=2||!Zero(f+558,2)||!Zero(f+592,48)||!Zero(b.data()+768,b.size()-768))return Fail(E::invalid_family);
+    const auto* f=b.data()+128;const bool extent=std::string_view(reinterpret_cast<const char*>(f),8)=="SBPPM002";
+    if((!extent&&std::string_view(reinterpret_cast<const char*>(f),8)!="SBPPM001")||LoadLittle16(f+8)!=(extent?2:1)||LoadLittle16(f+10)!=(extent?896:640)||LoadLittle32(f+12)!=(extent?1024:768)||LoadLittle16(f+554)!=1||LoadLittle16(f+556)!=2||!Zero(f+558,2))return Fail(E::invalid_family);
+    if(extent){if(!Zero(f+596,12)||!Zero(f+768,128)||!Zero(b.data()+1024,b.size()-1024))return Fail(E::invalid_family);}
+    else if(!Zero(f+592,48)||!Zero(b.data()+768,b.size()-768))return Fail(E::invalid_family);
     NativePublicationPlan p;p.header=*h.header;p.object_uuid=Get(f+16);p.bootstrap_uuid=Get(f+32);p.timeline_uuid=Get(f+48);p.operation_uuid=Get(f+64);p.intent.initiator_uuid=Get(f+80);p.intent.request_context_uuid=Get(f+96);p.intent.policy_snapshot_uuid=Get(f+112);p.security_snapshot_uuid=Get(f+128);
     std::copy_n(f+144,32,p.intent.normalized_request_sha256.begin());std::copy_n(f+176,32,p.reservation_state_sha256.begin());p.reserved_generation=LoadLittle64(f+208);p.base_checkpoint_generation=LoadLittle64(f+216);p.base_root_set_generation=LoadLittle64(f+224);p.target_root_set_generation=LoadLittle64(f+232);
     p.base_checkpoint=GetRef(f+240);p.base_checkpoint_object_uuid=Get(f+288);std::copy_n(f+304,32,p.base_checkpoint_sha256.begin());p.target_checkpoint=GetRef(f+336);p.target_checkpoint_object_uuid=Get(f+384);std::copy_n(f+400,32,p.target_graph_sha256.begin());
     if(!Zero(f+432,48))p.previous_plan=GetRef(f+432);
     p.previous_plan_object_uuid=Get(f+480);std::copy_n(f+496,32,p.previous_plan_sha256.begin());p.catalog_generation=LoadLittle64(f+528);p.configuration_generation=LoadLittle64(f+536);p.security_generation=LoadLittle64(f+544);p.intent.initiator_kind=LoadLittle16(f+552);
+    if(extent){p.generation_guard_flags=LoadLittle32(f+592);NativeManagementExtentRoot r;r.first=GetRef(f+608);r.object_uuid=Get(f+656);r.operation_uuid=Get(f+672);r.revision=LoadLittle64(f+688);r.aggregate_bytes=LoadLittle32(f+696);r.page_count=LoadLittle32(f+700);std::copy_n(f+704,32,r.aggregate_sha256.begin());std::copy_n(f+736,32,r.first_page_sha256.begin());p.management_extent=r;}
     const auto valid=Validate(p);if(valid!=E::none)return Fail(valid);
     const auto reference=core::hash::ComputeSha256Digest(b);if(!reference.ok())return Fail(E::hash_failure);
     return {E::none,p,reference.digest,b};
@@ -95,6 +111,20 @@ NativePublicationPlanError BindNativePublicationPlanToLease(const NativePublicat
     if(cp.header.database_uuid!=p.header.database_uuid||Self(cp.header)!=p.target_checkpoint||cp.object_uuid!=p.target_checkpoint_object_uuid||cp.creator_operation_uuid!=p.operation_uuid||cp.timeline_uuid!=p.timeline_uuid||cp.checkpoint_generation!=p.reserved_generation||cp.root_set_generation!=p.target_root_set_generation||!cp.predecessor||*cp.predecessor!=p.base_checkpoint||cp.predecessor_sha256!=p.base_checkpoint_sha256)return E::binding_mismatch;
     const auto role=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==16;});if(role==cp.roots.end()||role->page!=Self(p.header)||role->object_uuid!=p.object_uuid||role->sha256!=image.sha256)return E::binding_mismatch;
     const auto graph=ComputeNativePublicationTargetGraphDigest(b);if(!graph.ok())return graph.error;return graph.sha256==p.target_graph_sha256?E::none:E::binding_mismatch;
+  }catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::binding_mismatch;}
+}
+NativePublicationPlanError BindNativePublicationPlanToManagementExtent(const NativePublicationPlan& p,const std::vector<std::vector<byte>>& pages,u64 budget) noexcept {
+  try{
+    const auto valid=Validate(p);if(valid!=E::none)return valid;
+    if(!p.management_extent)return pages.empty()?E::none:E::binding_mismatch;
+    const auto decoded=DecodeNativeManagementExtent(pages,*p.management_extent,p.header.database_uuid,p.bootstrap_uuid,budget);
+    if(!decoded.ok())return decoded.error==NativeManagementExtentError::hash_failure?E::hash_failure:decoded.error==NativeManagementExtentError::resource_exhausted?E::resource_exhausted:E::binding_mismatch;
+    const auto& o=*decoded.record;if(o.scope==NativeManagementScope::cluster)return E::cluster_requires_authority;
+    if(o.initiator_uuid!=p.intent.initiator_uuid||o.initiator_kind!=p.intent.initiator_kind||o.request_context_uuid!=p.intent.request_context_uuid||o.policy_snapshot_uuid!=p.intent.policy_snapshot_uuid||o.normalized_request_sha256!=p.intent.normalized_request_sha256||o.security_snapshot_uuid!=p.security_snapshot_uuid)return E::binding_mismatch;
+    const std::array<u64,3> values{p.catalog_generation,p.configuration_generation,p.security_generation};
+    for(unsigned i=0;i<3;++i)if(o.generation_guards[i].has_value()!=bool(p.generation_guard_flags&(1u<<i))||o.generation_guards[i].value_or(0)!=values[i])return E::binding_mismatch;
+    for(const auto& b:pages){const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);if(!h.ok()||h.header->page_uuid==p.header.page_uuid)return E::invalid_identity;}
+    return E::none;
   }catch(const std::bad_alloc&){return E::resource_exhausted;}catch(const std::length_error&){return E::resource_exhausted;}catch(...){return E::binding_mismatch;}
 }
 } // namespace scratchbird::storage::database

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "native_publication_coordinator.hpp"
+#include "native_management_extent.hpp"
 
 namespace scratchbird::storage::database {
 struct NativePublicationPlan {
@@ -15,10 +16,13 @@ struct NativePublicationPlan {
   std::optional<disk::NativePageReference> previous_plan;
   Uuid previous_plan_object_uuid;
   u64 catalog_generation=0, configuration_generation=0, security_generation=0;
+  core::platform::u32 generation_guard_flags=7;
+  std::optional<NativeManagementExtentRoot> management_extent;
 };
 enum class NativePublicationPlanError {
   none, invalid_header, invalid_identity, invalid_family, invalid_reference,
-  invalid_integrity, invalid_checkpoint, binding_mismatch, hash_failure, resource_exhausted
+  invalid_integrity, invalid_checkpoint, binding_mismatch, hash_failure, resource_exhausted,
+  cluster_requires_authority
 };
 struct NativePublicationPlanImage {
   NativePublicationPlanError error=NativePublicationPlanError::invalid_family;
@@ -40,4 +44,6 @@ NativePublicationGraphDigest ComputeNativePublicationTargetGraphDigest(const std
 // authenticate, allocate, write, publish a graph or complete an operation.
 NativePublicationPlanError BindNativePublicationPlanToLease(const NativePublicationPlan&,
     const NativePublicationLease&,const std::vector<byte>& checkpoint) noexcept;
+NativePublicationPlanError BindNativePublicationPlanToManagementExtent(const NativePublicationPlan&,
+    const std::vector<std::vector<byte>>&,u64 budget) noexcept;
 } // namespace scratchbird::storage::database

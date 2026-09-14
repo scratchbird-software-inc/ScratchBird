@@ -43,6 +43,9 @@ class NativePublicationLease {
     const NativePublicationSnapshot&,const Uuid&,const NativePublicationIntent&,u64) noexcept;
   friend NativePublicationInspection InstallNativePublicationPlanOnLease(
     NativePublicationLease&,const NativePublicationPlan&,const std::vector<byte>&,u64) noexcept;
+  friend NativePublicationInspection InstallNativeManagementPublicationOnLease(
+    NativePublicationLease&,const NativePublicationPlan&,const std::vector<byte>&,
+    const std::vector<std::vector<byte>>&,u64) noexcept;
 };
 struct NativePublicationReservation {
   NativePublicationError error=NativePublicationError::invalid_request;
@@ -76,4 +79,10 @@ NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(
 NativePublicationInspection InstallNativePublicationPlanOnLease(
   NativePublicationLease&,const NativePublicationPlan&,
   const std::vector<byte>& target_checkpoint,u64 maximum_retained_image_bytes) noexcept;
+// Installs the exact plan-owned operation extent after durable range anchoring.
+// No checkpoint selection or execution authority is granted. An I/O-phase
+// failure poisons this lease until it is released and explicitly resumed.
+NativePublicationInspection InstallNativeManagementPublicationOnLease(
+  NativePublicationLease&,const NativePublicationPlan&,const std::vector<byte>& target_checkpoint,
+  const std::vector<std::vector<byte>>& extent_pages,u64 maximum_retained_image_bytes) noexcept;
 } // namespace scratchbird::storage::database

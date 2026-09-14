@@ -176,7 +176,7 @@ NativePublicationInspection InspectOrRecover(const Uuid& db,const std::vector<di
    catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
 }
 } // namespace
-struct NativePublicationLease::Impl {std::unique_ptr<Context> context;NativePublicationSnapshot snapshot;};
+struct NativePublicationLease::Impl {std::unique_ptr<Context> context;NativePublicationSnapshot snapshot;bool installation_ambiguous=false;};
 NativePublicationLease::NativePublicationLease(std::unique_ptr<Impl> p) noexcept:impl_(std::move(p)){}
 NativePublicationLease::~NativePublicationLease()=default;
 const NativePublicationSnapshot& NativePublicationLease::snapshot() const noexcept{return impl_->snapshot;}
@@ -230,18 +230,26 @@ NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(cons
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
    catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
 }
-NativePublicationInspection InstallNativePublicationPlanOnLease(NativePublicationLease& lease,
-    const NativePublicationPlan& plan,const std::vector<byte>& checkpoint,u64 budget) noexcept {
+NativePublicationInspection InstallNativeManagementPublicationOnLease(NativePublicationLease& lease,
+    const NativePublicationPlan& plan,const std::vector<byte>& checkpoint,
+    const std::vector<std::vector<byte>>& supplied_extent,u64 budget) noexcept {
   try {
+    Require(!lease.impl_->installation_ambiguous,E::stale_base);
     const u64 size=plan.header.page_size_bytes;
     Require(size&&budget>=6*size&&checkpoint.size()<=(budget-6*size)/2,E::resource_exhausted);
-    const u64 allowance=6*size+2*checkpoint.size();
+    u64 allowance=6*size+2*checkpoint.size();
+    if(plan.management_extent){const auto& r=*plan.management_extent;
+      Require(r.page_count<=(budget-allowance)/(3*size),E::resource_exhausted);allowance+=3*u64{r.page_count}*size;
+      Require(r.aggregate_bytes<=(budget-allowance)/4,E::resource_exhausted);allowance+=4*u64{r.aggregate_bytes};}
     const auto backend=[](NativePublicationPlanError e){
       if(e==NativePublicationPlanError::hash_failure)throw E::hash_failure;
       if(e==NativePublicationPlanError::resource_exhausted)throw E::resource_exhausted;
+      if(e==NativePublicationPlanError::cluster_requires_authority)throw E::cluster_requires_authority;
       Require(e==NativePublicationPlanError::none,E::binding_mismatch);
     };
     backend(BindNativePublicationPlanToLease(plan,lease,checkpoint));
+    backend(BindNativePublicationPlanToManagementExtent(plan,supplied_extent,budget));
+    auto extent=supplied_extent;
     auto image=EncodeNativePublicationPlan(plan);backend(image.error);
     const auto& held=lease.impl_->snapshot;const auto& owned=*lease.impl_->context;
     auto c=Prepare(held.watermark.header.database_uuid,owned.devices,
@@ -252,17 +260,24 @@ NativePublicationInspection InstallNativePublicationPlanOnLease(NativePublicatio
     Require(plan.header.filespace_uuid==c->zero.bootstrap.filespace_uuid&&
       plan.header.page_size_profile_uuid==c->zero.bootstrap.page_size_profile_uuid&&
       size==c->zero.bootstrap.page_size_bytes,E::invalid_request);
-    bool free=false;
-    for(const auto& allocation:c->bound.allocation.pages){const auto& m=*allocation.map;
-      if(plan.header.page_number<m.first_page||plan.header.page_number-m.first_page>=m.states.size())continue;
-      free=m.states[plan.header.page_number-m.first_page]==page::NativeAllocationState::free&&
-        std::none_of(m.records.begin(),m.records.end(),[&](const auto& r){return r.page_number==plan.header.page_number;});break;
-    }
-    Require(free,E::allocation_mismatch);
+    const auto require_free=[&](u64 page_number){
+      for(const auto& root:c->zero.roots)if(root.filespace_uuid==c->zero.bootstrap.filespace_uuid)Require(root.page_number!=page_number,E::allocation_mismatch);
+      bool free=false;for(const auto& allocation:c->bound.allocation.pages){const auto& m=*allocation.map;
+        if(page_number<m.first_page||page_number-m.first_page>=m.states.size())continue;
+        free=m.states[page_number-m.first_page]==page::NativeAllocationState::free&&
+          std::none_of(m.records.begin(),m.records.end(),[&](const auto& r){return r.page_number==page_number;});break;}
+      Require(free,E::allocation_mismatch);
+    };
+    require_free(plan.header.page_number);
+    for(std::size_t i=0;i<extent.size();++i)require_free(plan.management_extent->first.page_number+i);
     std::vector<byte> preimage(size),scratch(size);
     const auto read_plan=[&](std::vector<byte>& into){const auto r=c->primary->ReadAt(plan.header.page_number*size,into.data(),into.size());Require(r.ok()&&r.bytes_transferred==into.size(),E::io_failure);};
     read_plan(preimage);
     if(!original.publication_plan)Require(std::all_of(preimage.begin(),preimage.end(),[](byte b){return b==0;}),E::preimage_changed);
+    std::vector<std::vector<byte>> extent_preimages(extent.size());
+    const auto read_extent=[&](std::size_t i,std::vector<byte>& into){const auto r=c->primary->ReadAt((plan.management_extent->first.page_number+i)*size,into.data(),into.size());Require(r.ok()&&r.bytes_transferred==into.size(),E::io_failure);};
+    for(std::size_t i=0;i<extent.size();++i){auto& before=extent_preimages[i];before.resize(size);read_extent(i,before);
+      if(!original.publication_plan)Require(std::all_of(before.begin(),before.end(),[](byte b){return b==0;}),E::preimage_changed);}
     auto next=original;
     next.publication_plan=NativePublicationWatermark::PlanAnchor{
       {plan.header.filespace_uuid,plan.header.page_number,plan.header.page_generation,plan.header.page_size_profile_uuid},
@@ -276,14 +291,25 @@ NativePublicationInspection InstallNativePublicationPlanOnLease(NativePublicatio
     c->snapshot=snapshot;c->stable=true;
     // The durable anchor owns the intended free page before its first byte
     // changes. Recovery of metadata alone is not plan-installation success.
+    lease.impl_->installation_ambiguous=true;
     Publish(*c,images,scratch);
     read_plan(scratch);Require(scratch==preimage,E::preimage_changed);
     if(preimage!=image.bytes){const auto r=c->primary->WriteAt(plan.header.page_number*size,image.bytes.data(),image.bytes.size());Require(r.ok()&&r.bytes_transferred==image.bytes.size(),E::io_failure);}
     Require(c->primary->Sync().ok(),E::io_failure);read_plan(scratch);Require(scratch==image.bytes,E::readback_mismatch);
+    for(std::size_t left=extent.size();left;--left){const auto i=left-1;read_extent(i,scratch);Require(scratch==extent_preimages[i],E::preimage_changed);
+      if(scratch!=extent[i]){const auto r=c->primary->WriteAt((plan.management_extent->first.page_number+i)*size,extent[i].data(),extent[i].size());Require(r.ok()&&r.bytes_transferred==extent[i].size(),E::io_failure);}}
+    if(!extent.empty()){Require(c->primary->Sync().ok(),E::io_failure);
+      for(std::size_t i=0;i<extent.size();++i){read_extent(i,scratch);Require(scratch==extent[i],E::readback_mismatch);}}
     c->bytes=std::move(images);
     lease.impl_->snapshot=snapshot;lease.impl_->context=std::move(c);
+    lease.impl_->installation_ambiguous=false;
     return {E::none,std::move(snapshot)};
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
    catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+}
+NativePublicationInspection InstallNativePublicationPlanOnLease(NativePublicationLease& lease,
+    const NativePublicationPlan& plan,const std::vector<byte>& checkpoint,u64 budget) noexcept {
+  if(plan.management_extent)return {E::invalid_request,{}};
+  return InstallNativeManagementPublicationOnLease(lease,plan,checkpoint,{},budget);
 }
 } // namespace scratchbird::storage::database
