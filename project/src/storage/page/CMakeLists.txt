@@ -38,6 +38,7 @@ add_library(sb_storage_page
   native_allocation_map.cpp
   native_filespace_directory.cpp
   native_horizon_root.cpp
+  native_retention_root.cpp
   buffer_prefetch_readahead.cpp
   catalog_page.cpp
   cluster_transaction_page.cpp
