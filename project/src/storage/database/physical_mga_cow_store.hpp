@@ -74,6 +74,38 @@ NativeCatalogLeafResult ReadNativeCatalogLeafFromOpenDevice(
     const scratchbird::core::platform::Uuid& database_uuid,
     const scratchbird::storage::page::NativeCatalogRootReference&) noexcept;
 
+enum class NativeCatalogLeafStageError {
+  none, invalid_request, checkpoint_failure, allocation_failure, leaf_failure,
+  invalid_destination, creator_mismatch, creator_not_active, reservation_mismatch,
+  map_creator_mismatch, map_creator_not_committed, row_creator_mismatch,
+  root_mismatch, resource_exhausted, hash_failure, destination_not_empty,
+  io_failure, readback_mismatch, cluster_requires_authority, header_requires_authority,
+  creator_rollback_only
+};
+struct NativeCatalogLeafStageReceipt {
+  scratchbird::core::platform::Uuid database_uuid, allocation_uuid, page_uuid, relation_uuid;
+  scratchbird::transaction::mga::TransactionIdentity transaction;
+  scratchbird::storage::disk::NativePageReference page;
+  std::array<scratchbird::core::platform::byte,32> sha256{};
+};
+struct NativeCatalogLeafStageResult {
+  NativeCatalogLeafStageError error=NativeCatalogLeafStageError::invalid_request;
+  NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
+  scratchbird::storage::page::NativeDirectoryError directory_error=scratchbird::storage::page::NativeDirectoryError::none;
+  scratchbird::storage::page::NativeInventoryError inventory_error=scratchbird::storage::page::NativeInventoryError::none;
+  scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
+  NativeCatalogLeafError leaf_error=NativeCatalogLeafError::none;
+  std::optional<NativeCatalogLeafStageReceipt> receipt;
+  bool ok() const noexcept {return error==NativeCatalogLeafStageError::none&&receipt.has_value();}
+};
+// Actual reserved native page write/sync/readback only. Does not allocate row
+// versions, commit, change allocation state or publish catalog roots/SQL effects.
+NativeCatalogLeafStageResult StageNativeCatalogLeafFromOpenDevices(
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
+    const scratchbird::transaction::mga::TransactionIdentity& owner,
+    const NativeCatalogLeafPage&,u64 maximum_retained_image_bytes) noexcept;
+
 struct NativeCatalogRelationBinding {
   scratchbird::core::platform::Uuid relation_uuid;
   std::optional<scratchbird::storage::page::NativeBtreeDependencies> index_dependencies;

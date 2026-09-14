@@ -25,6 +25,7 @@ add_library(sb_storage_database
   database_dirty_manifest.cpp
   local_transaction_store.cpp
   physical_mga_cow_store.cpp
+  native_catalog_leaf_staging.cpp
   repair_event_ledger.cpp
   repair_history_inspection.cpp
   startup_state.cpp

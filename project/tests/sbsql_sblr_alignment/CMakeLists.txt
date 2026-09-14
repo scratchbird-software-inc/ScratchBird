@@ -283,6 +283,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "sbsql_sblr_alignment;IA-00;contract;fault;NATIVE_COMMON_PAGE_HEADER_V2;binary_uuid;node_ownership"
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
+  add_test(NAME sbsql_sblr_alignment_native_catalog_leaf_staging
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-stage-only)
+  set_tests_properties(sbsql_sblr_alignment_native_catalog_leaf_staging PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_catalog;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   add_test(NAME sbsql_sblr_alignment_checkpoint_horizon
     COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-horizon-only)
   set_tests_properties(sbsql_sblr_alignment_checkpoint_horizon PROPERTIES
@@ -308,7 +312,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_options(sbsql_sblr_alignment_filespace_page_zero PRIVATE
     "-Wl,--wrap=EVP_Digest"
     "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
-    "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread")
+    "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")
   add_test(NAME sbsql_sblr_alignment_filespace_page_zero COMMAND sbsql_sblr_alignment_filespace_page_zero)
   set_tests_properties(sbsql_sblr_alignment_filespace_page_zero PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-00;component_regression;canonical_page_zero;canonical_catalog_root;binary_uuid;node_ownership"
