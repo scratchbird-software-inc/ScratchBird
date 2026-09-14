@@ -283,6 +283,21 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "sbsql_sblr_alignment;IA-00;contract;fault;NATIVE_COMMON_PAGE_HEADER_V2;binary_uuid;node_ownership"
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
+  add_executable(sbsql_sblr_alignment_native_creation_workspace native_creation_workspace_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_creation_workspace PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_creation_workspace PRIVATE sb_storage_database OpenSSL::Crypto)
+  target_link_options(sbsql_sblr_alignment_native_creation_workspace PRIVATE
+    -Wl,--wrap=pwrite -Wl,--wrap=pread -Wl,--wrap=fsync -Wl,--wrap=RAND_bytes -Wl,--wrap=EVP_Digest
+    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
+  add_test(NAME sbsql_sblr_alignment_native_creation_workspace COMMAND sbsql_sblr_alignment_native_creation_workspace)
+  set_tests_properties(sbsql_sblr_alignment_native_creation_workspace PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_creation;actual_files;duplex_publication;not_SQL_E2E" TIMEOUT 180)
+  foreach(shard RANGE 0 3)
+    add_test(NAME sbsql_sblr_alignment_native_creation_allocations_${shard}
+      COMMAND sbsql_sblr_alignment_native_creation_workspace --allocation-only ${shard})
+    set_tests_properties(sbsql_sblr_alignment_native_creation_allocations_${shard} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_creation;allocation_faults;not_SQL_E2E" TIMEOUT 300)
+  endforeach()
   add_executable(sbsql_sblr_alignment_database_creation_artifact_ownership database_creation_artifact_ownership_test.cpp)
   target_compile_features(sbsql_sblr_alignment_database_creation_artifact_ownership PRIVATE cxx_std_23)
   target_compile_definitions(sbsql_sblr_alignment_database_creation_artifact_ownership PRIVATE
