@@ -3,6 +3,7 @@
 #pragma once
 #include "native_publication_coordinator.hpp"
 #include "native_management_extent.hpp"
+#include "native_management_control_bundle.hpp"
 
 namespace scratchbird::storage::database {
 struct NativePublicationPlan {
@@ -18,6 +19,7 @@ struct NativePublicationPlan {
   u64 catalog_generation=0, configuration_generation=0, security_generation=0;
   core::platform::u32 generation_guard_flags=7;
   std::optional<NativeManagementExtentRoot> management_extent;
+  std::optional<NativeManagementControlBundleRoot> control_bundle;
 };
 enum class NativePublicationPlanError {
   none, invalid_header, invalid_identity, invalid_family, invalid_reference,

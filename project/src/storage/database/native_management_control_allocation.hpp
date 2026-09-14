@@ -15,5 +15,6 @@ NativeManagementControlAllocationError ValidateNativeManagementControlAllocation
   const std::vector<byte>& base_checkpoint, const std::vector<byte>& target_checkpoint,
   const std::vector<byte>& plan, const std::vector<std::vector<byte>>& extent,
   const std::vector<std::vector<byte>>& base_allocation,
-  const std::vector<std::vector<byte>>& target_allocation, u64 maximum_input_image_bytes) noexcept;
+  const std::vector<std::vector<byte>>& target_allocation, u64 maximum_input_image_bytes,
+  const std::vector<std::vector<byte>>& control_bundle = {}) noexcept;
 } // namespace scratchbird::storage::database

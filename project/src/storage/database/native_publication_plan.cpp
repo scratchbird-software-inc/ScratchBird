@@ -27,6 +27,7 @@ E CheckpointError(NativeCheckpointError e){return e==NativeCheckpointError::reso
 auto ImageHash(const std::vector<byte>& b){const std::array<byte,32> zero{};const core::hash::HashDigestSegment parts[]={{b.data(),688},{zero.data(),32},{b.data()+720,b.size()-720}};return core::hash::ComputeSha256DigestParts(parts,3);}
 E Validate(const NativePublicationPlan& p){
   const auto& h=p.header;if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=0x500||h.flags)return E::invalid_header;
+  if(p.control_bundle&&!p.management_extent)return E::invalid_family;
   for(const auto* id:{&p.object_uuid,&p.bootstrap_uuid,&p.timeline_uuid,&p.operation_uuid,&p.intent.initiator_uuid,&p.intent.request_context_uuid,&p.intent.policy_snapshot_uuid,&p.base_checkpoint_object_uuid,&p.target_checkpoint_object_uuid})if(!V7(*id))return E::invalid_identity;
   if(!p.management_extent){if(!V7(p.security_snapshot_uuid))return E::invalid_identity;if(p.generation_guard_flags!=7||!p.catalog_generation||!p.configuration_generation||!p.security_generation)return E::invalid_family;}
   else {if(!p.security_snapshot_uuid.is_nil()&&!V7(p.security_snapshot_uuid))return E::invalid_identity;
@@ -46,6 +47,14 @@ E Validate(const NativePublicationPlan& p){
     if(r.object_uuid==p.object_uuid||r.object_uuid==p.base_checkpoint_object_uuid||r.object_uuid==h.page_uuid||r.object_uuid==p.operation_uuid)return E::invalid_identity;
     for(unsigned i=0;i<count;++i)if(refs[i].filespace_uuid==h.filespace_uuid&&refs[i].page_number>=r.first.page_number&&refs[i].page_number-r.first.page_number<r.page_count)return E::invalid_reference;
   }
+  if(p.control_bundle){const auto& r=*p.control_bundle;const auto valid=ValidateNativeManagementControlBundleRoot(r,h.database_uuid,p.bootstrap_uuid,std::numeric_limits<u64>::max());
+    if(valid==NativeManagementControlBundleError::resource_exhausted)return E::resource_exhausted;
+    if(valid!=NativeManagementControlBundleError::none)return E::invalid_reference;
+    if(r.operation_uuid!=p.operation_uuid||r.first.filespace_uuid!=h.filespace_uuid||r.first.page_size_profile_uuid!=h.page_size_profile_uuid||r.first.page_generation!=p.reserved_generation)return E::binding_mismatch;
+    for(const auto* id:{&p.object_uuid,&p.base_checkpoint_object_uuid,&p.management_extent->object_uuid,&p.management_extent->operation_uuid,&h.page_uuid})if(r.object_uuid==*id)return E::invalid_identity;
+    for(unsigned i=0;i<count;++i)if(refs[i].filespace_uuid==h.filespace_uuid&&refs[i].page_number>=r.first.page_number&&refs[i].page_number-r.first.page_number<r.page_count)return E::invalid_reference;
+    const auto& e=*p.management_extent;const bool overlap=r.first.page_number<=e.first.page_number?e.first.page_number-r.first.page_number<r.page_count:r.first.page_number-e.first.page_number<e.page_count;if(overlap)return E::invalid_reference;
+  }
   return E::none;
 }
 }
@@ -54,7 +63,7 @@ NativePublicationPlanImage EncodeNativePublicationPlan(const NativePublicationPl
     const auto valid=Validate(p);if(valid!=E::none)return Fail(valid);
     const auto h=disk::EncodeNativeCommonPageHeader(p.header);if(!h.ok())return Fail(E::invalid_header);
     std::vector<byte> b(p.header.page_size_bytes,0);std::copy(h.bytes->begin(),h.bytes->end(),b.begin());auto* f=b.data()+128;
-    const bool extent=p.management_extent.has_value();std::copy_n(extent?"SBPPM002":"SBPPM001",8,f);StoreLittle16(f+8,extent?2:1);StoreLittle16(f+10,extent?896:640);StoreLittle32(f+12,extent?1024:768);
+    const bool extent=p.management_extent.has_value(),bundle=p.control_bundle.has_value();std::copy_n(bundle?"SBPPM003":extent?"SBPPM002":"SBPPM001",8,f);StoreLittle16(f+8,bundle?3:extent?2:1);StoreLittle16(f+10,bundle?1024:extent?896:640);StoreLittle32(f+12,bundle?1152:extent?1024:768);
     Put(f+16,p.object_uuid);Put(f+32,p.bootstrap_uuid);Put(f+48,p.timeline_uuid);Put(f+64,p.operation_uuid);Put(f+80,p.intent.initiator_uuid);Put(f+96,p.intent.request_context_uuid);Put(f+112,p.intent.policy_snapshot_uuid);Put(f+128,p.security_snapshot_uuid);
     std::copy(p.intent.normalized_request_sha256.begin(),p.intent.normalized_request_sha256.end(),f+144);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),f+176);
     StoreLittle64(f+208,p.reserved_generation);StoreLittle64(f+216,p.base_checkpoint_generation);StoreLittle64(f+224,p.base_root_set_generation);StoreLittle64(f+232,p.target_root_set_generation);
@@ -64,6 +73,7 @@ NativePublicationPlanImage EncodeNativePublicationPlan(const NativePublicationPl
     Put(f+480,p.previous_plan_object_uuid);std::copy(p.previous_plan_sha256.begin(),p.previous_plan_sha256.end(),f+496);
     StoreLittle64(f+528,p.catalog_generation);StoreLittle64(f+536,p.configuration_generation);StoreLittle64(f+544,p.security_generation);StoreLittle16(f+552,p.intent.initiator_kind);StoreLittle16(f+554,1);StoreLittle16(f+556,2);
     if(extent){const auto& r=*p.management_extent;StoreLittle32(f+592,p.generation_guard_flags);PutRef(f+608,r.first);Put(f+656,r.object_uuid);Put(f+672,r.operation_uuid);StoreLittle64(f+688,r.revision);StoreLittle32(f+696,r.aggregate_bytes);StoreLittle32(f+700,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),f+704);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),f+736);}
+    if(bundle){const auto& r=*p.control_bundle;PutRef(f+768,r.first);Put(f+816,r.object_uuid);StoreLittle64(f+832,r.map_count);StoreLittle64(f+840,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),f+848);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),f+880);}
     const auto sha=ImageHash(b);if(!sha.ok())return Fail(E::hash_failure);std::copy(sha.digest.begin(),sha.digest.end(),f+560);
     const auto reference=core::hash::ComputeSha256Digest(b);if(!reference.ok())return Fail(E::hash_failure);
     return {E::none,p,reference.digest,std::move(b)};
@@ -75,9 +85,10 @@ NativePublicationPlanImage DecodeNativePublicationPlan(const std::vector<byte>& 
     const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);
     if(!h.ok()||h.header->page_type!=0x500||h.header->flags||b.size()!=h.header->page_size_bytes)return Fail(E::invalid_header);
     const auto sha=ImageHash(b);if(!sha.ok())return Fail(E::hash_failure);if(!std::equal(sha.digest.begin(),sha.digest.end(),b.begin()+688))return Fail(E::invalid_integrity);
-    const auto* f=b.data()+128;const bool extent=std::string_view(reinterpret_cast<const char*>(f),8)=="SBPPM002";
-    if((!extent&&std::string_view(reinterpret_cast<const char*>(f),8)!="SBPPM001")||LoadLittle16(f+8)!=(extent?2:1)||LoadLittle16(f+10)!=(extent?896:640)||LoadLittle32(f+12)!=(extent?1024:768)||LoadLittle16(f+554)!=1||LoadLittle16(f+556)!=2||!Zero(f+558,2))return Fail(E::invalid_family);
-    if(extent){if(!Zero(f+596,12)||!Zero(f+768,128)||!Zero(b.data()+1024,b.size()-1024))return Fail(E::invalid_family);}
+    const auto* f=b.data()+128;const bool bundle=std::string_view(reinterpret_cast<const char*>(f),8)=="SBPPM003",extent=bundle||std::string_view(reinterpret_cast<const char*>(f),8)=="SBPPM002";
+    if((!extent&&std::string_view(reinterpret_cast<const char*>(f),8)!="SBPPM001")||LoadLittle16(f+8)!=(bundle?3:extent?2:1)||LoadLittle16(f+10)!=(bundle?1024:extent?896:640)||LoadLittle32(f+12)!=(bundle?1152:extent?1024:768)||LoadLittle16(f+554)!=1||LoadLittle16(f+556)!=2||!Zero(f+558,2))return Fail(E::invalid_family);
+    if(bundle){if(!Zero(f+596,12)||!Zero(f+912,112)||!Zero(b.data()+1152,b.size()-1152))return Fail(E::invalid_family);}
+    else if(extent){if(!Zero(f+596,12)||!Zero(f+768,128)||!Zero(b.data()+1024,b.size()-1024))return Fail(E::invalid_family);}
     else if(!Zero(f+592,48)||!Zero(b.data()+768,b.size()-768))return Fail(E::invalid_family);
     NativePublicationPlan p;p.header=*h.header;p.object_uuid=Get(f+16);p.bootstrap_uuid=Get(f+32);p.timeline_uuid=Get(f+48);p.operation_uuid=Get(f+64);p.intent.initiator_uuid=Get(f+80);p.intent.request_context_uuid=Get(f+96);p.intent.policy_snapshot_uuid=Get(f+112);p.security_snapshot_uuid=Get(f+128);
     std::copy_n(f+144,32,p.intent.normalized_request_sha256.begin());std::copy_n(f+176,32,p.reservation_state_sha256.begin());p.reserved_generation=LoadLittle64(f+208);p.base_checkpoint_generation=LoadLittle64(f+216);p.base_root_set_generation=LoadLittle64(f+224);p.target_root_set_generation=LoadLittle64(f+232);
@@ -85,6 +96,7 @@ NativePublicationPlanImage DecodeNativePublicationPlan(const std::vector<byte>& 
     if(!Zero(f+432,48))p.previous_plan=GetRef(f+432);
     p.previous_plan_object_uuid=Get(f+480);std::copy_n(f+496,32,p.previous_plan_sha256.begin());p.catalog_generation=LoadLittle64(f+528);p.configuration_generation=LoadLittle64(f+536);p.security_generation=LoadLittle64(f+544);p.intent.initiator_kind=LoadLittle16(f+552);
     if(extent){p.generation_guard_flags=LoadLittle32(f+592);NativeManagementExtentRoot r;r.first=GetRef(f+608);r.object_uuid=Get(f+656);r.operation_uuid=Get(f+672);r.revision=LoadLittle64(f+688);r.aggregate_bytes=LoadLittle32(f+696);r.page_count=LoadLittle32(f+700);std::copy_n(f+704,32,r.aggregate_sha256.begin());std::copy_n(f+736,32,r.first_page_sha256.begin());p.management_extent=r;}
+    if(bundle){NativeManagementControlBundleRoot r;r.first=GetRef(f+768);r.object_uuid=Get(f+816);r.operation_uuid=p.operation_uuid;r.map_count=LoadLittle64(f+832);r.page_count=LoadLittle64(f+840);std::copy_n(f+848,32,r.aggregate_sha256.begin());std::copy_n(f+880,32,r.first_page_sha256.begin());p.control_bundle=r;}
     const auto valid=Validate(p);if(valid!=E::none)return Fail(valid);
     const auto reference=core::hash::ComputeSha256Digest(b);if(!reference.ok())return Fail(E::hash_failure);
     return {E::none,p,reference.digest,b};

@@ -233,6 +233,7 @@ NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(cons
 NativePublicationInspection InstallNativeManagementPublicationOnLease(NativePublicationLease& lease,
     const NativePublicationPlan& plan,const std::vector<byte>& checkpoint,
     const std::vector<std::vector<byte>>& supplied_extent,u64 budget) noexcept {
+  if(plan.control_bundle)return {E::invalid_request,{}};
   try {
     Require(!lease.impl_->installation_ambiguous,E::stale_base);
     const u64 size=plan.header.page_size_bytes;

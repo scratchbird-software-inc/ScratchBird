@@ -48,16 +48,22 @@ struct Control {H header;Uuid owner;};
 NativeManagementControlAllocationError ValidateNativeManagementControlAllocation(
   const Bytes& base_bytes,const Bytes& target_bytes,const Bytes& plan_bytes,
   const std::vector<Bytes>& extent_bytes,const std::vector<Bytes>& before_bytes,
-  const std::vector<Bytes>& after_bytes,u64 budget) noexcept {
+  const std::vector<Bytes>& after_bytes,u64 budget,const std::vector<Bytes>& bundle_bytes) noexcept {
   try{
     u64 used=0;const auto charge=[&](const Bytes& b){Require(b.size()<=budget-used,E::resource_exhausted);used+=b.size();};
-    charge(base_bytes);charge(target_bytes);charge(plan_bytes);for(const auto* group:{&extent_bytes,&before_bytes,&after_bytes})for(const auto& b:*group)charge(b);
+    charge(base_bytes);charge(target_bytes);charge(plan_bytes);for(const auto* group:{&extent_bytes,&before_bytes,&after_bytes,&bundle_bytes})for(const auto& b:*group)charge(b);
     auto base=DecodeNativeCheckpointRoot(base_bytes);CheckpointError(base.error);auto target=DecodeNativeCheckpointRoot(target_bytes);CheckpointError(target.error);
     auto encoded=DecodeNativePublicationPlan(plan_bytes);PlanError(encoded.error);const auto& p=*encoded.plan;const auto& a=*base.root;const auto& b=*target.root;
     Require(p.management_extent.has_value(),E::invalid_plan);
     const auto& extent=*p.management_extent;
     const u64 extent_budget=u64{extent.page_count}*p.header.page_size_bytes+4*u64{extent.aggregate_bytes}+2*u64{p.header.page_size_bytes};
     PlanError(BindNativePublicationPlanToManagementExtent(p,extent_bytes,extent_budget));
+    std::vector<H> bundle_headers;
+    if(p.control_bundle){const auto& r=*p.control_bundle;const u64 allowance=r.page_count*p.header.page_size_bytes+4*r.map_count*p.header.page_size_bytes+2*u64{p.header.page_size_bytes};
+      auto decoded=DecodeNativeManagementControlBundle(bundle_bytes,r,p.header.database_uuid,p.bootstrap_uuid,allowance);
+      if(!decoded.ok())throw decoded.error==NativeManagementControlBundleError::resource_exhausted?E::resource_exhausted:decoded.error==NativeManagementControlBundleError::hash_failure?E::hash_failure:decoded.error==NativeManagementControlBundleError::cluster_requires_authority?E::cluster_requires_authority:E::invalid_allocation;
+      Require(decoded.allocation_images==after_bytes,E::binding_mismatch);bundle_headers=std::move(decoded.page_headers);
+    }else Require(bundle_bytes.empty(),E::invalid_request);
     Require(!(a.flags&4)&&!(b.flags&4),E::cluster_requires_authority);Require(a.completed&&b.completed&&!a.header.flags&&!b.header.flags,E::invalid_checkpoint);
     Require(SameFile(a.header,p.header)&&SameFile(b.header,p.header)&&p.base_checkpoint==Self(a.header)&&p.base_checkpoint_object_uuid==a.object_uuid&&p.base_checkpoint_sha256==Hash(base_bytes)&&p.base_checkpoint_generation==a.checkpoint_generation&&p.base_root_set_generation==a.root_set_generation&&p.timeline_uuid==a.timeline_uuid,E::binding_mismatch);
     Require(p.target_checkpoint==Self(b.header)&&p.target_checkpoint_object_uuid==b.object_uuid&&p.operation_uuid==b.creator_operation_uuid&&b.creator_transaction_uuid.is_nil()&&!b.creator_local_transaction_id&&p.reserved_generation==b.checkpoint_generation&&p.reserved_generation==b.header.page_generation&&p.target_root_set_generation==b.root_set_generation&&b.predecessor==p.base_checkpoint&&b.predecessor_sha256==p.base_checkpoint_sha256,E::binding_mismatch);
@@ -76,6 +82,7 @@ NativeManagementControlAllocationError ValidateNativeManagementControlAllocation
     for(const auto& m:before)for(const auto& r:m.records){old_allocations.insert(r.allocation_uuid);if(!r.page_uuid.is_nil())old_pages.insert(r.page_uuid);}
     const auto add=[&](const H& h,const Uuid& owner){Require(SameFile(h,p.header)&&!h.flags&&h.page_generation==p.reserved_generation&&controls.emplace(h.page_number,Control{h,owner}).second&&page_ids.insert(h.page_uuid).second&&!old_pages.contains(h.page_uuid),E::invalid_delta);S state{};const auto* record=Record(before,h.page_number,&state);Require(!record&&state==S::free,E::invalid_delta);};
     add(b.header,b.object_uuid);add(p.header,p.object_uuid);
+    for(const auto& h:bundle_headers)add(h,p.control_bundle->object_uuid);
     for(const auto& raw:extent_bytes){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(h.ok(),E::invalid_extent);add(*h.header,p.management_extent->object_uuid);}
     for(const auto& m:after){Require(m.map_generation==p.reserved_generation&&m.creator_transaction_uuid.is_nil()&&!m.creator_local_transaction_id&&m.creator_operation_uuid==p.operation_uuid,E::invalid_delta);add(m.header,m.object_uuid);}
     std::size_t matched=0;

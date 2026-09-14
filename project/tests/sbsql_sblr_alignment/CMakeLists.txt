@@ -8344,6 +8344,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_native_management_install native_management_install_test.cpp)
   add_executable(sbsql_sblr_alignment_native_management_history native_management_history_test.cpp)
   add_executable(sbsql_sblr_alignment_native_management_control_allocation native_management_control_allocation_test.cpp)
+  add_executable(sbsql_sblr_alignment_native_management_control_bundle native_management_control_bundle_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_management_control_bundle PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_management_control_bundle PRIVATE sb_storage_database)
+  target_link_options(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync
+    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
+    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
+  add_test(NAME sbsql_sblr_alignment_native_management_control_bundle COMMAND sbsql_sblr_alignment_native_management_control_bundle)
+  set_tests_properties(sbsql_sblr_alignment_native_management_control_bundle PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_management_control_bundle;binary_UUID;actual_read;not_SQL_E2E" TIMEOUT 300)
   target_compile_features(sbsql_sblr_alignment_native_management_control_allocation PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_management_control_allocation PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_native_management_control_allocation PRIVATE
