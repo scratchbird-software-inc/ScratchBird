@@ -16,9 +16,9 @@
  * membership, routing authority, replication, failover, recovery, distributed
  * transaction control, or production cluster behavior.
  *
- * In full internal cluster test builds, the compiled stub is replaced by the
- * private cluster provider library implementing this same API boundary. No
- * cluster implementation code is open source in this release.
+ * This legacy diagnostic adapter is not the canonical public gateway ABI.
+ * Private implementations are never linked into SBcore/SBsvr: the signed
+ * gateway proxy communicates with a separately supervised provider runner.
  */
 
 #include "cluster_provider/cluster_provider.hpp"

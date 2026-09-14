@@ -132,7 +132,7 @@ _sb_crp_gate_case(cluster_stub_claim FALSE
   ${_sb_base_args} -DSB_ENABLE_CLUSTER_PROVIDER=ON -DSB_CLUSTER_PROVIDER_STUB=ON -DSB_COMMERCIAL_CLUSTER_PRODUCTION_CLAIMS=ON)
 _sb_crp_gate_case(no_external_provider_claim FALSE
   ${_sb_base_args} -DSB_ENABLE_CLUSTER_PROVIDER=ON -DSB_COMMERCIAL_CLUSTER_PRODUCTION_CLAIMS=ON)
-_sb_crp_gate_case(external_provider_claim TRUE
+_sb_crp_gate_case(external_provider_claim FALSE
   ${_sb_base_args} -DSB_ENABLE_CLUSTER_PROVIDER=ON -DSB_COMMERCIAL_CLUSTER_PRODUCTION_CLAIMS=ON -DSB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY=/opt/scratchbird/lib/libsb_cluster_provider.so)
 _sb_crp_gate_case(debug_logs FALSE
   ${_sb_base_args} -DSCRATCHBIRD_ENABLE_DEBUG_LOGS=ON)

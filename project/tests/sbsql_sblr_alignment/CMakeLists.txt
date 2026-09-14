@@ -12,6 +12,16 @@ if(TARGET sb_cluster_provider AND NOT SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY)
   add_test(NAME sbsql_sblr_alignment_cluster_provider_link_boundary COMMAND sbsql_sblr_alignment_cluster_provider_link_boundary)
   set_tests_properties(sbsql_sblr_alignment_cluster_provider_link_boundary PROPERTIES
     LABELS "sbsql_sblr_alignment;cluster_provider;production_linkage;not_SQL_E2E" TIMEOUT 60)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME sbsql_sblr_alignment_cluster_provider_process_containment
+      COMMAND ${CMAKE_COMMAND}
+        -DSB_SOURCE_ROOT=${CMAKE_SOURCE_DIR}
+        -DSB_TEST_BINARY_ROOT=${CMAKE_CURRENT_BINARY_DIR}
+        -DSB_TEST_EXTERNAL_LIBRARY=$<TARGET_FILE:sb_core_uuid>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cluster_provider_process_containment_test.cmake)
+    set_tests_properties(sbsql_sblr_alignment_cluster_provider_process_containment PROPERTIES
+      LABELS "sbsql_sblr_alignment;cluster_provider;actual_configure;process_containment;not_SQL_E2E" TIMEOUT 150)
+  endif()
 endif()
 
 # These binaries are conformance oracles. A number of the fixtures use

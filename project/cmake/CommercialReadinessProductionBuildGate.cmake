@@ -128,10 +128,10 @@ if(SB_COMMERCIAL_READINESS_PRODUCTION_BUILD)
       list(APPEND _sb_crp_build_failures
         "no_cluster production claims are forbidden")
     endif()
-    if(SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY STREQUAL "")
-      list(APPEND _sb_crp_build_failures
-        "cluster production claims require a non-stub external cluster provider library")
-    endif()
+    # An arbitrary library path and caller build flags cannot prove signed
+    # proxy admission, provider-runner containment or runtime cluster readiness.
+    list(APPEND _sb_crp_build_failures
+      "cluster production claims require verified signed gateway proxy and supervised provider runner evidence; direct private-provider linking is forbidden")
   endif()
   foreach(_sb_trace_flag IN ITEMS
       SCRATCHBIRD_ENABLE_DEBUG_LOGS

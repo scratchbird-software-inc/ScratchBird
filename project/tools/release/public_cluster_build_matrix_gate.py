@@ -21,6 +21,9 @@ from typing import Any
 
 
 # PUBLIC_CLUSTER_BUILD_MATRIX_GATE
+DIRECT_PROVIDER_REFUSAL = (
+    "Direct private-provider linking is forbidden; use only the signed gateway proxy and supervised provider runner contract"
+)
 
 FORBIDDEN_REFERENCE_FRAGMENTS = (
     "docs" + "/" + "execution-plans",
@@ -55,7 +58,7 @@ REQUIRED_MATRIX = (
             "supports_execution=false",
             "supports_route_admission=false",
             "route_admission_allowed=false",
-            "diagnostic=SBLR.CLUSTER.SUPPORT_NOT_ENABLED",
+            "diagnostic=PROCESS.CLUSTER_PATH_ABSENT",
         ),
         (
             "src/cluster_provider/no_cluster_provider.cpp",
@@ -76,7 +79,7 @@ REQUIRED_MATRIX = (
             "supports_execution=false",
             "supports_route_admission=false",
             "route_admission_allowed=false",
-            "diagnostic=SBLR.CLUSTER.HANDSHAKE.STUB_COMPILE_LINK_ONLY",
+            "diagnostic=PROCESS.CLUSTER_PATH_ABSENT",
         ),
         (
             "src/cluster_provider_stub/stub_cluster_provider.cpp",
@@ -84,25 +87,18 @@ REQUIRED_MATRIX = (
         ),
     ),
     BuildModeRow(
-        "PCR103_EXTERNAL_PROVIDER_ONLY_EXECUTABLE_MODE",
-        "external_cluster_provider",
+        "PCR103_DIRECT_PRIVATE_PROVIDER_FORBIDDEN",
+        "invalid_configuration",
         (
             "SB_ENABLE_CLUSTER_PROVIDER=ON",
             "SB_CLUSTER_PROVIDER_STUB=OFF",
             "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY=/path/to/libsb_cluster_provider",
         ),
         (
-            "provider_type=external_cluster_provider",
-            "external_provider=true",
-            "supports_execution=true",
-            "supports_route_admission=true",
-            "route_admission_allowed=true_after_handshake",
-            "diagnostic=SBLR.CLUSTER.HANDSHAKE.ACCEPTED",
+            "configure_refuses=" + DIRECT_PROVIDER_REFUSAL,
         ),
         (
-            "add_library(sb_cluster_provider UNKNOWN IMPORTED GLOBAL)",
-            "SCRATCHBIRD_CLUSTER_PROVIDER_EXTERNAL=1",
-            "IMPORTED_LOCATION",
+            DIRECT_PROVIDER_REFUSAL,
         ),
     ),
     BuildModeRow(
@@ -127,10 +123,10 @@ REQUIRED_MATRIX = (
             "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY=/path/to/libsb_cluster_provider",
         ),
         (
-            "configure_refuses=SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY requires SB_ENABLE_CLUSTER_PROVIDER=ON",
+            "configure_refuses=" + DIRECT_PROVIDER_REFUSAL,
         ),
         (
-            "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY requires SB_ENABLE_CLUSTER_PROVIDER=ON",
+            DIRECT_PROVIDER_REFUSAL,
         ),
     ),
     BuildModeRow(
@@ -142,11 +138,18 @@ REQUIRED_MATRIX = (
             "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY=/path/to/libsb_cluster_provider",
         ),
         (
-            "configure_refuses=Choose either SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY or SB_CLUSTER_PROVIDER_STUB, not both",
+            "configure_refuses=" + DIRECT_PROVIDER_REFUSAL,
         ),
         (
-            "Choose either SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY or SB_CLUSTER_PROVIDER_STUB, not both",
+            DIRECT_PROVIDER_REFUSAL,
         ),
+    ),
+    BuildModeRow(
+        "PCR103_INVALID_EXTERNAL_INCLUDE",
+        "invalid_configuration",
+        ("SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR=/path/to/provider/include",),
+        ("configure_refuses=" + DIRECT_PROVIDER_REFUSAL,),
+        (DIRECT_PROVIDER_REFUSAL,),
     ),
 )
 
@@ -210,8 +213,7 @@ def function_body(text: str, name: str) -> str:
 def check_matrix_rows() -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen_modes = {row.provider_mode for row in REQUIRED_MATRIX}
-    for required_mode in ("no_cluster", "compile_link_stub",
-                          "external_cluster_provider", "invalid_configuration"):
+    for required_mode in ("no_cluster", "compile_link_stub", "invalid_configuration"):
         if required_mode not in seen_modes:
             fail(f"build_matrix_mode_missing:{required_mode}")
     for row in REQUIRED_MATRIX:
@@ -237,8 +239,8 @@ def check_project_cmake(project_root: Path) -> list[dict[str, Any]]:
         "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY",
         "SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR",
         "SB_CLUSTER_PROVIDER_STUB requires SB_ENABLE_CLUSTER_PROVIDER=ON",
-        "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY requires SB_ENABLE_CLUSTER_PROVIDER=ON",
-        "Choose either SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY or SB_CLUSTER_PROVIDER_STUB, not both",
+        "if(SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY OR SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR)",
+        DIRECT_PROVIDER_REFUSAL,
     ):
         require_contains(project_cmake, token, "project_cmake_cluster_matrix")
 
@@ -256,21 +258,19 @@ def check_project_cmake(project_root: Path) -> list[dict[str, Any]]:
     ):
         text = require_file(project_root / relative, project_root)
         for token in (
-            "SB_ENABLE_CLUSTER_PROVIDER AND SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY",
-            "add_library(sb_cluster_provider UNKNOWN IMPORTED GLOBAL)",
-            "IMPORTED_LOCATION",
-            "SCRATCHBIRD_CLUSTER_PROVIDER_EXTERNAL=1",
-            "SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR",
             "SB_CLUSTER_PROVIDER_STUB",
             "src/cluster_provider_stub",
             "src/cluster_provider",
-            "requires SB_CLUSTER_PROVIDER_STUB=ON or SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY",
+            "requires SB_CLUSTER_PROVIDER_STUB=ON; private implementations are never linked into the engine",
         ):
             require_contains(text, token, f"{relative}:provider_selection")
+        for token in ("add_library(sb_cluster_provider UNKNOWN IMPORTED GLOBAL)",
+                      "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY", "SCRATCHBIRD_CLUSTER_PROVIDER_EXTERNAL=1"):
+            reject_contains(text, token, f"{relative}:private_provider_link")
         records.append(
             {
                 "file": relative,
-                "status": "no_cluster_stub_external_selection_declared",
+                "status": "in_tree_selection_only_private_provider_link_forbidden",
                 "sha256": sha256_text(text),
             }
         )
@@ -360,7 +360,7 @@ def check_provider_sources(project_root: Path) -> list[dict[str, Any]]:
             "support_status": "\"not_enabled\"",
             "compile_link": "info.compile_link_only = false;",
             "unsupported_feature": "cluster.provider",
-            "diagnostic": "kClusterSupportNotEnabledCode",
+            "diagnostic": "kClusterPathAbsentCode",
             "status": "no_cluster_fail_closed_non_mutating",
         },
         {
@@ -370,7 +370,7 @@ def check_provider_sources(project_root: Path) -> list[dict[str, Any]]:
             "support_status": "\"compile_link_only\"",
             "compile_link": "info.compile_link_only = true;",
             "unsupported_feature": "cluster.provider.stub",
-            "diagnostic": "kClusterHandshakeStubCompileLinkOnlyCode",
+            "diagnostic": "kClusterPathAbsentCode",
             "status": "compile_link_stub_fail_closed_non_mutating",
         },
     )
@@ -549,7 +549,7 @@ def check_agent_cluster_boundary_proofs(project_root: Path) -> list[dict[str, An
             "tests/agents/agent_management_authorization_policy_gate.cpp",
             (
                 'provider.provider_type == std::string_view("compile_link_stub")',
-                "kClusterHandshakeStubCompileLinkOnlyCode",
+                "PROCESS.CLUSTER_PATH_ABSENT",
                 "compile-link stub provider accepted route",
             ),
         ),

@@ -1,0 +1,48 @@
+# Copyright (c) 2026 ScratchBird Software Inc.
+# SPDX-License-Identifier: MPL-2.0
+if(NOT EXISTS "${SB_SOURCE_ROOT}/CMakeLists.txt" OR
+   NOT IS_DIRECTORY "${SB_TEST_BINARY_ROOT}" OR NOT EXISTS "${SB_TEST_EXTERNAL_LIBRARY}")
+  message(FATAL_ERROR "Containment test requires actual source, build directory and dependency archive")
+endif()
+execute_process(COMMAND mktemp -d "${SB_TEST_BINARY_ROOT}/provider-containment.XXXXXX"
+  RESULT_VARIABLE created OUTPUT_VARIABLE temporary OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT created EQUAL 0 OR NOT IS_DIRECTORY "${temporary}")
+  message(FATAL_ERROR "Could not create owned containment fixture")
+endif()
+set(failures "")
+foreach(case_name external_enabled external_disabled external_plus_stub external_include)
+  set(options -DSB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY= -DSB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR=)
+  if(case_name STREQUAL "external_include")
+    list(APPEND options "-DSB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR=${SB_SOURCE_ROOT}/include")
+  else()
+    list(APPEND options "-DSB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY=${SB_TEST_EXTERNAL_LIBRARY}")
+  endif()
+  if(case_name STREQUAL "external_disabled")
+    list(APPEND options -DSB_ENABLE_CLUSTER_PROVIDER=OFF)
+  else()
+    list(APPEND options -DSB_ENABLE_CLUSTER_PROVIDER=ON)
+  endif()
+  if(case_name STREQUAL "external_plus_stub")
+    list(APPEND options -DSB_CLUSTER_PROVIDER_STUB=ON)
+  else()
+    list(APPEND options -DSB_CLUSTER_PROVIDER_STUB=OFF)
+  endif()
+  execute_process(COMMAND "${CMAKE_COMMAND}" -S "${SB_SOURCE_ROOT}"
+    -B "${temporary}/${case_name}" ${options}
+    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error TIMEOUT 30)
+  string(REGEX REPLACE "[ \t\r\n]+" " " normalized "${output}${error}")
+  if(result EQUAL 0 OR NOT normalized MATCHES
+      "Direct private-provider linking is forbidden; use only the signed gateway proxy and supervised provider runner contract")
+    string(APPEND failures "${case_name}: wrong configuration outcome ${result}: ${output}${error}\n")
+  else()
+    message(STATUS "${case_name}: actual configuration rejected direct private-provider injection")
+  endif()
+endforeach()
+# Only this invocation's mktemp-owned configuration products are removed.
+file(REMOVE_RECURSE "${temporary}")
+if(EXISTS "${temporary}")
+  message(FATAL_ERROR "Could not clean owned containment fixture: ${temporary}")
+endif()
+if(NOT failures STREQUAL "")
+  message(FATAL_ERROR "${failures}")
+endif()

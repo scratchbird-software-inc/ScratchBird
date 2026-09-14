@@ -813,27 +813,11 @@ add_library(sb_engine_internal_api
 )
 
 if(NOT TARGET sb_cluster_provider)
-  if(SB_ENABLE_CLUSTER_PROVIDER AND SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY)
-    add_library(sb_cluster_provider UNKNOWN IMPORTED GLOBAL)
-    set_target_properties(sb_cluster_provider PROPERTIES
-      IMPORTED_LOCATION "${SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY}"
-      INTERFACE_COMPILE_DEFINITIONS SCRATCHBIRD_CLUSTER_PROVIDER_EXTERNAL=1
-      INTERFACE_LINK_LIBRARIES sb_engine_internal_api
-    )
-    target_include_directories(sb_cluster_provider INTERFACE
-      ${CMAKE_SOURCE_DIR}/src
-      ${CMAKE_SOURCE_DIR}/src/engine/sblr
-    )
-    if(SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR)
-      target_include_directories(sb_cluster_provider INTERFACE
-        ${SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR}
-      )
-    endif()
-  elseif(SB_ENABLE_CLUSTER_PROVIDER)
+  if(SB_ENABLE_CLUSTER_PROVIDER)
     if(SB_CLUSTER_PROVIDER_STUB)
       add_subdirectory(${CMAKE_SOURCE_DIR}/src/cluster_provider_stub ${CMAKE_CURRENT_BINARY_DIR}/cluster_provider_stub)
     else()
-      message(FATAL_ERROR "SB_ENABLE_CLUSTER_PROVIDER=ON requires SB_CLUSTER_PROVIDER_STUB=ON or SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY=/path/to/lib")
+      message(FATAL_ERROR "SB_ENABLE_CLUSTER_PROVIDER=ON requires SB_CLUSTER_PROVIDER_STUB=ON; private implementations are never linked into the engine")
     endif()
   else()
     add_subdirectory(${CMAKE_SOURCE_DIR}/src/cluster_provider ${CMAKE_CURRENT_BINARY_DIR}/cluster_provider)

@@ -152,11 +152,11 @@ cluster_compile_modes:
       - "SB_ENABLE_CLUSTER_PROVIDER=ON"
       - "SB_CLUSTER_PROVIDER_STUB=ON"
     behavior: "routes_to_public_stub_provider_boundary_only"
-  - mode: "cluster_external_boundary"
+  - mode: "direct_private_provider_link_forbidden"
     cmake_options:
       - "SB_ENABLE_CLUSTER_PROVIDER=ON"
       - "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY=<path>"
-    behavior: "routes_to_external_provider_abi_without_claiming_closed_source_cluster_implementation_in_core"
+    behavior: "configuration_refused_private_implementation_runs_only_in_supervised_provider_runner_via_signed_gateway_proxy"
 
 noncluster_engine_profile_values:
   - "release-complete"

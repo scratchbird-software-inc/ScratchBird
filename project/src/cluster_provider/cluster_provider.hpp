@@ -19,11 +19,13 @@
 
 namespace scratchbird::engine::cluster_provider {
 
-// CLUSTER_PROVIDER_BOUNDARY: production cluster behavior is supplied only by an
-// external provider target; in-tree providers are non-mutating fail-closed modes.
-// CLUSTER_PROVIDER_ABI_HANDSHAKE: cluster route admission is allowed only after
-// the external provider reports the expected ABI, catalog manifest, operation
-// set, feature flags, authority domains, and catalog digest.
+// CLUSTER_PROVIDER_BOUNDARY: legacy in-tree diagnostic adapters remain
+// non-mutating fail-closed modes. Private provider implementations must not link
+// into the engine; the canonical public gateway uses a signed proxy and a
+// separately supervised provider runner.
+// CLUSTER_PROVIDER_ABI_HANDSHAKE: these metadata compatibility checks do not
+// prove artifact, session, capability or executable gateway admission. They
+// cannot substitute for the canonical gateway ABI and host-owned authority.
 inline constexpr std::uint32_t kClusterProviderAbiVersionCurrent = 1;
 inline constexpr std::uint32_t kClusterProviderCatalogManifestVersionCurrent = 1;
 inline constexpr std::uint32_t kClusterProviderCatalogRecordCodecVersionCurrent = 1;

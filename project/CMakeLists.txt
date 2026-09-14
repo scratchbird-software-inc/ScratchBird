@@ -233,9 +233,9 @@ option(SB_BUILD_SBSQL_V3_CLUSTER_FAIL_CLOSED_PROBE "Build the SBSQL V3 cluster p
 option(SB_ENABLE_CLUSTER_PROVIDER "Build the engine with a compile-time cluster provider boundary" OFF)
 option(SB_CLUSTER_PROVIDER_STUB "Link the public cluster stub provider instead of the no-cluster provider" OFF)
 set(SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY "" CACHE FILEPATH
-  "Path to a closed-source cluster provider library that implements the sb_cluster_provider target ABI")
+  "Retired direct private-provider link path; nonempty values are rejected")
 set(SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR "" CACHE PATH
-  "Optional include directory for a closed-source cluster provider")
+  "Retired direct private-provider include path; nonempty values are rejected")
 option(SB_AGENT_ENFORCE_PRODUCTION_BUILD_GATE
   "Fail release-complete production builds when agent fixture/debug/simulated paths are enabled"
   ON)
@@ -408,14 +408,12 @@ if(NOT SB_PUBLIC_RELEASE_SANITIZER_PROFILE STREQUAL "none")
   endif()
 endif()
 
+if(SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY OR SB_CLUSTER_PROVIDER_EXTERNAL_INCLUDE_DIR)
+  message(FATAL_ERROR
+    "Direct private-provider linking is forbidden; use only the signed gateway proxy and supervised provider runner contract")
+endif()
 if(SB_CLUSTER_PROVIDER_STUB AND NOT SB_ENABLE_CLUSTER_PROVIDER)
   message(FATAL_ERROR "SB_CLUSTER_PROVIDER_STUB requires SB_ENABLE_CLUSTER_PROVIDER=ON")
-endif()
-if(SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY AND NOT SB_ENABLE_CLUSTER_PROVIDER)
-  message(FATAL_ERROR "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY requires SB_ENABLE_CLUSTER_PROVIDER=ON")
-endif()
-if(SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY AND SB_CLUSTER_PROVIDER_STUB)
-  message(FATAL_ERROR "Choose either SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY or SB_CLUSTER_PROVIDER_STUB, not both")
 endif()
 
 set(SB_AGENT_PRODUCTION_BUILD OFF)
