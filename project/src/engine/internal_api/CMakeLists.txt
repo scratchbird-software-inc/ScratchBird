@@ -357,6 +357,10 @@ if(NOT TARGET sb_engine_narrow_query_typed_result_publication)
   )
 endif()
 
+if(NOT TARGET sb_engine_api_diagnostics)
+  add_subdirectory(diagnostics)
+endif()
+
 add_library(sb_engine_internal_api
   artifacts/artifact_api.cpp
   behavior_support/api_behavior_store.cpp
@@ -366,7 +370,6 @@ add_library(sb_engine_internal_api
   crud_support/crud_identity.cpp
   crud_support/crud_store.cpp
   domain_support/domain_store.cpp
-  api_unsupported.cpp
   cloud/cloud_deployment_profile.cpp
   cloud/cloud_provider_capability.cpp
   cloud/cloud_identity_kms.cpp
@@ -850,6 +853,7 @@ endif()
 find_package(OpenSSL REQUIRED)
 
 target_link_libraries(sb_engine_internal_api PUBLIC
+  sb_engine_api_diagnostics
   $<LINK_ONLY:sb_core_diagnostic_catalog>
   sb_contextual_text_literal_v2_codec
   sb_sblr_operation_wire_codec

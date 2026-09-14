@@ -13,12 +13,12 @@ add_library(sb_cluster_provider
 target_compile_features(sb_cluster_provider PUBLIC cxx_std_20)
 
 target_include_directories(sb_cluster_provider PUBLIC
-  ${CMAKE_SOURCE_DIR}/src
-  ${CMAKE_SOURCE_DIR}/src/engine/sblr
+  ${CMAKE_CURRENT_SOURCE_DIR}/..
+  ${CMAKE_CURRENT_SOURCE_DIR}/../engine/sblr
 )
 
 target_link_libraries(sb_cluster_provider PUBLIC
-  sb_engine_internal_api
+  sb_engine_api_diagnostics
 )
 
 target_compile_definitions(sb_cluster_provider PUBLIC

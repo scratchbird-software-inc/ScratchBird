@@ -1,6 +1,19 @@
 # Copyright (c) 2026 ScratchBird Software Inc.
 # SPDX-License-Identifier: MPL-2.0
 
+if(TARGET sb_cluster_provider AND NOT SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY)
+  get_target_property(sb_alignment_provider_dependencies sb_cluster_provider LINK_LIBRARIES)
+  if(NOT sb_alignment_provider_dependencies STREQUAL "sb_engine_api_diagnostics")
+    message(FATAL_ERROR "In-tree cluster providers must not import executable engine dependencies")
+  endif()
+  add_executable(sbsql_sblr_alignment_cluster_provider_link_boundary cluster_provider_link_boundary_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_cluster_provider_link_boundary PRIVATE cxx_std_20)
+  target_link_libraries(sbsql_sblr_alignment_cluster_provider_link_boundary PRIVATE sb_cluster_provider)
+  add_test(NAME sbsql_sblr_alignment_cluster_provider_link_boundary COMMAND sbsql_sblr_alignment_cluster_provider_link_boundary)
+  set_tests_properties(sbsql_sblr_alignment_cluster_provider_link_boundary PROPERTIES
+    LABELS "sbsql_sblr_alignment;cluster_provider;production_linkage;not_SQL_E2E" TIMEOUT 60)
+endif()
+
 # These binaries are conformance oracles. A number of the fixtures use
 # assertions to both construct carriers and validate their results, so Release
 # builds must not compile those expressions away.
