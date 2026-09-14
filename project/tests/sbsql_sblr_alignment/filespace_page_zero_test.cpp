@@ -2131,6 +2131,81 @@ void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using
   }
 }
 
+void CanonicalBtreeStaging(){using E=db::NativeBtreeStageError;using S=page::NativeAllocationState;
+  for(unsigned p=0;p<5;++p)for(unsigned role:{5u,6u})for(unsigned variant=0;variant<5;++variant){
+    Fixture fixture;disk::FileDevice first,second;const unsigned q=(p+1)%5;
+    auto z1=Example(p),z2=Example(q,role);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& r:z2.roots)r.filespace_uuid=Id(7);
+    z1.free_pages=z1.preallocated_pages=z2.free_pages=z2.preallocated_pages=0;
+    const auto path1=(fixture.root/"btree-stage-primary").string(),path2=(fixture.root/"btree-stage-secondary").string();
+    Check(first.Open(path1,disk::FileOpenMode::create_new).ok()&&second.Open(path2,disk::FileOpenMode::create_new).ok(),"own B-tree staging filespaces");
+    const byte pad=0;Check(first.WriteAt(64*sizes[p]-1,&pad,1).ok()&&second.WriteAt(64*sizes[q]-1,&pad,1).ok(),"actual B-tree capacities");
+    auto inv=InventoryExample(p);inv.inventory.next_local_transaction_id=18;inv.inventory.next_commit_sequence=2;
+    auto& writer=inv.inventory.entries[0];writer.identity.local_id=mga::MakeLocalTransactionId(13);writer.identity.transaction_uuid.value=Id(162);writer.state=mga::TransactionState::active;writer.commit_sequence=0;
+    auto committed=writer;committed.identity.local_id=mga::MakeLocalTransactionId(17);committed.identity.transaction_uuid.value=Id(98);committed.state=mga::TransactionState::committed;committed.commit_sequence=1;inv.inventory.entries.push_back(committed);
+    const auto owner=inv.inventory.entries.front().identity;auto cp=CheckpointExample(p);
+    auto node=BtreeExample(q,variant<3?0x200:variant==3?0x201:0x202,variant==2||variant==3);
+    node.header.filespace_uuid=Id(7);node.header.page_number=30;node.creator_transaction_uuid=Id(162);node.creator_local_transaction_id=13;
+    node.dependencies.index_uuid=Id(180);node.dependencies.key_profile_uuid=Id(181);node.dependencies.visibility_profile_uuid=Id(182);node.dependencies.dependency_map_uuid=Id(183);
+    const auto relocate=[&](auto& ref){if(ref){ref->filespace_uuid=Id(7);ref->page_size_profile_uuid=Profile(q);}};
+    relocate(node.parent);relocate(node.left);relocate(node.right);relocate(node.first_child);
+    for(auto& cell:node.cells){relocate(cell.child);if(cell.base_page){cell.base_page->filespace_uuid=Id(2);cell.base_page->page_size_profile_uuid=Profile(p);}}
+    if(variant==0)node.cells.clear();auto dependencies=node.dependencies;
+    page::NativeAllocationMap map;map.header={sizes[q],3,Id(1),Id(7),Id(70),13,103,0,Profile(q)};map.object_uuid=Id(43);map.map_generation=map.capacity_generation=1;map.total_pages=64;
+    map.creator_transaction_uuid=Id(98);map.creator_local_transaction_id=17;map.states.assign(64,S::quarantined);
+    for(unsigned n:{0u,13u,30u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(200+n);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;map.states[n]=S::allocated;
+      if(n==0){r.page_uuid=Id(8);r.page_generation=7;r.page_type=2;r.owner_uuid=Id(7);}
+      if(n==13){r.page_uuid=Id(70);r.page_generation=103;r.page_type=3;r.owner_uuid=Id(43);}
+      if(n==30){r.page_uuid=node.header.page_uuid;r.page_generation=node.header.page_generation;r.page_type=node.header.page_type;r.owner_uuid=node.dependencies.index_uuid;r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;map.states[n]=S::reserved;}map.records.push_back(r);}
+    page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(150),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=1;
+    directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
+    const auto put=[&](auto& device,u64 number,unsigned size,const Bytes& b){const auto io=device.WriteAt(number*size,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size()&&device.Sync().ok(),"persist independent B-tree staging fixture");};
+    const auto persist=[&](){directory.records.clear();for(const auto* z:{&z1,&z2})directory.records.push_back({z->bootstrap,Id(z==&z1?190:191),z->page_uuid,z->page_generation,z->root_set_generation,z->total_pages,0,{}});
+      const auto ib=InventoryOracle(inv,13,13,13),mb=AllocationOracle(map),dbb=DirectoryOracle(directory);
+      cp.roots[0]={1,0x301,InventoryRef(inv),inv.object_uuid,WholeRootHash(ib)};cp.roots[2]={3,9,{Id(2),15,105,Profile(p)},Id(45),WholeRootHash(dbb)};
+      put(first,0,sizes[p],Oracle(z1));put(second,0,sizes[q],Oracle(z2));put(first,14,sizes[p],ib);put(first,15,sizes[p],dbb);put(second,13,sizes[q],mb);put(first,19,sizes[p],CheckpointOracle(cp));};
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+    const u64 budget=3*sizes[p]+3*sizes[q];const Bytes blank(sizes[q],0),expected=BtreeOracle(node);
+    const auto reset=[&](){put(second,30,sizes[q],blank);};
+    const auto bytes=[&](){Bytes b(sizes[q]);const auto io=second.ReadAt(30*sizes[q],b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size(),"read actual staged B-tree bytes");return b;};
+    const auto stage=[&](u64 limit){return db::StageNativeBtreePageFromOpenDevices(devices,CheckpointRef(cp),owner,dependencies,node,limit);};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.receipt,"B-tree stage failure has no receipt");};
+    persist();reset();reads=observed_full_digests=0;observed_allocations=0;stage_writes=stage_syncs=0;track_reads=count_allocations=count_full_digests=true;auto result=stage(budget);track_reads=count_allocations=count_full_digests=false;
+    const auto na=observed_allocations;const auto nr=reads,nf=observed_full_digests;
+    if(!result.ok())std::cerr<<"B-tree stage error="<<static_cast<int>(result.error)<<" cp="<<static_cast<int>(result.checkpoint_error)<<" page="<<static_cast<int>(result.page_error)<<std::endl;
+    Check(result.ok()&&stage_writes==1&&stage_syncs==1&&result.receipt->index_uuid==dependencies.index_uuid&&result.receipt->allocation_uuid==Id(230)&&result.receipt->page_uuid==node.header.page_uuid&&result.receipt->transaction.transaction_uuid.value==Id(162)&&result.receipt->sha256==WholeRootHash(expected)&&bytes()==expected,"actual B-tree staged receipt and complete bytes");
+    stage_writes=stage_syncs=0;Check(stage(budget).ok()&&!stage_writes&&stage_syncs==1,"B-tree exact retry still syncs");
+    auto conflict=expected;conflict.back()^=1;put(second,30,sizes[q],conflict);empty(stage(budget));Check(bytes()==conflict,"nonzero competing B-tree page preserved");reset();empty(stage(budget-1));Check(bytes()==blank,"B-tree budget exhausted before write");
+    if(p==0&&role==5&&variant==1){
+      for(unsigned long n=0;n<=na;++n){reset();allocation_budget=n;result=stage(budget);allocation_budget=-1;if(result.ok())Check(bytes()==expected,"B-tree allocation sweep exact image");else{empty(result);const auto b=bytes();Check(b==blank||b==expected,"B-tree allocation fault does not certify publication");}if(n==na)Check(result.ok(),"B-tree allocation sweep terminal success");}
+      for(unsigned n=1;n<=nr;++n){reset();reads=0;read_fault=n;track_reads=true;result=stage(budget);track_reads=false;Check(!read_fault,"B-tree read fault consumed");empty(result);}
+      for(unsigned n=1;n<=nf;++n){reset();full_digest_fault=n;result=stage(budget);Check(!full_digest_fault,"B-tree full hash fault consumed");empty(result);Check(bytes()==blank,"B-tree digest failure before write");}
+      for(unsigned mode=1;mode<=5;++mode){reset();hash_fault=mode;result=stage(budget);Check(!hash_fault,"B-tree multipart fault consumed");empty(result);}
+      for(unsigned mode=1;mode<=3;++mode){reset();stage_write_fault=mode;result=stage(budget);Check(!stage_write_fault,"B-tree write fault consumed");empty(result);if(mode==2)Check(bytes()==expected&&stage(budget).ok(),"half-page containing full B-tree payload can retry exactly");if(mode==3){const auto partial=bytes();Check(partial!=blank&&partial!=expected,"genuinely partial B-tree header");empty(stage(budget));Check(bytes()==partial,"partial B-tree data preserved for recovery");}}
+      reset();stage_sync_fault=1;empty(stage(budget));Check(!stage_sync_fault&&bytes()==expected&&stage(budget).ok(),"B-tree sync failure exact retry");
+      reset();reads=0;stage_corrupt_read=nr;track_reads=true;result=stage(budget);track_reads=false;Check(!stage_corrupt_read&&result.error==E::readback_mismatch,"B-tree readback mismatch consumed");empty(result);
+      std::cout<<"B-tree stage allocations="<<na<<" reads="<<nr<<" digests="<<nf<<std::endl;
+    }
+    reset();const auto saved=node;const auto original_dependencies=dependencies;
+    for(unsigned n=0;n<7;++n){dependencies=original_dependencies;if(n==0)dependencies.index_uuid=Id(184);if(n==1)dependencies.descriptor_generation++;if(n==2)dependencies.storage_generation++;if(n==3)dependencies.key_profile_uuid=Id(184);if(n==4)dependencies.visibility_profile_uuid=Id(184);if(n==5)dependencies.dependency_map_uuid=Id(184);if(n==6)dependencies.dependency_map_sha256[0]^=1;result=stage(budget);empty(result);Check(result.error==E::dependency_mismatch&&bytes()==blank,"every expected dependency member is exact");}
+    dependencies=original_dependencies;node.dependencies.dependency_map_sha256={};dependencies=node.dependencies;result=stage(budget);empty(result);Check(result.error==E::page_failure&&result.page_error==page::NativeBtreeError::invalid_dependencies&&bytes()==blank,"tuple equality does not bypass canonical dependency validation");node=saved;dependencies=original_dependencies;
+    for(unsigned n=0;n<5;++n){node=saved;if(n==0)node.creator_transaction_uuid=Id(98);if(n==1)node.creator_local_transaction_id=17;if(n==2)node.header.flags=2;if(n==3)node.maintenance_state=0;if(n==4)node.dependencies.dependency_map_sha256={};empty(stage(budget));Check(bytes()==blank,"invalid B-tree writer/header/family does not write");}node=saved;
+    const auto original_map=map;
+    for(unsigned n=0;n<7;++n){map=original_map;if(n==0)map.states[30]=S::allocated;if(n==1)map.records.back().owner_uuid=Id(202);if(n==2)map.records.back().page_generation++;if(n==3)map.records.back().page_type=6;if(n==4)map.records.back().page_uuid=Id(203);if(n==5)map.records.back().allocation_uuid=map.records.front().allocation_uuid;if(n==6){map.creator_transaction_uuid=Id(162);map.creator_local_transaction_id=13;}persist();empty(stage(budget));Check(bytes()==blank,"invalid B-tree allocation authority");}map=original_map;
+    inv.inventory.entries[0].rollback_only=true;persist();result=stage(budget);empty(result);Check(result.error==E::creator_rollback_only,"B-tree rollback-only writer refused");inv.inventory.entries[0].rollback_only=false;
+    node.creator_transaction_uuid=Id(98);node.creator_local_transaction_id=17;map.records.back().creator_transaction_uuid=Id(98);map.records.back().creator_local_transaction_id=17;persist();
+    result=db::StageNativeBtreePageFromOpenDevices(devices,CheckpointRef(cp),committed.identity,dependencies,node,budget);empty(result);Check(result.error==E::creator_not_active&&bytes()==blank,"committed creator cannot perform new B-tree staging");node=saved;map=original_map;
+    z2.bootstrap.flags=disk::FilespaceBootstrapFlag::payload_encrypted;z2.bootstrap.encryption_profile_uuid=Id(4);persist();result=stage(budget);empty(result);Check(result.error==E::header_requires_authority&&bytes()==blank,"actual encrypted B-tree destination not bypassed");z2.bootstrap.flags=0;z2.bootstrap.encryption_profile_uuid={};
+    const auto original_zero=z2;for(unsigned bad_role:{1u,4u,7u,14u}){z2=Example(q,bad_role);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);z2.free_pages=z2.preallocated_pages=0;for(auto& r:z2.roots)r.filespace_uuid=Id(7);persist();result=stage(budget);empty(result);Check(result.error==E::invalid_destination&&bytes()==blank,"B-tree rejects illegal destination role before map use");}z2=original_zero;persist();
+    if(p==0&&role==5&&variant==1){auto duplicate=devices;duplicate.push_back(devices.front());empty(db::StageNativeBtreePageFromOpenDevices(duplicate,CheckpointRef(cp),owner,dependencies,node,budget));
+      auto reverse=devices;std::reverse(reverse.begin(),reverse.end());std::atomic<unsigned> completed{0};stage_writes=stage_syncs=0;
+      std::thread a([&]{if(stage(budget).ok())++completed;}),b([&]{if(db::StageNativeBtreePageFromOpenDevices(reverse,CheckpointRef(cp),owner,dependencies,node,budget).ok())++completed;});a.join();b.join();Check(completed==2&&stage_writes==1&&stage_syncs==2,"opposite-order B-tree writers preserve serialized exact retry");}
+    Check(stage(budget).ok(),"final B-tree staging");Bytes checkpoint(sizes[p]);Check(first.ReadAt(19*sizes[p],checkpoint.data(),checkpoint.size()).ok()&&checkpoint==CheckpointOracle(cp),"B-tree stage does not select roots");
+    Check(second.Close().ok()&&second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"independent B-tree staging reopen");Check(bytes()==expected&&page::ReadNativeBtreePageFromOpenDevice(second,Id(1),{Id(7),30,node.header.page_generation,Profile(q)},node.header.page_type,dependencies).ok(),"staged B-tree accepted by actual reader");empty(stage(budget));
+    Check(first.Close().ok()&&second.Close().ok(),"release node for fresh B-tree process");const auto child=::fork();Check(child>=0,"fork actual staged B-tree reader");
+    if(child==0){const auto profile=std::to_string(p),shape=std::to_string(variant);::execl("/proc/self/exe","btree-stage-probe","--btree-stage-probe",fixture.root.c_str(),profile.c_str(),shape.c_str(),nullptr);::_exit(125);}
+    int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable resolves staged B-tree");
+  }
+}
 void CanonicalCheckpointDirectory() {
   using E=db::NativeCheckpointError;
   for(unsigned p=0;p<5;++p){const unsigned q=(p+1)%5;Fixture fixture;disk::FileDevice first,second;
@@ -3062,6 +3137,17 @@ void CanonicalBoundCheckpointSelection(){using E=db::NativeCheckpointSelectionEr
   }
 }
 int main(int argc,char** argv) {
+  if(argc==5&&std::string_view(argv[1])=="--btree-stage-probe"){
+    const std::filesystem::path path=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3])),variant=static_cast<unsigned>(std::stoul(argv[4]));if(p>=5||variant>=5)return 2;const auto q=(p+1)%5;
+    disk::FileDevice device;if(!device.Open((path/"btree-stage-secondary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 3;
+    auto dependencies=BtreeExample(q).dependencies;dependencies.index_uuid=Id(180);dependencies.key_profile_uuid=Id(181);dependencies.visibility_profile_uuid=Id(182);dependencies.dependency_map_uuid=Id(183);
+    const auto r=page::ReadNativeBtreePageFromOpenDevice(device,Id(1),{Id(7),30,102,Profile(q)},variant<3?0x200:variant==3?0x201:0x202,dependencies);
+    return r.ok()&&r.page->creator_transaction_uuid==Id(162)&&r.page->creator_local_transaction_id==13&&r.page->cells.size()==(variant==0?0u:3u)?0:4;
+  }
+  if(argc==2&&std::string_view(argv[1])=="--btree-stage-only"){
+    try{CanonicalBtreeStaging();std::cout<<"B-tree stage checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
+  }
   if(argc==5&&std::string_view(argv[1])=="--catalog-root-stage-probe"){
     const std::filesystem::path path=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3])),kind=static_cast<unsigned>(std::stoul(argv[4]));if(p>=5||(kind!=2&&kind!=6&&kind!=7&&kind!=8))return 2;const auto q=(p+1)%5;
     disk::FileDevice first,second;if(!first.Open((path/"root-stage-primary").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((path/"root-stage-history").string(),disk::FileOpenMode::open_existing_read_only).ok())return 3;
