@@ -283,6 +283,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "sbsql_sblr_alignment;IA-00;contract;fault;NATIVE_COMMON_PAGE_HEADER_V2;binary_uuid;node_ownership"
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
+  add_executable(sbsql_sblr_alignment_database_creation_artifact_ownership database_creation_artifact_ownership_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_database_creation_artifact_ownership PRIVATE cxx_std_23)
+  target_compile_definitions(sbsql_sblr_alignment_database_creation_artifact_ownership PRIVATE
+    SB_BOOTSTRAP_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack")
+  target_link_libraries(sbsql_sblr_alignment_database_creation_artifact_ownership PRIVATE sb_storage_database)
+  target_link_options(sbsql_sblr_alignment_database_creation_artifact_ownership PRIVATE
+    -Wl,--wrap=_ZNSt10filesystem14symlink_statusERKNS_7__cxx114pathERSt10error_code
+    -Wl,--wrap=_ZNSt10filesystem6removeERKNS_7__cxx114pathERSt10error_code -Wl,--wrap=pwrite)
+  add_test(NAME sbsql_sblr_alignment_database_creation_artifact_ownership
+    COMMAND sbsql_sblr_alignment_database_creation_artifact_ownership)
+  set_tests_properties(sbsql_sblr_alignment_database_creation_artifact_ownership PROPERTIES
+    LABELS "sbsql_sblr_alignment;creation_ownership;actual_files;recovery;not_SQL_E2E" TIMEOUT 120)
   add_test(NAME sbsql_sblr_alignment_native_filespace_initialization
     COMMAND sbsql_sblr_alignment_filespace_page_zero --filespace-initialization-only)
   set_tests_properties(sbsql_sblr_alignment_native_filespace_initialization PROPERTIES

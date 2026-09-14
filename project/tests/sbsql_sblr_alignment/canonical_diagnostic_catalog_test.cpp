@@ -36,9 +36,9 @@ void Sample(std::string_view code,d::CanonicalSeverity severity,bool failure,
 int main() {
   using S=d::CanonicalSeverity;
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
-  // Includes the retained-device read-only publication fence. Check the exact
+  // Includes creation ownership and six previously unimported numeric rows. Check the exact
   // admitted Core import, not a minimum row count.
-  Check(catalog.size==1386 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1394 && catalog.data!=nullptr,"complete Core code inventory missing");
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -67,6 +67,22 @@ int main() {
          "not_specified","continue_or_fail_by_policy","AUDIT_TRIGGER");
   Sample("DIAG.REDACTION_POLICY_INVALID",S::security,true,"false","deny_access","DIAG");
   Sample("STORAGE.PAGE_CHECKSUM_FAILED",S::corruption,true,"false","repair_required","STORAGE");
+  Sample("NUMERIC.BACKEND.UNAVAILABLE",S::error,true,"retry_after_reference_backend_restored","reject_without_numeric_value","NUMERIC");
+  Sample("NUMERIC.ENCODING.NONCANONICAL",S::error,true,"retry_only_with_corrected_encoding","reject_without_numeric_value","NUMERIC");
+  Sample("NUMERIC.REAL128.DIVIDE_BY_ZERO",S::error,true,"retry_only_with_corrected_input","reject_without_numeric_value","NUMERIC");
+  Sample("NUMERIC.REAL128.INVALID",S::error,true,"retry_only_with_corrected_input_or_context","reject_invalid_operation_or_report_unordered_comparison","NUMERIC");
+  Sample("NUMERIC.REAL128.OVERFLOW",S::error,true,"retry_only_with_corrected_input_or_context","reject_without_numeric_value","NUMERIC");
+  Sample("NUMERIC.REAL128.UNDERFLOW",S::warning,false,"not_applicable","preserve_rounded_value_and_underflow_inexact_facts","NUMERIC");
+  Sample("STORAGE.CREATE_ARTIFACT_CONFLICT",S::error,true,
+         "retry_only_after_corrected_artifact_ownership_and_fresh_admission",
+         "preserve_existing_artifacts_without_creation_publication","STORAGE");
+  Sample("STORAGE.CREATE_ARTIFACT_INSPECTION_FAILED",S::error,true,
+         "retry_after_restored_inspection_and_fresh_admission",
+         "preserve_existing_artifacts_without_creation_publication","STORAGE");
+  for(const auto code:{"STORAGE.CREATE_ARTIFACT_CONFLICT","STORAGE.CREATE_ARTIFACT_INSPECTION_FAILED"}){
+    const auto* row=d::FindCanonicalDiagnosticCode(code);
+    Check(row&&row->sqlstate=="55000"&&row->numeric_binding=="not_applicable","creation artifact failure metadata differs");
+  }
   Sample("STORAGE.READ_ONLY_DEVICE",S::error,true,
          "retry_only_with_authorized_writable_device",
          "reject_without_any_publication_or_page_mutation","STORAGE");
@@ -112,8 +128,8 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x0a,0x53,0xc2,0x85,0x6a,0x8b,0x9d,0x86,0x90,0xe2,0xde,0xd4,0xff,0x93,0xf7,0xa4,
-    0x9f,0xf5,0x14,0xb8,0x70,0xe2,0xd4,0x08,0xe1,0x48,0x3f,0xa6,0x3f,0xcb,0xb3,0x41};
+    0x79,0xce,0x59,0x8a,0x2d,0x28,0xc5,0xd7,0x74,0x63,0x51,0xde,0x95,0xf8,0xc8,0x97,
+    0x65,0x83,0x63,0x14,0xbd,0x60,0x8e,0x2b,0xb4,0xbb,0x2e,0x8d,0x9a,0x0a,0xed,0x9d};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';

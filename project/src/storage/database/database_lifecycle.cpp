@@ -291,6 +291,31 @@ DatabaseLifecycleResult LifecycleError(std::string diagnostic_code,
   return result;
 }
 
+DatabaseLifecycleResult CheckCreateArtifactAbsence(const std::string& path) {
+  // A successful create_new of the main path never transfers ownership of
+  // other directory entries. Inspect links themselves, including dangling ones.
+  static constexpr std::array<const char*, 4> suffixes{{
+      ".sb.txn_publish.tmp", ".sb.txn_publish",
+      ".sb.security_principal_events", ".sb.local_password_auth"}};
+  for (const auto* suffix : suffixes) {
+    std::error_code error;
+    const auto status = std::filesystem::symlink_status(path + suffix, error);
+    if (status.type() == std::filesystem::file_type::not_found &&
+        (!error || error == std::errc::no_such_file_or_directory)) continue;
+    if (error || status.type() == std::filesystem::file_type::none ||
+        status.type() == std::filesystem::file_type::unknown) {
+      return LifecycleError("STORAGE.CREATE_ARTIFACT_INSPECTION_FAILED",
+                            "storage.database_lifecycle.create_artifact_inspection_failed",
+                            path, std::string(suffix) + ":" + error.message());
+    }
+    return LifecycleError("STORAGE.CREATE_ARTIFACT_CONFLICT",
+                          "storage.database_lifecycle.create_artifact_conflict", path, suffix);
+  }
+  DatabaseLifecycleResult result;
+  result.status = DatabaseLifecycleOkStatus();
+  return result;
+}
+
 DatabaseLifecycleResult PropagateDiagnostic(Status status,
                                             DiagnosticRecord diagnostic,
                                             DatabaseLifecyclePhase phase = DatabaseLifecyclePhase::failed) {
@@ -6595,6 +6620,8 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
   if (!config_result.ok()) {
     return config_result;
   }
+  const auto artifact_admission = CheckCreateArtifactAbsence(config.path);
+  if (!artifact_admission.ok()) return artifact_admission;
 
   if (config.allow_minimal_resource_bootstrap &&
       !DefaultMemoryManagerState().initialized) {
@@ -6656,31 +6683,19 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
     bool committed_by_inventory = false;
 
     ~CreateArtifactGuard() {
-      if (!armed || committed_by_inventory || path.empty()) {
+      if (!armed || committed_by_inventory || path.empty() || device == nullptr ||
+          !device->is_open()) {
         return;
       }
-      if (device != nullptr && device->is_open()) {
+      // Remove only the main file this attempt exclusively created, while its
+      // ownership locks are held. Auxiliary suffixes are not ownership proof.
+      // Failure leaves partial bytes for recovery; never rename/delete after
+      // releasing the device, and never throw from cleanup.
+      try {
+        std::error_code error;
+        std::filesystem::remove(path, error);
         (void)device->Close();
-      }
-      const std::array<std::string, 5> artifacts = {{
-          path + ".sb.txn_publish.tmp",
-          path + ".sb.txn_publish",
-          path + ".sb.security_principal_events",
-          path + ".sb.local_password_auth",
-          path,
-      }};
-      std::error_code ec;
-      for (const auto& artifact : artifacts) {
-        std::filesystem::remove(artifact, ec);
-        ec.clear();
-      }
-      if (std::filesystem::exists(path, ec)) {
-        const std::filesystem::path quarantine(
-            path + ".sb.prepublication-quarantine." +
-            std::to_string(CurrentUnixEpochMillis()));
-        ec.clear();
-        std::filesystem::rename(path, quarantine, ec);
-      }
+      } catch (...) {}
     }
   } create_guard{&device, config.path, false, false};
 
@@ -6691,16 +6706,8 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
     return PropagateDiagnostic(open.status, open.diagnostic);
   }
   create_guard.armed = true;
-  {
-    std::error_code ignored;
-    std::filesystem::remove(config.path + ".sb.security_principal_events", ignored);
-    ignored.clear();
-    std::filesystem::remove(config.path + ".sb.local_password_auth", ignored);
-    ignored.clear();
-    std::filesystem::remove(config.path + ".sb.txn_publish", ignored);
-    ignored.clear();
-    std::filesystem::remove(config.path + ".sb.txn_publish.tmp", ignored);
-  }
+  const auto owned_artifact_admission = CheckCreateArtifactAbsence(config.path);
+  if (!owned_artifact_admission.ok()) return owned_artifact_admission;
   const auto create_health = CheckDiskDeviceHealth(device,
                                                    LifecycleDiskPolicy(config.page_size, false, false));
   if (!create_health.ok()) {
