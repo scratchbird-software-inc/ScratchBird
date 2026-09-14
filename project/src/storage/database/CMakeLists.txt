@@ -32,6 +32,7 @@ add_library(sb_storage_database
   native_checkpoint_selection.cpp
   native_publication_watermark.cpp
   native_publication_coordinator.cpp
+  native_publication_plan.cpp
   native_checkpoint_selection_binding.cpp
   native_inventory_successor_staging.cpp
   native_filespace_initialization.cpp

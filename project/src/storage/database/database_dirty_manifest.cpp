@@ -608,7 +608,7 @@ constexpr std::array<byte,8> magic{{'S','B','C','P','N','T','0','1'}};
 constexpr std::array<byte,8> domain{{'S','B','C','P','S','E','T','1'}};
 constexpr std::array<byte,8> operation_magic{{'S','B','C','P','N','T','0','2'}};
 constexpr std::array<byte,8> operation_domain{{'S','B','C','P','S','E','T','2'}};
-constexpr std::array<u32,16> types{{0,0x301,0x302,9,3,5,10,11,8,5,0x303,0x305,0x307,0x308,0x309,0x30b}};
+constexpr std::array<u32,17> types{{0,0x301,0x302,9,3,5,10,11,8,5,0x303,0x305,0x307,0x308,0x309,0x30b,0x500}};
 bool V7(const Uuid& id) { return scratchbird::core::uuid::IsEngineIdentityUuid(id); }
 bool Zero(const byte* b,std::size_t size) { return std::all_of(b,b+size,[](byte v){return v==0;}); }
 void Put(byte* b,const Uuid& id) {std::copy(id.bytes.begin(),id.bytes.end(),b);}
@@ -645,7 +645,7 @@ Error Validate(const NativeCheckpointRoot& r) {
   if((r.checkpoint_generation==1&&(r.predecessor||!empty_digest))
     ||(r.checkpoint_generation>1&&(!r.predecessor||empty_digest)))return Error::invalid_reference;
   if(r.predecessor&&(!RefValid(*r.predecessor)||SameSlot(self,*r.predecessor)||!ProfilesAgree(self,*r.predecessor)))return Error::invalid_reference;
-  if(r.roots.size()<10||r.roots.size()>15)return Error::invalid_roots;
+  if(r.roots.size()<10||r.roots.size()>16)return Error::invalid_roots;
   u16 prior=0;u32 roles=0;
   for(std::size_t i=0;i<r.roots.size();++i) {
     const auto& target=r.roots[i];
@@ -737,7 +737,7 @@ NativeCheckpointRootResult DecodeNativeCheckpointRoot(const std::vector<scratchb
     const auto version=LoadLittle16(f+8);
     if(!((version==1&&std::equal(magic.begin(),magic.end(),f))||
          (version==2&&std::equal(operation_magic.begin(),operation_magic.end(),f)))||LoadLittle16(f+10)!=384
-      ||used<entries+112*10||used>entries+112*15||(used-entries)%112||LoadLittle64(f+272)>1
+      ||used<entries+112*10||used>entries+112*16||(used-entries)%112||LoadLittle64(f+272)>1
       ||!Zero(f+(version==1?280:296),version==1?104:88)||!Zero(b.data()+used,b.size()-used))return Fail(Error::invalid_family);
     const auto digest=RootDigest(b,used);if(!digest.ok())return Fail(Error::hash_failure);
     if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+root_digest_at))return Fail(Error::invalid_integrity);
