@@ -2066,6 +2066,9 @@ void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using
       map.records.push_back(r);}
     if(selected){map.header.page_number=24;map.header.page_generation=104;map.records[1].page_number=24;map.records[1].page_generation=104;map.states[13]=S::quarantined;map.states[24]=S::allocated;
       for(unsigned n:{27u,28u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(220+n);r.page_uuid=Id(n==27?155:156);r.page_generation=1;r.page_type=0x30e;r.owner_uuid=Id(154);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;map.records.push_back(r);map.states[n]=S::allocated;}
+      for(const auto& control:std::vector<db::NativeInventoryPageBinding>{{inv.header,inv.object_uuid},{cp.header,cp.object_uuid}}){
+        const auto& h=control.header;map.states[h.page_number]=S::allocated;
+        map.records.push_back({h.page_number,Id(100+h.page_number),h.page_uuid,control.object_uuid,Id(98),17,h.page_generation,0,h.page_type});}
       std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});}
     page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=1;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
     const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& b){const auto io=file.WriteAt(number*size,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size()&&file.Sync().ok(),"persist independent root staging fixture");};
@@ -3041,6 +3044,10 @@ void CanonicalBoundCheckpointSelection(){using E=db::NativeCheckpointSelectionEr
       if(n==21){r.page_uuid=Id(150);r.page_generation=7;r.page_type=6;r.owner_uuid=Id(101);r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;map.states[n]=S::reserved;}
       if(n==31||n==32){r.page_uuid=Id(n==31?155:156);r.page_generation=1;r.page_type=0x30e;r.owner_uuid=Id(154);}
       if(n==35){r.page_uuid=Id(164);r.page_generation=104;r.page_type=3;r.owner_uuid=Id(43);}map.records.push_back(r);}
+    for(const auto& control:std::vector<db::NativeInventoryPageBinding>{{inv.header,inv.object_uuid},{initial.header,initial.object_uuid},{current.header,current.object_uuid}}){
+      const auto& h=control.header;map.states[h.page_number]=S::allocated;
+      map.records.push_back({h.page_number,Id(100+h.page_number),h.page_uuid,control.object_uuid,Id(98),17,h.page_generation,0,h.page_type});}
+    std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
     // Selected map counters differ from the immutable initial bootstrap.
     map.states[60]=S::free;
     page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(165),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=1;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
@@ -3055,6 +3062,7 @@ void CanonicalBoundCheckpointSelection(){using E=db::NativeCheckpointSelectionEr
     db::NativeCheckpointSelection selection;selection.header={sizes[p],0x30e,Id(1),Id(2),Id(155),31,1,0,Profile(p)};selection.object_uuid=Id(154);selection.bootstrap_uuid=zero.page_uuid;
     selection.publication_uuid=Id(153);selection.selection_generation=2;selection.checkpoint={Id(2),36,110,Profile(p)};selection.checkpoint_object_uuid=Id(49);selection.checkpoint_generation=2;selection.root_set_generation=9;selection.timeline_uuid=Id(97);
     selection.previous_selection_generation=1;selection.previous_checkpoint=disk::NativePageReference{Id(2),19,109,Profile(p)};selection.previous_checkpoint_object_uuid=Id(49);
+    std::optional<page::NativeTransactionInventoryPage> inventory_tail;
     const auto put=[&](u64 number,const Bytes& b){Check(device.WriteAt(number*sizes[p],b.data(),b.size()).ok()&&device.Sync().ok(),"persist independently authored selector graph");};
     const auto persist=[&](){const auto ib=InventoryOracle(inv,13,13,13),mb=AllocationOracle(map),dbb=DirectoryOracle(directory),rb=RetentionOracle(retention),sb=SystemStateOracle(system);horizon.retention_sha256=WholeRootHash(rb);const auto hb=HorizonOracle(horizon);
       for(auto* cp:{&initial,&current}){cp->roots[0]={1,0x301,InventoryRef(inv),inv.object_uuid,WholeRootHash(ib)};
@@ -3068,10 +3076,12 @@ void CanonicalBoundCheckpointSelection(){using E=db::NativeCheckpointSelectionEr
       const auto cp=CheckpointOracle(current);selection.checkpoint_sha256=WholeRootHash(cp);
       auto other=selection;other.header.page_number=32;other.header.page_uuid=Id(156);
       const auto secondary_bytes=Oracle(second_zero);Check(second_device.WriteAt(0,secondary_bytes.data(),secondary_bytes.size()).ok()&&second_device.Sync().ok(),"persist secondary bootstrap");
+      if(inventory_tail){const auto tail_bytes=InventoryOracle(*inventory_tail,18,18,18);
+        Check(second_device.WriteAt(inventory_tail->header.page_number*sizes[q],tail_bytes.data(),tail_bytes.size()).ok()&&second_device.Sync().ok(),"persist mixed-profile inventory continuation");}
       put(0,Oracle(zero));put(14,ib);put(35,mb);put(15,dbb);put(40,rb);put(41,hb);put(11,sb);put(19,old);put(36,cp);put(31,SelectionOracle(selection));put(32,SelectionOracle(other));};
     const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second_device},{Id(2),Profile(p),&device}};const u64 budget=8*sizes[p];
     const auto read=[&](u64 limit){return db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),limit);};
-    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.selection&&r.slots[0].empty()&&r.slots[1].empty()&&!r.checkpoint_inventory.checkpoint&&!r.predecessor.checkpoint&&r.allocation.pages.empty()&&!r.retained_image_bytes,"bound selector failure returns no prefix");};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.selection&&r.slots[0].empty()&&r.slots[1].empty()&&!r.checkpoint_inventory.checkpoint&&!r.predecessor.checkpoint&&r.checkpoint_inventory.inventory_pages.empty()&&r.predecessor.inventory_pages.empty()&&r.allocation.pages.empty()&&!r.retained_image_bytes,"bound selector failure returns no prefix");};
     const auto consumers=[&](const auto& ref,bool expected){Check(db::VerifyCurrentNativeCheckpointAllocationFromOpenDevices(Id(1),devices,ref,budget).ok()==expected,"current allocation uses selected root");
       Check(db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),devices,ref,budget).ok()==expected,"current directory uses selected root");
       const auto sr=db::VerifyCurrentNativeCheckpointSystemStateFromOpenDevices(Id(1),devices,ref,budget);
@@ -3125,9 +3135,76 @@ void CanonicalBoundCheckpointSelection(){using E=db::NativeCheckpointSelectionEr
     for(unsigned n=0;n<5;++n){auto changed=selection;if(n==0)changed.bootstrap_uuid=Id(173);if(n==1)changed.checkpoint_sha256[0]^=1;if(n==2)changed.root_set_generation++;if(n==3)changed.timeline_uuid=Id(174);if(n==4)changed.previous_checkpoint_sha256[0]^=1;
       auto other=changed;other.header.page_number=32;other.header.page_uuid=Id(156);put(31,SelectionOracle(changed));put(32,SelectionOracle(other));empty(read(budget));consumers(CheckpointRef(current),false);persist();}
     const auto saved=map;
-    for(unsigned n=0;n<9;++n){map=saved;auto& r=map.records[2];if(n==0)map.states[31]=S::reserved;if(n==1)r.page_uuid=Id(175);if(n==2)r.page_generation++;if(n==3)r.owner_uuid=Id(175);if(n==4)r.page_type=6;if(n==5){r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;}
-      if(n==6)r.allocation_uuid=map.records[0].allocation_uuid;if(n==7){map.creator_transaction_uuid=Id(162);map.creator_local_transaction_id=13;}if(n==8){map.header.page_uuid=Id(155);map.records.back().page_uuid=Id(155);}
+    for(unsigned n=0;n<9;++n){map=saved;auto& r=*std::find_if(map.records.begin(),map.records.end(),[](const auto& r){return r.page_number==31;});if(n==0)map.states[31]=S::reserved;if(n==1)r.page_uuid=Id(175);if(n==2)r.page_generation++;if(n==3)r.owner_uuid=Id(175);if(n==4)r.page_type=6;if(n==5){r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;}
+      if(n==6)r.allocation_uuid=map.records[0].allocation_uuid;if(n==7){map.creator_transaction_uuid=Id(162);map.creator_local_transaction_id=13;}if(n==8){map.header.page_uuid=Id(155);std::find_if(map.records.begin(),map.records.end(),[](const auto& r){return r.page_number==35;})->page_uuid=Id(155);}
       persist();empty(read(budget));}
+    for(unsigned slot:{14u,19u,36u})for(unsigned fault=0;fault<11;++fault){map=saved;
+      auto it=std::find_if(map.records.begin(),map.records.end(),[&](const auto& r){return r.page_number==slot;});auto& record=*it;
+      if(fault==0){map.states[slot]=S::quarantined;map.records.erase(it);}
+      if(fault==1)map.states[slot]=S::reserved;
+      if(fault==2)record.page_uuid=Id(175);
+      if(fault==3)record.page_generation++;
+      if(fault==4)record.owner_uuid=Id(175);
+      if(fault==5)record.page_type=6;
+      if(fault==6){record.creator_transaction_uuid=Id(162);record.creator_local_transaction_id=13;}
+      if(fault==7){map.states[slot]=S::reusable_pending_mga;record.reuse_horizon=1;}
+      if(fault==8){map.states[slot]=S::reusable_free;record.reuse_horizon=1;}
+      if(fault==9)map.states[slot]=S::compacting;
+      if(fault==10)map.states[slot]=S::preallocated;
+      persist();const auto writes_before=stage_writes;const auto refused=read(budget);empty(refused);
+      Check(refused.error==E::allocation_binding_mismatch||refused.error==E::creator_mismatch||refused.error==E::allocation_failure,"selected control allocation refusal");
+      Check(stage_writes==writes_before,"control allocation refusal never writes");
+    }
+    map=saved;
+    {
+      const auto old_second=second_zero;const auto old_inv=inv;
+      second_zero=Example(q,2);second_zero.bootstrap.filespace_uuid=Id(7);second_zero.page_uuid=Id(8);second_zero.free_pages=second_zero.preallocated_pages=0;
+      for(auto& r:second_zero.roots)r.filespace_uuid=Id(7);
+      second_zero.roots[2].object_uuid=Id(179);
+      inventory_tail=inv;inventory_tail->header={sizes[q],0x301,Id(1),Id(7),Id(201),14,104,0,Profile(q)};
+      inventory_tail->inventory.entries.erase(inventory_tail->inventory.entries.begin());inventory_tail->previous=InventoryRef(inv);
+      inv.inventory.entries.pop_back();inv.next=InventoryRef(*inventory_tail);
+      page::NativeAllocationMap control_map;control_map.header={sizes[q],3,Id(1),Id(7),Id(202),13,103,0,Profile(q)};
+      control_map.object_uuid=Id(179);control_map.map_generation=control_map.capacity_generation=1;control_map.total_pages=64;
+      control_map.creator_transaction_uuid=Id(98);control_map.creator_local_transaction_id=17;control_map.states.assign(64,S::quarantined);
+      for(unsigned n:{0u,13u,14u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(220+n);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;control_map.states[n]=S::allocated;
+        if(n==0){r.page_uuid=Id(8);r.page_generation=7;r.page_type=1;r.owner_uuid=Id(7);}
+        if(n==13){r.page_uuid=Id(202);r.page_generation=103;r.page_type=3;r.owner_uuid=Id(179);}
+        if(n==14){r.page_uuid=Id(201);r.page_generation=104;r.page_type=0x301;r.owner_uuid=inv.object_uuid;}
+        control_map.records.push_back(r);}
+      const auto store_controls=[&](const auto& map_image){persist();const auto mb=AllocationOracle(map_image);
+        Check(second_device.WriteAt(13*sizes[q],mb.data(),mb.size()).ok()&&second_device.Sync().ok(),"persist continuation allocation authority");};
+      const u64 mixed_budget=7*sizes[p]+3*sizes[q];store_controls(control_map);
+      reads=observed_allocations=observed_full_digests=0;track_reads=count_allocations=count_full_digests=true;
+      auto admitted=read(mixed_budget);track_reads=count_allocations=count_full_digests=false;
+      const auto mixed_reads=reads,mixed_digests=observed_full_digests;const auto mixed_allocations=observed_allocations;
+      if(!admitted.ok())std::cerr<<"mixed control allocation error="<<static_cast<int>(admitted.error)<<" cp="<<static_cast<int>(admitted.checkpoint_error)<<" map="<<static_cast<int>(admitted.allocation_error)<<std::endl;
+      Check(admitted.ok()&&admitted.checkpoint_inventory.inventory_pages.size()==2&&admitted.predecessor.inventory_pages.size()==2&&
+        admitted.checkpoint_inventory.inventory_pages.back().header.filespace_uuid==Id(7),"actual complete mixed-profile control allocations admitted");
+      empty(read(mixed_budget-1));
+      if(p==0&&role==1){
+        for(unsigned long fault=0;fault<=mixed_allocations;++fault){allocation_budget=fault;const auto r=read(mixed_budget);allocation_budget=-1;if(fault<mixed_allocations)empty(r);else Check(r.ok(),"mixed control allocation fault terminal success");}
+        for(unsigned fault=1;fault<=mixed_reads;++fault){reads=0;read_fault=fault;track_reads=true;const auto r=read(mixed_budget);track_reads=false;Check(!read_fault,"mixed control read fault consumed");empty(r);}
+        for(unsigned fault=1;fault<=mixed_digests;++fault){full_digest_fault=fault;const auto r=read(mixed_budget);Check(!full_digest_fault,"mixed control hash fault consumed");empty(r);}
+        std::cout<<"mixed control allocations="<<mixed_allocations<<" reads="<<mixed_reads<<" digests="<<mixed_digests<<std::endl;
+      }
+      for(unsigned fault=0;fault<11;++fault){auto changed=control_map;
+        if(fault==0){changed.records.pop_back();changed.states[14]=S::quarantined;store_controls(changed);empty(read(mixed_budget));continue;}
+        auto& record=changed.records.back();
+        if(fault==1)changed.states[14]=S::reserved;
+        if(fault==2)record.page_uuid=Id(203);
+        if(fault==3)record.page_generation++;
+        if(fault==4)record.page_type=6;
+        if(fault==5)record.owner_uuid=Id(203);
+        if(fault==6){record.creator_transaction_uuid=Id(162);record.creator_local_transaction_id=13;}
+        if(fault==7)record.allocation_uuid=map.records.front().allocation_uuid;
+        if(fault==8)record.page_uuid=inv.header.page_uuid;
+        if(fault==9){changed.creator_transaction_uuid=Id(162);changed.creator_local_transaction_id=13;for(auto& r:changed.records){r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;}}
+        if(fault==10)record.creator_transaction_uuid=Id(203);
+        store_controls(changed);empty(read(mixed_budget));
+      }
+      second_zero=old_second;inv=old_inv;inventory_tail.reset();
+    }
     map=saved;persist();auto bad=SelectionOracle(selection);bad.back()^=1;put(31,bad);empty(read(budget));consumers(CheckpointRef(initial),false);persist();
     Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"independent read-only selector reopen");Check(read(budget).ok(),"actual bound selector survives reopen");consumers(CheckpointRef(current),true);
     Check(device.Close().ok()&&second_device.Close().ok(),"release node ownership before fresh selector process");

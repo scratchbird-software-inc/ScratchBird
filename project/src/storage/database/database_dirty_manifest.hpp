@@ -92,12 +92,18 @@ NativeCheckpointRootResult ReadNativeCheckpointRootFromOpenDevice(
     const scratchbird::core::platform::Uuid& database_uuid,
     const scratchbird::storage::disk::FilespaceRootReference&) noexcept;
 
+struct NativeInventoryPageBinding {
+  scratchbird::storage::disk::NativeCommonPageHeader header;
+  scratchbird::core::platform::Uuid object_uuid;
+};
 struct NativeCheckpointInventoryResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_reference;
   scratchbird::storage::page::NativeInventoryError inventory_error = scratchbird::storage::page::NativeInventoryError::none;
   std::optional<NativeCheckpointRoot> checkpoint;
   std::array<scratchbird::core::platform::byte,32> checkpoint_sha256{};
   scratchbird::transaction::mga::LocalTransactionInventory inventory;
+  // Actual verified chain identities, for allocation admission by the selector.
+  std::vector<NativeInventoryPageBinding> inventory_pages;
   u64 inventory_generation = 0;
   u64 retained_image_bytes = 0;
   bool ok() const noexcept { return error == NativeCheckpointError::none && checkpoint.has_value(); }

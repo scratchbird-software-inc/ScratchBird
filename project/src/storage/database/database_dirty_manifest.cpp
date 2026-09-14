@@ -816,6 +816,9 @@ NativeCheckpointInventoryResult VerifyNativeCheckpointInventoryFromOpenDevices(
     result.checkpoint_sha256=checkpoint_digest.digest;
     result.inventory_generation=chain.pages.front().page->inventory_generation;
     result.retained_image_bytes=loaded.bytes.size()+chain.retained_image_bytes;
+    result.inventory_pages.reserve(chain.pages.size());
+    for(const auto& image:chain.pages)
+      result.inventory_pages.push_back({image.page->header,image.page->object_uuid});
     result.checkpoint=std::move(loaded.root);result.inventory=std::move(chain.inventory);return result;
   }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
    catch(const std::length_error&){return fail(Error::resource_exhausted);}

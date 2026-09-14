@@ -99,7 +99,54 @@ NativeBoundCheckpointSelection ReadNativeBoundCheckpointSelectionFromOpenDevices
       }
     }
     if(!matched[0]||!matched[1])return Fail(E::allocation_binding_mismatch);
-    result.retained_image_bytes+=result.allocation.retained_image_bytes;result.selection=selection;result.error=E::none;return result;
+    result.retained_image_bytes+=result.allocation.retained_image_bytes;
+    // MGA-NATIVE-SELECTED-CONTROL-ALLOCATION-001. Image integrity and a
+    // committed checkpoint creator do not prove its physical allocation.
+    std::vector<NativeInventoryPageBinding> required{{cp.header,cp.object_uuid}};
+    required.insert(required.end(),pair.inventory_pages.begin(),pair.inventory_pages.end());
+    if(result.predecessor.ok()){
+      const auto& old=*result.predecessor.checkpoint;required.push_back({old.header,old.object_uuid});
+      required.insert(required.end(),result.predecessor.inventory_pages.begin(),result.predecessor.inventory_pages.end());
+    }
+    for(const auto& file:devices){
+      if(std::none_of(required.begin(),required.end(),[&](const auto& r){return r.header.filespace_uuid==file.filespace_uuid;}))continue;
+      page::NativeAllocationChainResult secondary;
+      const auto* maps=&result.allocation;
+      if(file.filespace_uuid!=primary_uuid){
+        secondary=page::ReadNativeAllocationChainFromOpenDevice(*file.device,
+          {database_uuid,file.filespace_uuid,file.page_size_profile_uuid},budget-result.retained_image_bytes);
+        if(!secondary.ok()){auto r=Fail(E::allocation_failure);r.allocation_error=secondary.error;return r;}
+        maps=&secondary;
+        for(const auto& image:maps->pages){const auto& map=*image.map;
+          const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(map.creator_local_transaction_id));
+          if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=map.creator_transaction_uuid||
+            creator.entry.identity.scope!=mga::TransactionScope::local_node||!mga::HasCommittedInventoryOutcome(creator.entry))return Fail(E::creator_mismatch);
+          for(const auto& record:map.records){
+            if(!allocation_ids.insert(record.allocation_uuid).second||(!record.page_uuid.is_nil()&&!page_ids.insert(record.page_uuid).second))return Fail(E::allocation_binding_mismatch);
+            const auto original=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(record.creator_local_transaction_id));
+            if(!original.ok()||original.entry.identity.transaction_uuid.value!=record.creator_transaction_uuid||
+              original.entry.identity.scope!=mga::TransactionScope::local_node)return Fail(E::creator_mismatch);
+          }
+        }
+      }
+      for(const auto& control:required){const auto& h=control.header;if(h.filespace_uuid!=file.filespace_uuid)continue;
+        const page::NativeAllocationRecord* found=nullptr;
+        for(const auto& image:maps->pages){const auto& map=*image.map;
+          if(h.page_number<map.first_page||h.page_number-map.first_page>=map.states.size())continue;
+          if(map.states[h.page_number-map.first_page]!=page::NativeAllocationState::allocated)return Fail(E::allocation_binding_mismatch);
+          const auto record=std::lower_bound(map.records.begin(),map.records.end(),h.page_number,
+            [](const auto& r,u64 n){return r.page_number<n;});
+          if(record!=map.records.end()&&record->page_number==h.page_number)found=&*record;
+          break;
+        }
+        if(!found||found->page_uuid!=h.page_uuid||found->page_generation!=h.page_generation||
+          found->page_type!=h.page_type||found->owner_uuid!=control.object_uuid)return Fail(E::allocation_binding_mismatch);
+        const auto original=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(found->creator_local_transaction_id));
+        if(!original.ok()||original.entry.identity.transaction_uuid.value!=found->creator_transaction_uuid||
+          original.entry.identity.scope!=mga::TransactionScope::local_node||!mga::HasCommittedInventoryOutcome(original.entry))return Fail(E::creator_mismatch);
+      }
+    }
+    result.selection=selection;result.error=E::none;return result;
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::io_failure);}
 }
 }  // namespace scratchbird::storage::database
