@@ -114,6 +114,38 @@ enum class NativeCatalogRootStageError {
   io_failure, readback_mismatch, cluster_requires_authority, header_requires_authority,
   creator_rollback_only, predecessor_failure, predecessor_mismatch
 };
+
+enum class NativeInventoryStageError {
+  none, invalid_request, checkpoint_failure, allocation_failure, inventory_failure,
+  invalid_destination, creator_mismatch, creator_not_active, reservation_mismatch,
+  map_creator_mismatch, map_creator_not_committed, root_mismatch,
+  resource_exhausted, hash_failure, destination_not_empty, io_failure,
+  readback_mismatch, cluster_requires_authority, header_requires_authority,
+  creator_rollback_only, chain_mismatch, generation_mismatch, counter_regression
+};
+struct NativeInventoryStageReceipt {
+  scratchbird::core::platform::Uuid database_uuid, allocation_uuid, page_uuid, inventory_uuid;
+  scratchbird::transaction::mga::TransactionIdentity transaction;
+  scratchbird::storage::disk::NativePageReference page;
+  std::array<scratchbird::core::platform::byte,32> sha256{};
+};
+struct NativeInventoryStageResult {
+  NativeInventoryStageError error=NativeInventoryStageError::invalid_request;
+  NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
+  scratchbird::storage::page::NativeDirectoryError directory_error=scratchbird::storage::page::NativeDirectoryError::none;
+  scratchbird::storage::page::NativeInventoryError inventory_error=scratchbird::storage::page::NativeInventoryError::none;
+  scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
+  std::vector<NativeInventoryStageReceipt> receipts;
+  bool ok() const noexcept {return error==NativeInventoryStageError::none&&!receipts.empty();}
+};
+// Complete immutable inventory chain staging only. No selection, finality,
+// allocation-state change, publication-CAS provenance or SQL-success receipt.
+NativeInventoryStageResult StageNativeInventorySuccessorFromOpenDevices(
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
+    const scratchbird::transaction::mga::TransactionIdentity& owner,
+    const std::vector<scratchbird::storage::page::NativeTransactionInventoryPage>&,
+    u64 maximum_retained_image_bytes) noexcept;
 struct NativeCatalogRootStageReceipt {
   scratchbird::core::platform::Uuid database_uuid, allocation_uuid, page_uuid, root_uuid;
   scratchbird::transaction::mga::TransactionIdentity transaction;
