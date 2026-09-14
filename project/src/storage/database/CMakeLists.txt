@@ -34,6 +34,7 @@ add_library(sb_storage_database
   native_inventory_successor_staging.cpp
   native_filespace_initialization.cpp
   native_creation_workspace.cpp
+  native_creation_workspace_recovery.cpp
   repair_event_ledger.cpp
   repair_history_inspection.cpp
   startup_state.cpp

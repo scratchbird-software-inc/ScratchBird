@@ -284,6 +284,27 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
   add_executable(sbsql_sblr_alignment_native_creation_workspace native_creation_workspace_test.cpp)
+  add_executable(sbsql_sblr_alignment_native_creation_workspace_recovery native_creation_workspace_recovery_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_creation_workspace_recovery PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_creation_workspace_recovery PRIVATE sb_storage_database OpenSSL::Crypto)
+  target_link_options(sbsql_sblr_alignment_native_creation_workspace_recovery PRIVATE
+    -Wl,--wrap=pwrite -Wl,--wrap=pread -Wl,--wrap=fsync -Wl,--wrap=RAND_bytes -Wl,--wrap=EVP_Digest
+    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
+  add_test(NAME sbsql_sblr_alignment_native_creation_workspace_recovery COMMAND sbsql_sblr_alignment_native_creation_workspace_recovery)
+  set_tests_properties(sbsql_sblr_alignment_native_creation_workspace_recovery PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_creation_recovery;actual_files;not_SQL_E2E" TIMEOUT 180)
+  foreach(shard RANGE 0 3)
+    add_test(NAME sbsql_sblr_alignment_native_creation_recovery_allocations_${shard}
+      COMMAND sbsql_sblr_alignment_native_creation_workspace_recovery --allocations ${shard})
+    set_tests_properties(sbsql_sblr_alignment_native_creation_recovery_allocations_${shard} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_creation_recovery;allocation_faults;not_SQL_E2E" TIMEOUT 300)
+    foreach(mode first stable)
+      add_test(NAME sbsql_sblr_alignment_native_creation_recovery_allocations_${shard}_${mode}
+        COMMAND sbsql_sblr_alignment_native_creation_workspace_recovery --allocations ${shard} ${mode})
+      set_tests_properties(sbsql_sblr_alignment_native_creation_recovery_allocations_${shard}_${mode} PROPERTIES
+        LABELS "sbsql_sblr_alignment;native_creation_recovery;allocation_faults;not_SQL_E2E" TIMEOUT 300)
+    endforeach()
+  endforeach()
   target_compile_features(sbsql_sblr_alignment_native_creation_workspace PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_creation_workspace PRIVATE sb_storage_database OpenSSL::Crypto)
   target_link_options(sbsql_sblr_alignment_native_creation_workspace PRIVATE
