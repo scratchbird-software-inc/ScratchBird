@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_creation_workspace.hpp"
+#include "native_publication_watermark.hpp"
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
 #include "physical_mga_cow_store.hpp"
@@ -21,9 +22,9 @@ NativeCreationWorkspaceResult Fail(E e) {NativeCreationWorkspaceResult r;r.error
 // Control offsets after the last allocation-map page. Page zero is separate.
 enum Control : unsigned {checkpoint=1, inventory, directory, system, retention,
   horizon, catalog, configuration, security, first_leaf, selector_first=16,
-  selector_second=17, count=18};
+  selector_second=17, watermark_first=18, watermark_second=19, count=20};
 constexpr std::array<u32,count> types{0,0x300,0x301,9,8,0x303,0x302,5,10,11,
-  6,6,6,6,6,6,0x30e,0x30e};
+  6,6,6,6,6,6,0x30e,0x30e,0x500,0x500};
 struct Image {
   disk::NativeCommonPageHeader header;
   Uuid owner, allocation;
@@ -74,7 +75,8 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
       return id.value.value;
     };
     const Uuid map_object=issue(UuidKind::object), timeline=issue(UuidKind::object),
-      locator=issue(UuidKind::object), publication=issue(UuidKind::object), selector=issue(UuidKind::object);
+      locator=issue(UuidKind::object), publication=issue(UuidKind::object), selector=issue(UuidKind::object),
+      watermark=issue(UuidKind::object);
     std::vector<Image> images(maps+count);
     for(u64 n=0;n<images.size();++n) {
       auto& image=images[n];
@@ -83,7 +85,7 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
         issue(UuidKind::page),n,1,0,b.page_size_profile_uuid};
       image.allocation=issue(UuidKind::object);
       image.owner=n==0?b.filespace_uuid:n<=maps?map_object:
-        n>=maps+selector_first?selector:issue(UuidKind::object);
+        n>=maps+watermark_first?watermark:n>=maps+selector_first?selector:issue(UuidKind::object);
     }
     const auto ref=[&](u64 n){return disk::NativePageReference{b.filespace_uuid,n,1,b.page_size_profile_uuid};};
     const auto root=[&](u16 kind,u64 n){return disk::FilespaceRootReference{
@@ -183,6 +185,14 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
       cp.roots.push_back({static_cast<u16>(i+1),image.header.page_type,ref(n),image.owner,image.sha256});
     }
     save(maps+checkpoint,EncodeNativeCheckpointRoot(cp));receipt.checkpoint_sha256=images[maps+checkpoint].sha256;
+    for(const auto control:{watermark_first,watermark_second}) {
+      const auto n=maps+control;NativePublicationWatermark w;w.header=images[n].header;
+      w.object_uuid=watermark;w.bootstrap_uuid=receipt.page_zero_uuid;w.timeline_uuid=timeline;
+      w.operation_uuid=request.operation_uuid;w.watermark=w.base_checkpoint_generation=w.base_root_set_generation=1;
+      w.base_checkpoint=ref(maps+checkpoint);w.base_checkpoint_object_uuid=cp.object_uuid;
+      w.base_checkpoint_sha256=receipt.checkpoint_sha256;
+      save(n,EncodeNativePublicationWatermark(w));
+    }
     for(const auto control:{selector_first,selector_second}) {
       const auto n=maps+control;NativeCheckpointSelection s;s.header=images[n].header;
       s.object_uuid=selector;s.bootstrap_uuid=receipt.page_zero_uuid;s.publication_uuid=publication;
@@ -198,6 +208,7 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
       maps+configuration,maps+security,maps+catalog,maps+checkpoint,maps+retention};
     for(unsigned i=0;i<zero_roots.size();++i)zero.roots.push_back(root(i+1,zero_roots[i]));
     zero.roots.push_back(root(18,maps+selector_first));zero.roots.push_back(root(19,maps+selector_second));
+    zero.roots.push_back(root(20,maps+watermark_first));zero.roots.push_back(root(21,maps+watermark_second));
     auto encoded_zero=disk::EncodeFilespacePageZero(zero);
     if(!encoded_zero.ok()) return Fail(E::encoding_failure);
     images[0].bytes=std::move(*encoded_zero.bytes);
@@ -216,9 +227,11 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
     };
     for(u64 n=0;n<total;++n)if(!write(n,scratch))return Fail(E::io_failure);
     for(u64 n=1;n<maps+selector_first;++n)if(!write(n,images[n].bytes))return Fail(E::io_failure);
+    for(u64 n=maps+watermark_first;n<=maps+watermark_second;++n)if(!write(n,images[n].bytes))return Fail(E::io_failure);
     if(!write(0,images[0].bytes)||!device.Sync().ok())return Fail(E::io_failure);
     for(u64 n=0;n<total;++n) {
-      const auto error=compare(n,n<maps+selector_first?&images[n].bytes:nullptr);
+      const bool dependency=n<images.size()&&(n<maps+selector_first||n>maps+selector_second);
+      const auto error=compare(n,dependency?&images[n].bytes:nullptr);
       if(error!=E::none)return Fail(error);
     }
     for(u64 n=maps+selector_first;n<=maps+selector_second;++n) {
@@ -251,6 +264,23 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
         if(!allocated(r.page,r.page_type,r.object_uuid))return Fail(E::graph_failure);
       for(const auto& r:receipt.relations)
         if(!allocated(r.page,r.page_type,r.object_uuid))return Fail(E::graph_failure);
+      for(const auto control:{watermark_first,watermark_second}) {
+        const auto n=maps+control;std::vector<byte> bytes(size);
+        const auto io=device.ReadAt(n*size,bytes.data(),bytes.size());
+        if(!io.ok()||io.bytes_transferred!=bytes.size())return Fail(E::io_failure);
+        const auto actual=DecodeNativePublicationWatermark(bytes);
+        if(!actual.ok())return Fail(actual.error==NativePublicationWatermarkError::hash_failure?E::hash_failure:
+          actual.error==NativePublicationWatermarkError::resource_exhausted?E::resource_exhausted:E::graph_failure);
+        NativePublicationWatermark expected;expected.header=actual.state->header;
+        expected.object_uuid=watermark;expected.bootstrap_uuid=receipt.page_zero_uuid;expected.timeline_uuid=timeline;
+        expected.operation_uuid=request.operation_uuid;expected.watermark=expected.base_checkpoint_generation=expected.base_root_set_generation=1;
+        expected.base_checkpoint=ref(maps+checkpoint);expected.base_checkpoint_object_uuid=cp.object_uuid;
+        expected.base_checkpoint_sha256=receipt.checkpoint_sha256;
+        const auto encoded=EncodeNativePublicationWatermark(expected);
+        if(!encoded.ok())return Fail(encoded.error==NativePublicationWatermarkError::hash_failure?E::hash_failure:
+          encoded.error==NativePublicationWatermarkError::resource_exhausted?E::resource_exhausted:E::graph_failure);
+        if(encoded.bytes!=bytes||!allocated(ref(n),0x500,watermark))return Fail(E::graph_failure);
+      }
     }
     // Each owning reader obtains evidence from the actual selected graph;
     // results are released between families instead of multiplying the budget.

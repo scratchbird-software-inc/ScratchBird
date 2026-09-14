@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_creation_workspace_recovery.hpp"
+#include "native_publication_watermark.hpp"
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
 #include "physical_mga_cow_store.hpp"
@@ -30,7 +31,7 @@ struct Image {
   page::NativeAllocationRecord allocation;
   std::array<byte,32> sha256{};
 };
-constexpr std::array<u32,18> types{0,0x300,0x301,9,8,0x303,0x302,5,10,11,6,6,6,6,6,6,0x30e,0x30e};
+constexpr std::array<u32,20> types{0,0x300,0x301,9,8,0x303,0x302,5,10,11,6,6,6,6,6,6,0x30e,0x30e,0x500,0x500};
 }
 
 NativeCreationRecoveryResult RecoverNativeCreationWorkspaceSelectionOnOpenDevice(
@@ -56,18 +57,18 @@ NativeCreationRecoveryResult RecoverNativeCreationWorkspaceSelectionOnOpenDevice
     u64 coverage=(size-384)/128;
     while(((384+(coverage+1)/2+7)&~u64{7})+128*coverage>size)--coverage;
     const u64 maps=total/coverage+(total%coverage!=0);
-    Require(total&&maps<=total&&total-maps>=18&&total<=std::numeric_limits<u64>::max()/size&&
-      disk::CheckFileDeviceExtent(total*size,0).ok()&&z.free_pages==total-maps-18);
-    Require(budget/size>=24&&maps<=budget/size-24&&maps<=std::numeric_limits<std::size_t>::max()-18,E::resource_exhausted);
+    Require(total&&maps<=total&&total-maps>=20&&total<=std::numeric_limits<u64>::max()/size&&
+      disk::CheckFileDeviceExtent(total*size,0).ok()&&z.free_pages==total-maps-20);
+    Require(budget/size>=26&&maps<=budget/size-26&&maps<=std::numeric_limits<std::size_t>::max()-20,E::resource_exhausted);
     const auto extent=device.Size();Require(extent.ok(),E::io_failure);Require(extent.size_bytes==total*size);
-    std::vector<Image> images(maps+18);
+    std::vector<Image> images(maps+20);
     const auto read=[&](u64 n,std::vector<byte>& bytes){
       bytes.resize(size);const auto io=device.ReadAt(n*size,bytes.data(),bytes.size());
       Require(io.ok()&&io.bytes_transferred==bytes.size(),E::io_failure);
     };
     for(u64 n=0;n<images.size();++n){auto& image=images[n];read(n,image.bytes);
       const auto digest=core::hash::ComputeSha256Digest(image.bytes);Require(digest.ok(),E::hash_failure);image.sha256=digest.digest;
-      if(n>=maps+16)continue; // Damaged slot headers are reconstructed only from verified allocations.
+      if(n>=maps+16&&n<=maps+17)continue; // Only selector headers may be repaired from verified allocations.
       const disk::NativeCommonPageHeaderBinding expected{binding,n,1,n==0?1:n<=maps?3:types[n-maps],{}};
       const auto header=disk::DecodeNativeCommonPageHeader(image.bytes.data()+(n==0?4096:0),128,&expected);
       Require(header.ok()&&!header.header->flags);image.header=*header.header;
@@ -141,6 +142,21 @@ NativeCreationRecoveryResult RecoverNativeCreationWorkspaceSelectionOnOpenDevice
         r.horizon_uuid=decoded.root->records[i].horizon_uuid;unique(r.horizon_uuid);h.records.push_back(r);}
       same(n,page::EncodeNativeHorizonRoot(h));}
 
+    // Watermarks are dependencies, not repair targets. Reconstruct their exact
+    // generation-one payload from the actual original bootstrap/checkpoint.
+    Uuid watermark_owner;
+    for(unsigned control:{18u,19u}){const u64 n=maps+control;
+      const auto decoded=DecodeNativePublicationWatermark(images[n].bytes);Valid(decoded);
+      if(control==18)watermark_owner=decoded.state->object_uuid;
+      images[n].owner=watermark_owner;
+      NativePublicationWatermark w;w.header=images[n].header;w.object_uuid=watermark_owner;
+      w.bootstrap_uuid=z.page_uuid;w.timeline_uuid=timeline;w.operation_uuid=operation;
+      w.watermark=w.base_checkpoint_generation=w.base_root_set_generation=1;
+      w.base_checkpoint=ref(maps+1);w.base_checkpoint_object_uuid=images[maps+1].owner;
+      w.base_checkpoint_sha256=images[maps+1].sha256;
+      same(n,EncodeNativePublicationWatermark(w));
+    }
+    unique(watermark_owner);
     Uuid map_owner;
     for(u64 n=1;n<=maps;++n){const auto decoded=page::DecodeNativeAllocationMap(images[n].bytes);Valid(decoded);const auto& actual=*decoded.map;
       if(n==1)map_owner=actual.object_uuid;images[n].owner=map_owner;
@@ -184,8 +200,8 @@ NativeCreationRecoveryResult RecoverNativeCreationWorkspaceSelectionOnOpenDevice
       for(unsigned i=0;i<roots.size();++i){const auto n=roots[i];cp.roots.push_back({static_cast<u16>(i+1),
         images[n].header.page_type,ref(n),images[n].owner,images[n].sha256});}
       same(maps+1,EncodeNativeCheckpointRoot(cp));}
-    {auto expected=z;expected.roots.clear();const std::array<u64,12> roots{
-        maps+4,maps+7,1,maps+2,maps+3,maps+8,maps+9,maps+7,maps+1,maps+5,maps+16,maps+17};
+    {auto expected=z;expected.roots.clear();const std::array<u64,14> roots{
+        maps+4,maps+7,1,maps+2,maps+3,maps+8,maps+9,maps+7,maps+1,maps+5,maps+16,maps+17,maps+18,maps+19};
       for(unsigned i=0;i<roots.size();++i)expected.roots.push_back(root(i<10?i+1:i+8,roots[i]));
       const auto encoded=disk::EncodeFilespacePageZero(expected);
       if(!encoded.ok())throw encoded.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:

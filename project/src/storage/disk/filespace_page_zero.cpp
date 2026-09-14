@@ -84,6 +84,19 @@ Error Validate(const FilespacePageZero& value) {
   if(first!=value.roots.end()&&(h.filespace_role>4||first->filespace_uuid!=h.filespace_uuid||
       second->filespace_uuid!=h.filespace_uuid||first->object_uuid!=second->object_uuid||first->page_number==second->page_number))
     return Error::invalid_root_directory;
+  const auto watermark_first=std::find_if(value.roots.begin(),value.roots.end(),[](const auto& r){return r.kind==20;});
+  const auto watermark_second=std::find_if(value.roots.begin(),value.roots.end(),[](const auto& r){return r.kind==21;});
+  if((watermark_first==value.roots.end())!=(watermark_second==value.roots.end()))return Error::required_root_missing;
+  if(watermark_first!=value.roots.end()) {
+    if(first==value.roots.end())return Error::required_root_missing;
+    if(h.filespace_role>4||watermark_first->filespace_uuid!=h.filespace_uuid||
+        watermark_second->filespace_uuid!=h.filespace_uuid||watermark_first->object_uuid!=watermark_second->object_uuid||
+        watermark_first->object_uuid==first->object_uuid||watermark_first->page_number==watermark_second->page_number)
+      return Error::invalid_root_directory;
+    for(const auto& root:value.roots)if(root.kind<20&&root.filespace_uuid==h.filespace_uuid&&
+        (root.page_number==watermark_first->page_number||root.page_number==watermark_second->page_number))
+      return Error::invalid_root_directory;
+  }
   if(h.lifecycle_state==1||h.lifecycle_state==2) {
     const u32 required=h.filespace_role<=4?0x3feu:0x8u;
     if((kinds&required)!=required) return Error::required_root_missing;
@@ -119,8 +132,8 @@ bool ReadCommon(const byte* b,const FilespaceBootstrap& h,Uuid& page,u64& genera
 
 u32 CanonicalPageZeroRootPageType(u16 kind) noexcept {
   // Root-kind -> Core page symbol codes (page-types.yaml), not prototype enums.
-  constexpr std::array<u32,20> types{{0,0x8,0x5,0x3,0x301,0x9,0xa,0xb,0x5,
-      0x300,0x303,0x305,0x307,0x30b,0x515,0x406,0x401,0x309,0x30e,0x30e}};
+  constexpr std::array<u32,22> types{{0,0x8,0x5,0x3,0x301,0x9,0xa,0xb,0x5,
+      0x300,0x303,0x305,0x307,0x30b,0x515,0x406,0x401,0x309,0x30e,0x30e,0x500,0x500}};
   return kind<types.size()?types[kind]:0;
 }
 FilespacePageZeroEncodeResult EncodeFilespacePageZero(const FilespacePageZero& value) noexcept {
