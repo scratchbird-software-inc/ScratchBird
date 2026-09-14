@@ -171,9 +171,9 @@ NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>& byt
     catch (...) { return Fail(E::invalid_family); }
 }
 
-NativeAllocationChainResult ReadNativeAllocationChainFromOpenDevice(
+static NativeAllocationChainResult ReadAllocationChain(
     disk::FileDevice& device, const disk::FilespaceBootstrapBinding& binding,
-    u64 maximum_retained_image_bytes) noexcept {
+    const disk::FilespaceRootReference* selected,u64 maximum_retained_image_bytes) noexcept {
   try {
     if (!maximum_retained_image_bytes) return ChainFail(E::resource_exhausted);
     const auto guard = device.AcquireOperationGuard();
@@ -187,9 +187,10 @@ NativeAllocationChainResult ReadNativeAllocationChainFromOpenDevice(
     const auto& z = *zero.record;
     if (z.bootstrap.flags & disk::FilespaceBootstrapFlag::cluster_authority_required)
       return ChainFail(E::cluster_requires_authority);
-    const auto root = std::find_if(z.roots.begin(), z.roots.end(), [](const auto& r) { return r.kind == 3; });
-    if (root == z.roots.end() || root->filespace_uuid != binding.filespace_uuid ||
-        root->page_size_profile_uuid != binding.page_size_profile_uuid) return ChainFail(E::invalid_reference);
+    const auto initial = std::find_if(z.roots.begin(), z.roots.end(), [](const auto& r) { return r.kind == 3; });
+    const auto* root=selected?selected:initial==z.roots.end()?nullptr:&*initial;
+    if (!root||root->kind!=3||root->page_type!=3||!V7(root->object_uuid)||!root->page_number||!root->page_generation||
+        root->filespace_uuid != binding.filespace_uuid || root->page_size_profile_uuid != binding.page_size_profile_uuid) return ChainFail(E::invalid_reference);
     disk::NativePageReference ref{root->filespace_uuid, root->page_number, root->page_generation, root->page_size_profile_uuid};
     std::set<u64> slots; std::set<Uuid> page_ids{z.page_uuid};
     NativeAllocationChainResult result;
@@ -230,8 +231,8 @@ NativeAllocationChainResult ReadNativeAllocationChainFromOpenDevice(
       if (!next) break;
       ref = *next;
     }
-    if (covered != z.total_pages || result.state_counts[0] + result.state_counts[4] != z.free_pages ||
-        result.state_counts[7] != z.preallocated_pages) return ChainFail(E::counter_mismatch);
+    if (covered != z.total_pages || (!selected&&(result.state_counts[0] + result.state_counts[4] != z.free_pages ||
+        result.state_counts[7] != z.preallocated_pages))) return ChainFail(E::counter_mismatch);
     const auto allocated = [&](u64 number, const Uuid& id, u64 generation, u32 type, const Uuid& owner) {
       for (const auto& image : result.pages) {
         const auto& map = *image.map;
@@ -257,5 +258,14 @@ NativeAllocationChainResult ReadNativeAllocationChainFromOpenDevice(
   } catch (const std::bad_alloc&) { return ChainFail(E::resource_exhausted); }
     catch (const std::length_error&) { return ChainFail(E::resource_exhausted); }
     catch (...) { return ChainFail(E::io_failure); }
+}
+NativeAllocationChainResult ReadNativeAllocationChainFromOpenDevice(
+    disk::FileDevice& device,const disk::FilespaceBootstrapBinding& binding,u64 budget) noexcept {
+  return ReadAllocationChain(device,binding,nullptr,budget);
+}
+NativeAllocationChainResult ReadNativeAllocationChainAtRootFromOpenDevice(
+    disk::FileDevice& device,const disk::FilespaceBootstrapBinding& binding,
+    const disk::FilespaceRootReference& root,u64 budget) noexcept {
+  return ReadAllocationChain(device,binding,&root,budget);
 }
 }  // namespace scratchbird::storage::page

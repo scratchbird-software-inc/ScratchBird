@@ -54,9 +54,19 @@ NativeCatalogLeafStageResult StageNativeCatalogLeafFromOpenDevices(
     if(!actor.ok()||actor.entry.identity.transaction_uuid.value!=owner.transaction_uuid.value||actor.entry.identity.transaction_uuid.kind!=owner.transaction_uuid.kind||actor.entry.identity.scope!=owner.scope)return Fail(E::creator_mismatch);
     if(actor.entry.state!=mga::TransactionState::active)return Fail(E::creator_not_active);
     if(actor.entry.rollback_only)return Fail(E::creator_rollback_only);
-    auto allocation=page::ReadNativeAllocationChainFromOpenDevice(*target->device,{h.database_uuid,h.filespace_uuid,h.page_size_profile_uuid},budget-authority.retained_image_bytes);
+    const disk::FilespaceBootstrapBinding target_binding{h.database_uuid,h.filespace_uuid,h.page_size_profile_uuid};
+    const auto target_zero=disk::ReadFilespacePageZeroFromOpenDevice(*target->device,&target_binding);
+    if(!target_zero.ok())return Fail(E::invalid_destination);
+    if(target_zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::payload_encrypted)return Fail(E::header_requires_authority);
+    const bool selected_primary=std::any_of(target_zero.record->roots.begin(),target_zero.record->roots.end(),[](const auto& r){return r.kind==18;});
+    const auto selected_root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==4;});
+    if(selected_primary&&(selected_root==cp.roots.end()||selected_root->page.filespace_uuid!=h.filespace_uuid))return Fail(E::root_mismatch);
+    page::NativeAllocationChainResult allocation;
+    if(selected_primary){const auto& r=*selected_root;const disk::FilespaceRootReference ref{3,r.page_type,r.page.filespace_uuid,r.page.page_number,r.page.page_generation,r.page.page_size_profile_uuid,r.object_uuid};
+      allocation=page::ReadNativeAllocationChainAtRootFromOpenDevice(*target->device,target_binding,ref,budget-authority.retained_image_bytes);
+    }else allocation=page::ReadNativeAllocationChainFromOpenDevice(*target->device,target_binding,budget-authority.retained_image_bytes);
     if(!allocation.ok()){auto r=Fail(E::allocation_failure);r.allocation_error=allocation.error;return r;}
-    if(h.filespace_uuid==checkpoint.filespace_uuid){const auto& map=*allocation.pages.front().map;
+    if(selected_primary||h.filespace_uuid==checkpoint.filespace_uuid){const auto& map=*allocation.pages.front().map;
       const auto root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& value){return value.role==4;});
       const disk::NativePageReference ref{h.filespace_uuid,map.header.page_number,map.header.page_generation,map.header.page_size_profile_uuid};
       if(root==cp.roots.end()||root->page!=ref||root->object_uuid!=map.object_uuid)return Fail(E::root_mismatch);

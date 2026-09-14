@@ -3,6 +3,7 @@
 #pragma once
 
 #include "native_common_page_header.hpp"
+#include "filespace_page_zero.hpp"
 #include <array>
 #include <optional>
 #include <vector>
@@ -74,4 +75,9 @@ struct NativeAllocationChainResult {
 NativeAllocationChainResult ReadNativeAllocationChainFromOpenDevice(
     disk::FileDevice&, const disk::FilespaceBootstrapBinding&,
     u64 maximum_retained_image_bytes) noexcept;
+// Exact selected root, independently hash-bound by the checkpoint owner.
+// Actual map counts replace stale bootstrap counters; no reuse/publication grant.
+NativeAllocationChainResult ReadNativeAllocationChainAtRootFromOpenDevice(
+    disk::FileDevice&,const disk::FilespaceBootstrapBinding&,
+    const disk::FilespaceRootReference&,u64 maximum_retained_image_bytes) noexcept;
 }  // namespace scratchbird::storage::page

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_dirty_manifest.hpp"
+#include "native_checkpoint_selection.hpp"
 #include "hash_digest_parts.hpp"
 #include "disk_device.hpp"
 #include "transaction_inventory_validation.hpp"
@@ -941,6 +942,39 @@ NativeCheckpointPolicyRootsResult VerifyNativeCheckpointPolicyRootsFromOpenDevic
    catch(...){return fail(Error::io_failure);}
 }
 
+namespace {
+struct CurrentCheckpointInventory {
+  NativeCheckpointInventoryResult pair;
+  bool selector_bound=false;
+};
+CurrentCheckpointInventory ResolveCurrentCheckpointInventory(
+    const core::platform::Uuid& database_uuid,const std::vector<disk::NativeFilespaceDevice>& devices,
+    const disk::FilespaceRootReference& requested,u64 budget) {
+  CurrentCheckpointInventory result;const disk::NativeFilespaceDevice* selector_owner=nullptr;
+  for(const auto& file:devices){
+    const disk::FilespaceBootstrapBinding binding{database_uuid,file.filespace_uuid,file.page_size_profile_uuid};
+    const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(*file.device,&binding);
+    if(!zero.ok()){result.pair.error=zero.error==disk::FilespacePageZeroError::resource_exhausted?NativeCheckpointError::resource_exhausted:
+      zero.error==disk::FilespacePageZeroError::hash_provider_failure?NativeCheckpointError::hash_failure:
+      zero.error==disk::FilespacePageZeroError::io_failure?NativeCheckpointError::io_failure:NativeCheckpointError::invalid_filespace;return result;}
+    if(std::any_of(zero.record->roots.begin(),zero.record->roots.end(),[](const auto& r){return r.kind==18;})){
+      if(selector_owner){result.pair.error=NativeCheckpointError::binding_mismatch;return result;}selector_owner=&file;
+    }
+  }
+  if(!selector_owner){result.pair=VerifyNativeCheckpointInventoryFromOpenDevices(database_uuid,devices,requested,budget);return result;}
+  auto selected=ReadNativeBoundCheckpointSelectionFromOpenDevices(database_uuid,devices,selector_owner->filespace_uuid,budget);
+  if(!selected.ok()){result.pair.error=selected.error==NativeCheckpointSelectionError::resource_exhausted?NativeCheckpointError::resource_exhausted:
+    selected.error==NativeCheckpointSelectionError::hash_failure?NativeCheckpointError::hash_failure:
+    selected.error==NativeCheckpointSelectionError::io_failure?NativeCheckpointError::io_failure:NativeCheckpointError::binding_mismatch;return result;}
+  const auto& s=*selected.selection;
+  if(requested.kind!=9||requested.page_type!=0x300||requested.object_uuid!=s.checkpoint_object_uuid||
+    disk::NativePageReference{requested.filespace_uuid,requested.page_number,requested.page_generation,requested.page_size_profile_uuid}!=s.checkpoint){
+    result.pair.error=NativeCheckpointError::binding_mismatch;return result;
+  }
+  result.pair=std::move(selected.checkpoint_inventory);result.selector_bound=true;return result;
+}
+}
+
 NativeCheckpointAllocationResult VerifyCurrentNativeCheckpointAllocationFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
@@ -953,8 +987,8 @@ NativeCheckpointAllocationResult VerifyCurrentNativeCheckpointAllocationFromOpen
   try {
     if(!V7(database_uuid)||devices.empty()||!maximum_retained_image_bytes)return fail(Error::invalid_reference);
     auto locked=LockFilespaces(devices);if(locked.error!=Error::none)return fail(locked.error);
-    auto pair=VerifyNativeCheckpointInventoryFromOpenDevices(database_uuid,locked.ordered,checkpoint,
-                                                            maximum_retained_image_bytes);
+    auto current_inventory=ResolveCurrentCheckpointInventory(database_uuid,locked.ordered,checkpoint,maximum_retained_image_bytes);
+    auto pair=std::move(current_inventory.pair);
     if(!pair.ok()) {
       auto result=fail(pair.error);result.checkpoint_inventory.error=pair.error;
       result.checkpoint_inventory.inventory_error=pair.inventory_error;return result;
@@ -976,17 +1010,21 @@ NativeCheckpointAllocationResult VerifyCurrentNativeCheckpointAllocationFromOpen
         a.filespace_uuid==b.filespace_uuid&&a.page_number==b.page_number&&a.page_generation==b.page_generation&&
         a.page_size_profile_uuid==b.page_size_profile_uuid&&a.object_uuid==b.object_uuid;};
     const auto current=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& ref){return ref.kind==9;});
-    if(current==z.roots.end()||!same(*current,checkpoint)||pair.checkpoint->root_set_generation!=z.root_set_generation)
+    if(!current_inventory.selector_bound&&(current==z.roots.end()||!same(*current,checkpoint)||pair.checkpoint->root_set_generation!=z.root_set_generation))
       return fail(Error::binding_mismatch);
     const auto target=std::find_if(pair.checkpoint->roots.begin(),pair.checkpoint->roots.end(),
                                   [](const auto& ref){return ref.role==4;});
     const auto actual=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& ref){return ref.kind==3;});
-    if(target==pair.checkpoint->roots.end()||actual==z.roots.end())return fail(Error::invalid_roots);
+    if(target==pair.checkpoint->roots.end()||(!current_inventory.selector_bound&&actual==z.roots.end()))return fail(Error::invalid_roots);
     const disk::FilespaceRootReference expected{3,target->page_type,target->page.filespace_uuid,
         target->page.page_number,target->page.page_generation,target->page.page_size_profile_uuid,target->object_uuid};
-    if(!same(*actual,expected))return fail(Error::binding_mismatch);
-    auto allocation=page::ReadNativeAllocationChainFromOpenDevice(*fs->device,binding,
-        maximum_retained_image_bytes-pair.retained_image_bytes);
+    if(!current_inventory.selector_bound&&!same(*actual,expected))return fail(Error::binding_mismatch);
+    const auto map_file=std::lower_bound(locked.ordered.begin(),locked.ordered.end(),expected.filespace_uuid,[](const auto& f,const auto& id){return f.filespace_uuid<id;});
+    if(map_file==locked.ordered.end()||map_file->filespace_uuid!=expected.filespace_uuid||map_file->page_size_profile_uuid!=expected.page_size_profile_uuid)return fail(Error::invalid_filespace);
+    const disk::FilespaceBootstrapBinding map_binding{database_uuid,map_file->filespace_uuid,map_file->page_size_profile_uuid};
+    auto allocation=current_inventory.selector_bound?
+      page::ReadNativeAllocationChainAtRootFromOpenDevice(*map_file->device,map_binding,expected,maximum_retained_image_bytes-pair.retained_image_bytes):
+      page::ReadNativeAllocationChainFromOpenDevice(*map_file->device,map_binding,maximum_retained_image_bytes-pair.retained_image_bytes);
     if(!allocation.ok()) {
       auto result=fail(Error::allocation_failure);result.allocation_error=allocation.error;return result;
     }
@@ -1027,7 +1065,8 @@ NativeCheckpointDirectoryResult VerifyCurrentNativeCheckpointDirectoryFromOpenDe
   try {
     if(!V7(database_uuid)||devices.empty()||!maximum_retained_image_bytes)return fail(Error::invalid_reference);
     auto locked=LockFilespaces(devices);if(locked.error!=Error::none)return fail(locked.error);
-    auto pair=VerifyNativeCheckpointInventoryFromOpenDevices(database_uuid,locked.ordered,checkpoint,maximum_retained_image_bytes);
+    auto current_inventory=ResolveCurrentCheckpointInventory(database_uuid,locked.ordered,checkpoint,maximum_retained_image_bytes);
+    auto pair=std::move(current_inventory.pair);
     if(!pair.ok()){auto failure=fail(pair.error);failure.checkpoint_inventory.error=pair.error;
       failure.checkpoint_inventory.inventory_error=pair.inventory_error;return failure;}
     const auto fs=std::lower_bound(locked.ordered.begin(),locked.ordered.end(),checkpoint.filespace_uuid,
@@ -1047,14 +1086,14 @@ NativeCheckpointDirectoryResult VerifyCurrentNativeCheckpointDirectoryFromOpenDe
       a.filespace_uuid==b.filespace_uuid&&a.page_number==b.page_number&&a.page_generation==b.page_generation&&
       a.page_size_profile_uuid==b.page_size_profile_uuid&&a.object_uuid==b.object_uuid;};
     const auto current=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& r){return r.kind==9;});
-    if(current==z.roots.end()||!same(*current,checkpoint)||pair.checkpoint->root_set_generation!=z.root_set_generation)
+    if(!current_inventory.selector_bound&&(current==z.roots.end()||!same(*current,checkpoint)||pair.checkpoint->root_set_generation!=z.root_set_generation))
       return fail(Error::binding_mismatch);
     const auto target=std::find_if(pair.checkpoint->roots.begin(),pair.checkpoint->roots.end(),[](const auto& r){return r.role==3;});
     const auto actual=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& r){return r.kind==5;});
-    if(target==pair.checkpoint->roots.end()||actual==z.roots.end())return fail(Error::invalid_roots);
+    if(target==pair.checkpoint->roots.end()||(!current_inventory.selector_bound&&actual==z.roots.end()))return fail(Error::invalid_roots);
     const disk::FilespaceRootReference expected{5,target->page_type,target->page.filespace_uuid,target->page.page_number,
       target->page.page_generation,target->page.page_size_profile_uuid,target->object_uuid};
-    if(!same(*actual,expected))return fail(Error::binding_mismatch);
+    if(!current_inventory.selector_bound&&!same(*actual,expected))return fail(Error::binding_mismatch);
     auto directory=page::ReadNativeFilespaceDirectoryFromOpenDevices(database_uuid,locked.ordered,expected,
       maximum_retained_image_bytes-pair.retained_image_bytes);
     if(!directory.ok()){auto failure=fail(Error::directory_failure);failure.directory_error=directory.error;return failure;}
@@ -1137,7 +1176,8 @@ NativeCheckpointSystemStateResult VerifyCurrentNativeCheckpointSystemStateFromOp
   try{
     if(!V7(database_uuid)||devices.empty()||!budget)return fail(Error::invalid_reference);
     auto locked=LockFilespaces(devices);if(locked.error!=Error::none)return fail(locked.error);
-    auto pair=VerifyNativeCheckpointInventoryFromOpenDevices(database_uuid,locked.ordered,checkpoint,budget);
+    auto current_inventory=ResolveCurrentCheckpointInventory(database_uuid,locked.ordered,checkpoint,budget);
+    auto pair=std::move(current_inventory.pair);
     if(!pair.ok()){auto r=fail(pair.error);r.checkpoints.error=pair.error;r.checkpoints.inventory_error=pair.inventory_error;return r;}
     const auto primary=std::lower_bound(locked.ordered.begin(),locked.ordered.end(),checkpoint.filespace_uuid,[](const auto& f,const auto& id){return f.filespace_uuid<id;});
     if(primary==locked.ordered.end()||primary->filespace_uuid!=checkpoint.filespace_uuid||primary->page_size_profile_uuid!=checkpoint.page_size_profile_uuid)return fail(Error::invalid_filespace);
@@ -1146,12 +1186,12 @@ NativeCheckpointSystemStateResult VerifyCurrentNativeCheckpointSystemStateFromOp
     if(!zero.ok())return fail(zero.error==disk::FilespacePageZeroError::resource_exhausted?Error::resource_exhausted:
       zero.error==disk::FilespacePageZeroError::hash_provider_failure?Error::hash_failure:zero.error==disk::FilespacePageZeroError::io_failure?Error::io_failure:Error::invalid_filespace);
     const auto& z=*zero.record;const auto current=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& r){return r.kind==9;});
-    if(current==z.roots.end()||!same(*current,checkpoint)||pair.checkpoint->root_set_generation!=z.root_set_generation)return fail(Error::binding_mismatch);
+    if(!current_inventory.selector_bound&&(current==z.roots.end()||!same(*current,checkpoint)||pair.checkpoint->root_set_generation!=z.root_set_generation))return fail(Error::binding_mismatch);
     const auto actual=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& r){return r.kind==1;});
     const auto target=std::find_if(pair.checkpoint->roots.begin(),pair.checkpoint->roots.end(),[](const auto& r){return r.role==8;});
-    if(actual==z.roots.end()||target==pair.checkpoint->roots.end())return fail(Error::invalid_roots);
+    if((!current_inventory.selector_bound&&actual==z.roots.end())||target==pair.checkpoint->roots.end())return fail(Error::invalid_roots);
     const disk::FilespaceRootReference expected{1,target->page_type,target->page.filespace_uuid,target->page.page_number,target->page.page_generation,target->page.page_size_profile_uuid,target->object_uuid};
-    if(!same(*actual,expected))return fail(Error::binding_mismatch);
+    if(!current_inventory.selector_bound&&!same(*actual,expected))return fail(Error::binding_mismatch);
     const auto file=std::lower_bound(locked.ordered.begin(),locked.ordered.end(),expected.filespace_uuid,[](const auto& f,const auto& id){return f.filespace_uuid<id;});
     if(file==locked.ordered.end()||file->filespace_uuid!=expected.filespace_uuid||file->page_size_profile_uuid!=expected.page_size_profile_uuid)return fail(Error::invalid_filespace);
     const auto* profile=disk::FindCanonicalFilespacePageProfile(expected.page_size_profile_uuid);
@@ -1198,7 +1238,8 @@ NativeCheckpointHorizonResult VerifyCurrentNativeCheckpointHorizonFromOpenDevice
   try{
     if(!V7(database_uuid)||devices.empty()||!budget)return fail(Error::invalid_reference);
     auto locked=LockFilespaces(devices);if(locked.error!=Error::none)return fail(locked.error);
-    auto pair=VerifyNativeCheckpointInventoryFromOpenDevices(database_uuid,locked.ordered,checkpoint,budget);
+    auto current_inventory=ResolveCurrentCheckpointInventory(database_uuid,locked.ordered,checkpoint,budget);
+    auto pair=std::move(current_inventory.pair);
     if(!pair.ok()){auto r=fail(pair.error);r.checkpoints.error=pair.error;r.checkpoints.inventory_error=pair.inventory_error;return r;}
     const auto primary=std::lower_bound(locked.ordered.begin(),locked.ordered.end(),checkpoint.filespace_uuid,[](const auto& f,const auto& id){return f.filespace_uuid<id;});
     if(primary==locked.ordered.end()||primary->filespace_uuid!=checkpoint.filespace_uuid||primary->page_size_profile_uuid!=checkpoint.page_size_profile_uuid)return fail(Error::invalid_filespace);
@@ -1207,8 +1248,8 @@ NativeCheckpointHorizonResult VerifyCurrentNativeCheckpointHorizonFromOpenDevice
     if(!zero.ok())return fail(zero.error==disk::FilespacePageZeroError::resource_exhausted?Error::resource_exhausted:
       zero.error==disk::FilespacePageZeroError::hash_provider_failure?Error::hash_failure:zero.error==disk::FilespacePageZeroError::io_failure?Error::io_failure:Error::invalid_filespace);
     const auto current=std::find_if(zero.record->roots.begin(),zero.record->roots.end(),[](const auto& r){return r.kind==9;});
-    if(current==zero.record->roots.end()||current->page_type!=checkpoint.page_type||current->object_uuid!=checkpoint.object_uuid||
-        ref(*current)!=ref(checkpoint)||zero.record->root_set_generation!=pair.checkpoint->root_set_generation)return fail(Error::binding_mismatch);
+    if(!current_inventory.selector_bound&&(current==zero.record->roots.end()||current->page_type!=checkpoint.page_type||current->object_uuid!=checkpoint.object_uuid||
+        ref(*current)!=ref(checkpoint)||zero.record->root_set_generation!=pair.checkpoint->root_set_generation))return fail(Error::binding_mismatch);
     const auto target=std::find_if(pair.checkpoint->roots.begin(),pair.checkpoint->roots.end(),[](const auto& r){return r.role==2;});
     const auto retention=std::find_if(pair.checkpoint->roots.begin(),pair.checkpoint->roots.end(),[](const auto& r){return r.role==10;});
     if(target==pair.checkpoint->roots.end()||retention==pair.checkpoint->roots.end())return fail(Error::invalid_roots);

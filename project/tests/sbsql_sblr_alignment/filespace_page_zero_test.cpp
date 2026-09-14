@@ -7,6 +7,7 @@
 #include "catalog_schema_definition.hpp"
 #include "transaction_inventory_page.hpp"
 #include "database_dirty_manifest.hpp"
+#include "native_checkpoint_selection.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <openssl/evp.h>
@@ -2834,7 +2835,148 @@ void CheckpointCatalogRelations() {
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process follows checkpoint through relation creators");
   }
 }
+Bytes SelectionOracle(const db::NativeCheckpointSelection& s){
+  auto common=RootExample();common.header=s.header;auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
+  std::copy_n("SBDCP001",8,b.begin()+128);Number(b,136,2,1);Number(b,138,2,384);Number(b,140,4,512);
+  PutUuid(b,144,s.object_uuid);PutUuid(b,160,s.bootstrap_uuid);Number(b,176,8,s.selection_generation);PutUuid(b,184,s.publication_uuid);
+  const auto ref=[&](unsigned at,const auto& r){PutUuid(b,at,r.filespace_uuid);Number(b,at+16,8,r.page_number);Number(b,at+24,8,r.page_generation);PutUuid(b,at+32,r.page_size_profile_uuid);};
+  ref(200,s.checkpoint);PutUuid(b,248,s.checkpoint_object_uuid);std::copy(s.checkpoint_sha256.begin(),s.checkpoint_sha256.end(),b.begin()+264);
+  Number(b,296,8,s.checkpoint_generation);Number(b,304,8,s.root_set_generation);PutUuid(b,312,s.timeline_uuid);Number(b,328,8,s.previous_selection_generation);
+  if(s.previous_checkpoint)ref(336,*s.previous_checkpoint);PutUuid(b,384,s.previous_checkpoint_object_uuid);std::copy(s.previous_checkpoint_sha256.begin(),s.previous_checkpoint_sha256.end(),b.begin()+400);
+  const auto digest=WholeRootHash(b);std::copy(digest.begin(),digest.end(),b.begin()+432);return b;
+}
+void CanonicalBoundCheckpointSelection(){using E=db::NativeCheckpointSelectionError;using S=page::NativeAllocationState;
+  for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=4;++role){
+    Fixture fixture;disk::FileDevice device,second_device;const unsigned q=(p+1)%5;const auto path=(fixture.root/"bound-selector").string();auto zero=Example(p,role);zero.free_pages=zero.preallocated_pages=0;
+    auto second_zero=Example(q,5);second_zero.bootstrap.filespace_uuid=Id(7);second_zero.page_uuid=Id(8);second_zero.free_pages=second_zero.preallocated_pages=0;for(auto& r:second_zero.roots)r.filespace_uuid=Id(7);
+    second_zero.roots.front().object_uuid=Id(179);
+    zero.roots.push_back({18,0x30e,Id(2),31,1,Profile(p),Id(154)});zero.roots.push_back({19,0x30e,Id(2),32,1,Profile(p),Id(154)});
+    for(unsigned bad=0;bad<6;++bad){auto z=zero;if(bad==0)z.roots.pop_back();if(bad==1)z.roots.erase(z.roots.end()-2);if(bad==2)z.roots.back().object_uuid=Id(177);
+      if(bad==3){z.roots.back().filespace_uuid=Id(7);z.roots.back().page_size_profile_uuid=Profile(q);}if(bad==4)z.roots.back().page_number=31;if(bad==5)z.bootstrap.filespace_role=5;
+      Invalid(z,bad<2?disk::FilespacePageZeroError::required_root_missing:disk::FilespacePageZeroError::invalid_root_directory);}
+    Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"own bound selector node");const byte pad=0;Check(device.WriteAt(64*sizes[p]-1,&pad,1).ok(),"selector actual capacity");
+    Check(second_device.Open((fixture.root/"bound-selector-secondary").string(),disk::FileOpenMode::create_new).ok()&&second_device.WriteAt(64*sizes[q]-1,&pad,1).ok(),"own mixed-profile secondary filespace");
+    auto inv=InventoryExample(p);inv.inventory.next_local_transaction_id=18;inv.inventory.next_commit_sequence=2;
+    auto& writer=inv.inventory.entries[0];writer.identity.local_id=mga::MakeLocalTransactionId(13);writer.identity.transaction_uuid.value=Id(162);writer.state=mga::TransactionState::active;writer.commit_sequence=0;
+    auto committed=writer;committed.identity.local_id=mga::MakeLocalTransactionId(17);committed.identity.transaction_uuid.value=Id(98);committed.state=mga::TransactionState::committed;committed.commit_sequence=1;inv.inventory.entries.push_back(committed);
+    auto initial=CheckpointExample(p),current=initial;current.header.page_number=36;current.header.page_generation=110;current.header.page_uuid=Id(95);current.checkpoint_generation=2;current.root_set_generation=9;
+    current.roots[4].page.page_number=50;current.roots[5].page.page_number=51;
+    current.predecessor=disk::NativePageReference{Id(2),19,109,Profile(p)};
+    page::NativeAllocationMap map;map.header={sizes[p],3,Id(1),Id(2),Id(164),35,104,0,Profile(p)};map.object_uuid=Id(43);map.map_generation=2;map.capacity_generation=1;
+    map.total_pages=64;map.creator_transaction_uuid=Id(98);map.creator_local_transaction_id=17;map.states.assign(64,S::quarantined);
+    for(unsigned n:{0u,21u,31u,32u,35u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(180+n);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;map.states[n]=S::allocated;
+      if(n==0){r.page_uuid=zero.page_uuid;r.page_generation=zero.page_generation;r.page_type=role<=4?1:2;r.owner_uuid=Id(2);}
+      if(n==21){r.page_uuid=Id(150);r.page_generation=7;r.page_type=6;r.owner_uuid=Id(101);r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;map.states[n]=S::reserved;}
+      if(n==31||n==32){r.page_uuid=Id(n==31?155:156);r.page_generation=1;r.page_type=0x30e;r.owner_uuid=Id(154);}
+      if(n==35){r.page_uuid=Id(164);r.page_generation=104;r.page_type=3;r.owner_uuid=Id(43);}map.records.push_back(r);}
+    // Selected map counters differ from the immutable initial bootstrap.
+    map.states[60]=S::free;
+    page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(165),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=1;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
+    directory.records.push_back({zero.bootstrap,Id(166),zero.page_uuid,zero.page_generation,zero.root_set_generation,zero.total_pages,0,{}});
+    directory.records.push_back({second_zero.bootstrap,Id(176),second_zero.page_uuid,second_zero.page_generation,second_zero.root_set_generation,second_zero.total_pages,0,{}});
+    page::NativeRetentionPage retention;retention.header={sizes[p],0x303,Id(1),Id(2),Id(167),40,140,0,Profile(p)};retention.object_uuid=Id(168);retention.epoch=1;retention.creator_transaction_uuid=Id(98);retention.creator_local_transaction_id=17;
+    page::NativeHorizonRoot horizon;horizon.header={sizes[p],0x302,Id(1),Id(2),Id(169),41,141,0,Profile(p)};horizon.object_uuid=Id(170);horizon.epoch=1;horizon.creator_transaction_uuid=Id(98);horizon.creator_local_transaction_id=17;
+    horizon.retention={Id(2),40,140,Profile(p)};horizon.retention_object_uuid=Id(168);
+    db::NativeSystemState system;system.header={sizes[p],8,Id(1),Id(2),Id(171),11,101,0,Profile(p)};system.object_uuid=Id(41);system.state_generation=system.restart_generation=system.startup_counter=1;
+    system.creator_transaction_uuid=Id(98);system.creator_local_transaction_id=17;system.lifecycle=db::NativeSystemLifecycle::opening;system.recovery=db::NativeSystemRecovery::checkpoint_rebuild;system.flags=db::NativeSystemFlag::dirty|db::NativeSystemFlag::write_fenced;
+    system.checkpoint_generation=2;system.checkpoint=disk::NativePageReference{Id(2),36,110,Profile(p)};system.checkpoint_object_uuid=Id(49);system.transition_operation_uuid=Id(172);
+    db::NativeCheckpointSelection selection;selection.header={sizes[p],0x30e,Id(1),Id(2),Id(155),31,1,0,Profile(p)};selection.object_uuid=Id(154);selection.bootstrap_uuid=zero.page_uuid;
+    selection.publication_uuid=Id(153);selection.selection_generation=2;selection.checkpoint={Id(2),36,110,Profile(p)};selection.checkpoint_object_uuid=Id(49);selection.checkpoint_generation=2;selection.root_set_generation=9;selection.timeline_uuid=Id(97);
+    selection.previous_selection_generation=1;selection.previous_checkpoint=disk::NativePageReference{Id(2),19,109,Profile(p)};selection.previous_checkpoint_object_uuid=Id(49);
+    const auto put=[&](u64 number,const Bytes& b){Check(device.WriteAt(number*sizes[p],b.data(),b.size()).ok()&&device.Sync().ok(),"persist independently authored selector graph");};
+    const auto persist=[&](){const auto ib=InventoryOracle(inv,13,13,13),mb=AllocationOracle(map),dbb=DirectoryOracle(directory),rb=RetentionOracle(retention),sb=SystemStateOracle(system);horizon.retention_sha256=WholeRootHash(rb);const auto hb=HorizonOracle(horizon);
+      for(auto* cp:{&initial,&current}){cp->roots[0]={1,0x301,InventoryRef(inv),inv.object_uuid,WholeRootHash(ib)};
+        cp->roots[2]={3,9,{Id(2),15,105,Profile(p)},Id(45),WholeRootHash(dbb)};}
+      current.roots[3]={4,3,{Id(2),35,104,Profile(p)},Id(43),WholeRootHash(mb)};
+      current.roots[2]={3,9,{Id(2),15,105,Profile(p)},Id(45),WholeRootHash(dbb)};
+      current.roots[7]={8,8,{Id(2),11,101,Profile(p)},Id(41),WholeRootHash(sb)};
+      current.roots[1]={2,0x302,{Id(2),41,141,Profile(p)},Id(170),WholeRootHash(hb)};
+      current.roots[9]={10,0x303,{Id(2),40,140,Profile(p)},Id(168),WholeRootHash(rb)};
+      const auto old=CheckpointOracle(initial);current.predecessor_sha256=WholeRootHash(old);selection.previous_checkpoint_sha256=current.predecessor_sha256;
+      const auto cp=CheckpointOracle(current);selection.checkpoint_sha256=WholeRootHash(cp);
+      auto other=selection;other.header.page_number=32;other.header.page_uuid=Id(156);
+      const auto secondary_bytes=Oracle(second_zero);Check(second_device.WriteAt(0,secondary_bytes.data(),secondary_bytes.size()).ok()&&second_device.Sync().ok(),"persist secondary bootstrap");
+      put(0,Oracle(zero));put(14,ib);put(35,mb);put(15,dbb);put(40,rb);put(41,hb);put(11,sb);put(19,old);put(36,cp);put(31,SelectionOracle(selection));put(32,SelectionOracle(other));};
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second_device},{Id(2),Profile(p),&device}};const u64 budget=8*sizes[p];
+    const auto read=[&](u64 limit){return db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),limit);};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.selection&&r.slots[0].empty()&&r.slots[1].empty()&&!r.checkpoint_inventory.checkpoint&&!r.predecessor.checkpoint&&r.allocation.pages.empty()&&!r.retained_image_bytes,"bound selector failure returns no prefix");};
+    const auto consumers=[&](const auto& ref,bool expected){Check(db::VerifyCurrentNativeCheckpointAllocationFromOpenDevices(Id(1),devices,ref,budget).ok()==expected,"current allocation uses selected root");
+      Check(db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),devices,ref,budget).ok()==expected,"current directory uses selected root");
+      const auto sr=db::VerifyCurrentNativeCheckpointSystemStateFromOpenDevices(Id(1),devices,ref,budget);
+      if(sr.ok()!=expected)std::cerr<<"selected system error="<<static_cast<int>(sr.error)<<" state="<<static_cast<int>(sr.system_error)<<std::endl;
+      Check(sr.ok()==expected,"current system state uses selected root");
+      Check(db::VerifyCurrentNativeCheckpointHorizonFromOpenDevices(Id(1),devices,ref,budget).ok()==expected,"current horizons use selected root");};
+    persist();reads=observed_full_digests=observed_allocations=0;track_reads=count_full_digests=count_allocations=true;auto result=read(budget);track_reads=count_full_digests=count_allocations=false;
+    const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
+    if(!result.ok())std::cerr<<"bound selector error="<<static_cast<int>(result.error)<<" cp="<<static_cast<int>(result.checkpoint_error)<<" map="<<static_cast<int>(result.allocation_error)<<std::endl;
+    Check(result.ok()&&result.selection->selection_generation==2&&result.checkpoint_inventory.checkpoint->header.page_number==36&&result.predecessor.checkpoint->header.page_number==19&&result.allocation.state_counts[0]==1&&result.retained_image_bytes==7*sizes[p],"actual bound selector and newer allocation counts");
+    consumers(CheckpointRef(current),true);consumers(CheckpointRef(initial),false);empty(read(7*sizes[p]-1));
+    Check(!page::ReadNativeAllocationChainFromOpenDevice(device,{Id(1),Id(2),Profile(p)},budget).ok(),"new map was not read from the stale bootstrap allocation address");
+    auto leaf=LeafExample(p);const auto staged=db::StageNativeCatalogLeafFromOpenDevices(devices,CheckpointRef(current),inv.inventory.entries[0].identity,leaf,budget);
+    Check(staged.ok(),"actual leaf staging follows selected map");Bytes actual(sizes[p]);Check(device.ReadAt(21*sizes[p],actual.data(),actual.size()).ok()&&actual==LeafOracle(leaf),"selected-map staging persists exact leaf");
+    if(p==0&&role==1){
+      const auto write_count=stage_writes;
+      for(unsigned long n=0;n<=na;++n){allocation_budget=n;result=read(budget);allocation_budget=-1;if(!result.ok())empty(result);if(n==na)Check(result.ok(),"bound selection allocation sweep terminal success");}
+      for(unsigned n=1;n<=nr;++n){reads=0;read_fault=n;track_reads=true;result=read(budget);track_reads=false;Check(!read_fault,"bound selection read fault consumed");empty(result);}
+      for(unsigned n=1;n<=nf;++n){full_digest_fault=n;result=read(budget);Check(!full_digest_fault,"bound selection full digest fault consumed");empty(result);}
+      for(unsigned mode=1;mode<=5;++mode){hash_fault=mode;result=read(budget);Check(!hash_fault,"bound selection multipart fault consumed");empty(result);}
+      std::cout<<"bound selector allocations="<<na<<" reads="<<nr<<" digests="<<nf<<std::endl;
+      Check(stage_writes==write_count,"selection reads and their faults never write node pages");
+      const auto initial_map_ref=zero.roots[2];zero.roots[2].page_number=35;zero.roots[2].page_generation=104;persist();
+      Check(page::ReadNativeAllocationChainFromOpenDevice(device,{Id(1),Id(2),Profile(p)},budget).error==page::NativeAllocationError::counter_mismatch,"bootstrap-root read still enforces initial counter agreement");
+      Check(read(budget).ok(),"selected map counts do not inherit initial bootstrap counters");zero.roots[2]=initial_map_ref;persist();
+      second_zero.bootstrap.flags|=disk::FilespaceBootstrapFlag::payload_encrypted;second_zero.bootstrap.encryption_profile_uuid=Id(4);directory.records[1].bootstrap=second_zero.bootstrap;persist();
+      auto encrypted_leaf=LeafExample(q);encrypted_leaf.header.filespace_uuid=Id(7);encrypted_leaf.header.page_uuid=Id(203);
+      page::NativeAllocationMap secondary_map;secondary_map.header={sizes[q],3,Id(1),Id(7),Id(202),13,103,0,Profile(q)};
+      secondary_map.object_uuid=Id(179);secondary_map.map_generation=secondary_map.capacity_generation=1;secondary_map.total_pages=64;
+      secondary_map.creator_transaction_uuid=Id(98);secondary_map.creator_local_transaction_id=17;secondary_map.states.assign(64,S::quarantined);
+      for(unsigned n:{0u,13u,21u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(220+n);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;secondary_map.states[n]=S::allocated;
+        if(n==0){r.page_uuid=second_zero.page_uuid;r.page_generation=second_zero.page_generation;r.page_type=2;r.owner_uuid=Id(7);}
+        if(n==13){r.page_uuid=Id(202);r.page_generation=103;r.page_type=3;r.owner_uuid=Id(179);}
+        if(n==21){r.page_uuid=Id(203);r.page_generation=7;r.page_type=6;r.owner_uuid=Id(101);r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;secondary_map.states[n]=S::reserved;}
+        secondary_map.records.push_back(r);}
+      const auto secondary_map_bytes=AllocationOracle(secondary_map);
+      Check(second_device.WriteAt(13*sizes[q],secondary_map_bytes.data(),secondary_map_bytes.size()).ok()&&second_device.Sync().ok(),"persist valid encrypted-destination reservation metadata");
+      const auto encrypted=db::StageNativeCatalogLeafFromOpenDevices(devices,CheckpointRef(current),inv.inventory.entries[0].identity,encrypted_leaf,16*sizes[p]);
+      if(encrypted.error!=db::NativeCatalogLeafStageError::header_requires_authority)std::cerr<<"encrypted stage error="<<static_cast<int>(encrypted.error)<<" cp="<<static_cast<int>(encrypted.checkpoint_error)<<" dir="<<static_cast<int>(encrypted.directory_error)<<std::endl;
+      Check(!encrypted.ok()&&!encrypted.receipt&&encrypted.error==db::NativeCatalogLeafStageError::header_requires_authority,"actual encrypted filespace cannot be bypassed by clear leaf flags");
+      Bytes untouched(sizes[q]);Check(second_device.ReadAt(21*sizes[q],untouched.data(),untouched.size()).ok()&&std::all_of(untouched.begin(),untouched.end(),[](byte b){return b==0;}),"encrypted destination remains unwritten without owning crypto path");
+      second_zero.bootstrap.flags=0;second_zero.bootstrap.encryption_profile_uuid={};directory.records[1].bootstrap=second_zero.bootstrap;persist();
+      const auto clear_stage=db::StageNativeCatalogLeafFromOpenDevices(devices,CheckpointRef(current),inv.inventory.entries[0].identity,encrypted_leaf,16*sizes[p]);
+      if(!clear_stage.ok())std::cerr<<"clear secondary stage error="<<static_cast<int>(clear_stage.error)<<" map="<<static_cast<int>(clear_stage.allocation_error)<<" leaf="<<static_cast<int>(clear_stage.leaf_error)<<std::endl;
+      Check(clear_stage.ok(),"same valid reservation stages after removing destination encryption requirement");
+      Check(second_device.ReadAt(21*sizes[q],untouched.data(),untouched.size()).ok()&&untouched==LeafOracle(encrypted_leaf),"unencrypted secondary persists exact native leaf");
+      auto reverse=devices;std::reverse(reverse.begin(),reverse.end());std::atomic<unsigned> completed{0};
+      std::thread a([&]{for(unsigned i=0;i<4;++i)if(read(budget).ok())++completed;}),b([&]{for(unsigned i=0;i<4;++i)if(db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),reverse,Id(2),budget).ok())++completed;});
+      a.join();b.join();Check(completed==8,"actual opposite-order callers share binary-ordered guards");
+    }
+    for(unsigned n=0;n<5;++n){auto changed=selection;if(n==0)changed.bootstrap_uuid=Id(173);if(n==1)changed.checkpoint_sha256[0]^=1;if(n==2)changed.root_set_generation++;if(n==3)changed.timeline_uuid=Id(174);if(n==4)changed.previous_checkpoint_sha256[0]^=1;
+      auto other=changed;other.header.page_number=32;other.header.page_uuid=Id(156);put(31,SelectionOracle(changed));put(32,SelectionOracle(other));empty(read(budget));consumers(CheckpointRef(current),false);persist();}
+    const auto saved=map;
+    for(unsigned n=0;n<9;++n){map=saved;auto& r=map.records[2];if(n==0)map.states[31]=S::reserved;if(n==1)r.page_uuid=Id(175);if(n==2)r.page_generation++;if(n==3)r.owner_uuid=Id(175);if(n==4)r.page_type=6;if(n==5){r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;}
+      if(n==6)r.allocation_uuid=map.records[0].allocation_uuid;if(n==7){map.creator_transaction_uuid=Id(162);map.creator_local_transaction_id=13;}if(n==8){map.header.page_uuid=Id(155);map.records.back().page_uuid=Id(155);}
+      persist();empty(read(budget));}
+    map=saved;persist();auto bad=SelectionOracle(selection);bad.back()^=1;put(31,bad);empty(read(budget));consumers(CheckpointRef(initial),false);persist();
+    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"independent read-only selector reopen");Check(read(budget).ok(),"actual bound selector survives reopen");consumers(CheckpointRef(current),true);
+    Check(device.Close().ok()&&second_device.Close().ok(),"release node ownership before fresh selector process");
+    const auto child=::fork();Check(child>=0,"fork actual selector reader");
+    if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","bound-selector-probe","--bound-selector-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
+    int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable binds actual selector and retained targets");
+  }
+}
 int main(int argc,char** argv) {
+  if(argc==4&&std::string_view(argv[1])=="--bound-selector-probe"){
+    const std::filesystem::path root=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3]));if(p>=5)return 2;const auto q=(p+1)%5;
+    disk::FileDevice first,second;
+    if(!first.Open((root/"bound-selector").string(),disk::FileOpenMode::open_existing_read_only).ok()||
+      !second.Open((root/"bound-selector-secondary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 3;
+    const auto r=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},Id(2),8*sizes[p]);
+    return r.ok()&&r.selection->selection_generation==2&&r.checkpoint_inventory.checkpoint->header.page_number==36&&
+      r.predecessor.checkpoint->header.page_number==19&&r.allocation.state_counts[0]==1?0:4;
+  }
+  if(argc==2&&std::string_view(argv[1])=="--bound-selector-only"){
+    try{CanonicalBoundCheckpointSelection();std::cout<<"bound selector checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--catalog-version-stage-only"){
     try{CanonicalCatalogVersionStaging();std::cout<<"catalog version stage checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
