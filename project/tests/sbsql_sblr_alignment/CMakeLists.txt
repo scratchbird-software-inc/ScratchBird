@@ -411,6 +411,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "sbsql_sblr_alignment;native_catalog;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   add_test(NAME sbsql_sblr_alignment_bound_checkpoint_selection
     COMMAND sbsql_sblr_alignment_filespace_page_zero --bound-selector-only)
+  add_test(NAME sbsql_sblr_alignment_checkpoint_operation_lineage
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-owner-only)
+  set_tests_properties(sbsql_sblr_alignment_checkpoint_operation_lineage PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_checkpoint;binary_UUID;operation_lineage;not_SQL_E2E" TIMEOUT 120)
   set_tests_properties(sbsql_sblr_alignment_bound_checkpoint_selection PROPERTIES
     LABELS "sbsql_sblr_alignment;native_checkpoint_selection;actual_binding;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   add_test(NAME sbsql_sblr_alignment_native_catalog_version_staging

@@ -606,6 +606,8 @@ using Error=NativeCheckpointError;
 constexpr std::size_t family=128,entries=512,root_digest_at=336,digest_at=368;
 constexpr std::array<byte,8> magic{{'S','B','C','P','N','T','0','1'}};
 constexpr std::array<byte,8> domain{{'S','B','C','P','S','E','T','1'}};
+constexpr std::array<byte,8> operation_magic{{'S','B','C','P','N','T','0','2'}};
+constexpr std::array<byte,8> operation_domain{{'S','B','C','P','S','E','T','2'}};
 constexpr std::array<u32,16> types{{0,0x301,0x302,9,3,5,10,11,8,5,0x303,0x305,0x307,0x308,0x309,0x30b}};
 bool V7(const Uuid& id) { return scratchbird::core::uuid::IsEngineIdentityUuid(id); }
 bool Zero(const byte* b,std::size_t size) { return std::all_of(b,b+size,[](byte v){return v==0;}); }
@@ -629,9 +631,12 @@ bool ProfilesAgree(const disk::NativePageReference& a,const disk::NativePageRefe
 NativeCheckpointRootResult Fail(Error error) {return {error,std::nullopt,{}};}
 Error Validate(const NativeCheckpointRoot& r) {
   if(!disk::EncodeNativeCommonPageHeader(r.header).ok()||r.header.page_type!=0x300)return Error::invalid_header;
-  if(!V7(r.object_uuid)||!V7(r.timeline_uuid)||!V7(r.creator_transaction_uuid)||!r.checkpoint_generation
-    ||!r.root_set_generation||!r.selected_local_transaction_id||!r.creator_local_transaction_id
-    ||r.creator_local_transaction_id>r.selected_local_transaction_id
+  const bool transaction_owner=r.creator_operation_uuid.is_nil();
+  const bool valid_creator=transaction_owner?
+    V7(r.creator_transaction_uuid)&&r.creator_local_transaction_id&&r.creator_local_transaction_id<=r.selected_local_transaction_id:
+    V7(r.creator_operation_uuid)&&r.creator_transaction_uuid.is_nil()&&r.creator_local_transaction_id==0;
+  if(!V7(r.object_uuid)||!V7(r.timeline_uuid)||!valid_creator||!r.checkpoint_generation
+    ||!r.root_set_generation||!r.selected_local_transaction_id
     ||r.stable_local_transaction_id>r.local_durable_transaction_id
     ||r.local_durable_transaction_id>r.selected_local_transaction_id
     ||r.cluster_quorum_transaction_id>r.local_durable_transaction_id||(r.flags&~15ull))return Error::invalid_family;
@@ -661,6 +666,11 @@ Error Validate(const NativeCheckpointRoot& r) {
   return Error::none;
 }
 hash::HashDigestResult RootDigest(const std::vector<byte>& b,std::size_t used) {
+  if(LoadLittle16(b.data()+family+8)==2){
+    const hash::HashDigestSegment parts[]={{operation_domain.data(),operation_domain.size()},
+      {b.data()+family+32,96},{b.data()+family+280,16},{b.data()+entries,used-entries}};
+    return hash::ComputeSha256DigestParts(parts,4);
+  }
   const hash::HashDigestSegment parts[]={{domain.data(),domain.size()},{b.data()+family+32,96},{b.data()+entries,used-entries}};
   return hash::ComputeSha256DigestParts(parts,3);
 }
@@ -694,7 +704,9 @@ NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot
     const auto valid=Validate(r);if(valid!=Error::none)return Fail(valid);
     const auto common=disk::EncodeNativeCommonPageHeader(r.header);std::vector<byte> b(r.header.page_size_bytes,0);
     std::copy(common.bytes->begin(),common.bytes->end(),b.begin());auto* f=b.data()+family;
-    std::copy(magic.begin(),magic.end(),f);StoreLittle16(f+8,1);StoreLittle16(f+10,384);
+    const bool operation_owner=!r.creator_operation_uuid.is_nil();
+    const auto& image_magic=operation_owner?operation_magic:magic;
+    std::copy(image_magic.begin(),image_magic.end(),f);StoreLittle16(f+8,operation_owner?2:1);StoreLittle16(f+10,384);
     const auto used=entries+112*r.roots.size();StoreLittle32(f+12,static_cast<u32>(used));Put(f+16,r.object_uuid);
     StoreLittle64(f+32,r.checkpoint_generation);StoreLittle64(f+40,r.root_set_generation);
     StoreLittle64(f+48,r.selected_local_transaction_id);StoreLittle64(f+56,r.stable_local_transaction_id);
@@ -702,6 +714,7 @@ NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot
     Put(f+80,r.timeline_uuid);Put(f+96,r.creator_transaction_uuid);StoreLittle64(f+112,r.creator_local_transaction_id);StoreLittle64(f+120,r.flags);
     if(r.predecessor)PutRef(f+128,*r.predecessor);std::copy(r.predecessor_sha256.begin(),r.predecessor_sha256.end(),f+176);
     StoreLittle64(f+272,r.completed?1:0);
+    Put(f+280,r.creator_operation_uuid);
     for(std::size_t i=0;i<r.roots.size();++i){const auto& target=r.roots[i];auto* out=b.data()+entries+112*i;
       StoreLittle16(out,target.role);StoreLittle32(out+4,target.page_type);PutRef(out+8,target.page);Put(out+56,target.object_uuid);std::copy(target.sha256.begin(),target.sha256.end(),out+72);}
     const auto root_digest=RootDigest(b,used);if(!root_digest.ok())return Fail(Error::hash_failure);
@@ -721,9 +734,11 @@ NativeCheckpointRootResult DecodeNativeCheckpointRoot(const std::vector<scratchb
     const auto full=FullDigest(b);if(!full.ok())return Fail(Error::hash_failure);
     if(!std::equal(full.digest.begin(),full.digest.end(),b.begin()+digest_at))return Fail(Error::invalid_integrity);
     const auto* f=b.data()+family;const auto used=LoadLittle32(f+12);
-    if(!std::equal(magic.begin(),magic.end(),f)||LoadLittle16(f+8)!=1||LoadLittle16(f+10)!=384
+    const auto version=LoadLittle16(f+8);
+    if(!((version==1&&std::equal(magic.begin(),magic.end(),f))||
+         (version==2&&std::equal(operation_magic.begin(),operation_magic.end(),f)))||LoadLittle16(f+10)!=384
       ||used<entries+112*10||used>entries+112*15||(used-entries)%112||LoadLittle64(f+272)>1
-      ||!Zero(f+280,104)||!Zero(b.data()+used,b.size()-used))return Fail(Error::invalid_family);
+      ||!Zero(f+(version==1?280:296),version==1?104:88)||!Zero(b.data()+used,b.size()-used))return Fail(Error::invalid_family);
     const auto digest=RootDigest(b,used);if(!digest.ok())return Fail(Error::hash_failure);
     if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+root_digest_at))return Fail(Error::invalid_integrity);
     NativeCheckpointRoot r;r.header=*common.header;r.object_uuid=Get(f+16);
@@ -731,6 +746,7 @@ NativeCheckpointRootResult DecodeNativeCheckpointRoot(const std::vector<scratchb
     r.selected_local_transaction_id=LoadLittle64(f+48);r.stable_local_transaction_id=LoadLittle64(f+56);
     r.local_durable_transaction_id=LoadLittle64(f+64);r.cluster_quorum_transaction_id=LoadLittle64(f+72);
     r.timeline_uuid=Get(f+80);r.creator_transaction_uuid=Get(f+96);r.creator_local_transaction_id=LoadLittle64(f+112);r.flags=LoadLittle64(f+120);
+    if(version==2){r.creator_operation_uuid=Get(f+280);if(r.creator_operation_uuid.is_nil())return Fail(Error::invalid_family);}
     if(!Zero(f+128,48))r.predecessor=GetRef(f+128);std::copy_n(f+176,32,r.predecessor_sha256.begin());r.completed=LoadLittle64(f+272)==1;
     for(std::size_t at=entries;at<used;at+=112){const auto* in=b.data()+at;NativeCheckpointRootReference target;
       if(!Zero(in+2,2)||!Zero(in+104,8))return Fail(Error::invalid_roots);

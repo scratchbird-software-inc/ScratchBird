@@ -1470,8 +1470,10 @@ void CheckpointSeal(Bytes& b,bool root_set=true) {
   if(root_set) {
     std::size_t used=0;for(unsigned i=0;i<4;++i)used|=static_cast<std::size_t>(b[140+i])<<(8*i);
     Check(used>=512&&used<=b.size(),"independent checkpoint root extent before sealing");
-    const std::string_view domain="SBCPSET1";Bytes material(domain.begin(),domain.end());
+    const bool operation=b[136]==2&&b[137]==0;
+    const std::string_view domain=operation?"SBCPSET2":"SBCPSET1";Bytes material(domain.begin(),domain.end());
     material.insert(material.end(),b.begin()+160,b.begin()+256);
+    if(operation)material.insert(material.end(),b.begin()+408,b.begin()+424);
     material.insert(material.end(),b.begin()+512,b.begin()+used);
     Check(SHA256(material.data(),material.size(),digest.data())!=nullptr,"independent checkpoint root-set SHA256");
     std::copy(digest.begin(),digest.end(),b.begin()+336);
@@ -1482,19 +1484,76 @@ void CheckpointSeal(Bytes& b,bool root_set=true) {
 }
 Bytes CheckpointOracle(const db::NativeCheckpointRoot& r) {
   auto common=RootExample();common.header=r.header;auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
-  const std::string_view magic="SBCPNT01";std::copy(magic.begin(),magic.end(),b.begin()+128);
-  Number(b,136,2,1);Number(b,138,2,384);Number(b,140,4,512+112*r.roots.size());PutUuid(b,144,r.object_uuid);
+  const bool operation=!r.creator_operation_uuid.is_nil();
+  const std::string_view magic=operation?"SBCPNT02":"SBCPNT01";std::copy(magic.begin(),magic.end(),b.begin()+128);
+  Number(b,136,2,operation?2:1);Number(b,138,2,384);Number(b,140,4,512+112*r.roots.size());PutUuid(b,144,r.object_uuid);
   Number(b,160,8,r.checkpoint_generation);Number(b,168,8,r.root_set_generation);Number(b,176,8,r.selected_local_transaction_id);
   Number(b,184,8,r.stable_local_transaction_id);Number(b,192,8,r.local_durable_transaction_id);Number(b,200,8,r.cluster_quorum_transaction_id);
   PutUuid(b,208,r.timeline_uuid);PutUuid(b,224,r.creator_transaction_uuid);Number(b,240,8,r.creator_local_transaction_id);Number(b,248,8,r.flags);
   const auto ref=[&](std::size_t at,const disk::NativePageReference& p){PutUuid(b,at,p.filespace_uuid);Number(b,at+16,8,p.page_number);Number(b,at+24,8,p.page_generation);PutUuid(b,at+32,p.page_size_profile_uuid);};
   if(r.predecessor)ref(256,*r.predecessor);std::copy(r.predecessor_sha256.begin(),r.predecessor_sha256.end(),b.begin()+304);Number(b,400,8,r.completed?1:0);
+  PutUuid(b,408,r.creator_operation_uuid);
   for(std::size_t i=0;i<r.roots.size();++i){const auto& root=r.roots[i];const auto at=512+112*i;Number(b,at,2,root.role);Number(b,at+4,4,root.page_type);ref(at+8,root.page);PutUuid(b,at+56,root.object_uuid);std::copy(root.sha256.begin(),root.sha256.end(),b.begin()+at+72);}
   CheckpointSeal(b);return b;
 }
 void CheckpointReject(const db::NativeCheckpointRootResult& r) {Check(!r.ok()&&!r.root&&r.bytes.empty(),"checkpoint refuses without partial root");}
+void CanonicalOperationCheckpoints() {
+  using E=db::NativeCheckpointError;
+  for(unsigned profile=0;profile<5;++profile){
+    auto operation=CheckpointExample(profile);operation.creator_transaction_uuid={};
+    operation.creator_local_transaction_id=0;operation.creator_operation_uuid=Id(201);
+    for(bool completed:{false,true}){auto r=operation;r.completed=completed;
+      const auto expected=CheckpointOracle(r);
+      const auto encoded=db::EncodeNativeCheckpointRoot(r);
+      Check(encoded.ok()&&encoded.bytes==expected,"independent operation-owned checkpoint bytes");
+      const auto decoded=db::DecodeNativeCheckpointRoot(expected);
+      Check(decoded.ok()&&decoded.root->creator_transaction_uuid.is_nil()&&decoded.root->creator_local_transaction_id==0&&
+        decoded.root->creator_operation_uuid==r.creator_operation_uuid&&decoded.root->completed==completed&&
+        db::EncodeNativeCheckpointRoot(*decoded.root).bytes==expected,"operation owner round trip without completion upgrade");
+    }
+    const auto good=CheckpointOracle(operation);
+    Uuid nil{},v7=Id(202),v4=v7,bad_variant=v7;v4.bytes[6]=0x41;bad_variant.bytes[8]=0;
+    const std::array<Uuid,4> ids{nil,v7,v4,bad_variant};
+    for(unsigned tx=0;tx<4;++tx)for(unsigned op=0;op<4;++op)
+      for(u64 local:{u64{0},operation.selected_local_transaction_id,operation.selected_local_transaction_id+1,std::numeric_limits<u64>::max()}){
+        auto r=operation;r.creator_transaction_uuid=ids[tx];r.creator_operation_uuid=ids[op];r.creator_local_transaction_id=local;
+        const bool valid=(tx==1&&op==0&&local>0&&local<=r.selected_local_transaction_id)||(tx==0&&op==1&&local==0);
+        const auto encoded=db::EncodeNativeCheckpointRoot(r),decoded=db::DecodeNativeCheckpointRoot(CheckpointOracle(r));
+        Check(encoded.ok()==valid&&decoded.ok()==valid,"exclusive checkpoint creator truth table");
+        if(!valid){CheckpointReject(encoded);CheckpointReject(decoded);}
+      }
+    for(std::size_t at=424;at<512;++at){auto bad=good;bad[at]=1;CheckpointSeal(bad,false);CheckpointReject(db::DecodeNativeCheckpointRoot(bad));}
+    auto changed=good;PutUuid(changed,408,Id(203));CheckpointSeal(changed,false);
+    auto result=db::DecodeNativeCheckpointRoot(changed);CheckpointReject(result);
+    Check(result.error==E::invalid_integrity,"operation UUID is bound inside root-set digest, not just outer seal");
+    CheckpointSeal(changed);Check(db::DecodeNativeCheckpointRoot(changed).ok(),"fully resealed alternate owner is structural data only");
+    for(unsigned fault=0;fault<5;++fault){auto bad=good;
+      if(fault==0)bad[135]='1';if(fault==1)Number(bad,136,2,1);
+      if(fault==2){bad[135]='1';Number(bad,136,2,1);}
+      if(fault==3)Number(bad,136,2,3);
+      if(fault==4){bad=CheckpointOracle(CheckpointExample(profile));bad[135]='2';Number(bad,136,2,2);}
+      CheckpointSeal(bad);CheckpointReject(db::DecodeNativeCheckpointRoot(bad));
+    }
+    for(unsigned prior_owner=0;prior_owner<2;++prior_owner){auto prior=CheckpointExample(profile);
+      if(prior_owner)prior=operation;auto next=operation;next.checkpoint_generation=2;next.root_set_generation++;
+      next.header.page_number=20;next.header.page_generation++;next.header.page_uuid=Id(204);
+      next.predecessor=disk::NativePageReference{prior.header.filespace_uuid,prior.header.page_number,prior.header.page_generation,prior.header.page_size_profile_uuid};
+      const auto before=CheckpointOracle(prior);Check(SHA256(before.data(),before.size(),next.predecessor_sha256.data())!=nullptr,"independent mixed-owner predecessor hash");
+      Check(db::EncodeNativeCheckpointRoot(next).bytes==CheckpointOracle(next),"operation checkpoint retains versioned predecessor reference");
+    }
+    for(unsigned mode=0;mode<2;++mode){bool success=false;
+      for(long n=0;n<100;++n){allocation_budget=n;const auto r=mode?db::DecodeNativeCheckpointRoot(good):db::EncodeNativeCheckpointRoot(operation);allocation_budget=-1;
+        if(r.ok()){success=true;break;}CheckpointReject(r);Check(r.error==E::resource_exhausted,"operation checkpoint allocation fault");}
+      Check(success,"operation checkpoint allocation sweep terminates");
+      for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;
+        const auto r=mode?db::DecodeNativeCheckpointRoot(good):db::EncodeNativeCheckpointRoot(operation);
+        Check(hash_fault==0&&r.error==E::hash_failure,"operation checkpoint hash-provider fault");CheckpointReject(r);}
+    }
+  }
+}
 void CanonicalCheckpoints() {
   using E=db::NativeCheckpointError;
+  CanonicalOperationCheckpoints();
   for(unsigned profile=0;profile<5;++profile) {
     auto r=CheckpointExample(profile);const auto expected=CheckpointOracle(r);const auto encoded=db::EncodeNativeCheckpointRoot(r);
     Check(encoded.ok()&&encoded.bytes==expected,"independent checkpoint image all profiles");
@@ -1537,9 +1596,10 @@ void CanonicalCheckpoints() {
 }
 void CanonicalCheckpointFiles() {
   using E=db::NativeCheckpointError;Fixture fixture;
-  for(unsigned profile=0;profile<5;++profile) {
-    auto r=CheckpointExample(profile);const auto image=CheckpointOracle(r);auto z=Example(profile);const auto zero=Oracle(z);
-    disk::FileDevice device;const auto path=(fixture.root/("checkpoint-"+std::to_string(profile))).string();
+  for(unsigned profile=0;profile<5;++profile) for(unsigned owner=0;owner<2;++owner) {
+    auto r=CheckpointExample(profile);if(owner){r.creator_transaction_uuid={};r.creator_local_transaction_id=0;r.creator_operation_uuid=Id(201);}
+    const auto image=CheckpointOracle(r);auto z=Example(profile);const auto zero=Oracle(z);
+    disk::FileDevice device;const auto path=(fixture.root/("checkpoint-"+std::to_string(profile)+"-"+std::to_string(owner))).string();
     Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"own checkpoint filespace");const byte padding=0;
     Check(device.WriteAt(0,zero.data(),zero.size()).ok()&&device.WriteAt(z.total_pages*sizes[profile]-1,&padding,1).ok()
       &&device.WriteAt(19*sizes[profile],image.data(),image.size()).ok()&&device.Sync().ok(),"persist actual checkpoint image");
@@ -1606,6 +1666,10 @@ void CanonicalCheckpointInventoryPair() {
     else{empty(result);Check(result.error==E::creator_not_committed,"archive location is not checkpoint commit authority");}
   }
   auto mismatch=checkpoint;mismatch.creator_transaction_uuid=Id(199);persist(inventory,mismatch,18);result=read();empty(result);Check(result.error==E::inventory_mismatch,"binary checkpoint creator UUID mismatch");
+  auto operation=checkpoint;operation.creator_transaction_uuid={};operation.creator_local_transaction_id=0;operation.creator_operation_uuid=Id(201);
+  const auto operation_bytes=persist(inventory,operation,18);
+  Check(db::DecodeNativeCheckpointRoot(operation_bytes).ok(),"operation-owned checkpoint is structurally valid");
+  result=read();empty(result);Check(result.error==E::inventory_mismatch,"transaction-only reader cannot substitute inventory outcome for operation authority");
   auto global=inventory;global.inventory.entries[0].identity.scope=mga::TransactionScope::cluster_global;
   persist(global,checkpoint,18);result=read();empty(result);Check(result.error==E::inventory_mismatch,"global transaction cannot certify standalone checkpoint");
   mismatch=checkpoint;mismatch.selected_local_transaction_id=18;persist(inventory,mismatch,18);result=read();empty(result);Check(result.error==E::inventory_mismatch,"selected transaction boundary must bind inventory next counter");
@@ -3467,6 +3531,13 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     }
     for(unsigned n=0;n<5;++n){auto changed=selection;if(n==0)changed.bootstrap_uuid=Id(173);if(n==1)changed.checkpoint_sha256[0]^=1;if(n==2)changed.root_set_generation++;if(n==3)changed.timeline_uuid=Id(174);if(n==4)changed.previous_checkpoint_sha256[0]^=1;
       auto other=changed;other.header.page_number=32;other.header.page_uuid=Id(156);put(31,SelectionOracle(changed));put(32,SelectionOracle(other));empty(read(budget));consumers(CheckpointRef(current),false);persist();}
+    {const auto prior_current=current;
+      current.creator_transaction_uuid={};current.creator_local_transaction_id=0;current.creator_operation_uuid=Id(201);
+      Check(db::DecodeNativeCheckpointRoot(CheckpointOracle(current)).ok(),"operation checkpoint is structural data before actual authority lookup");
+      persist();const auto rejected=read(budget);empty(rejected);
+      Check(rejected.error==E::checkpoint_failure&&rejected.checkpoint_error==db::NativeCheckpointError::inventory_mismatch,
+        "selected checkpoint cannot invent operation authority from a complete marker");consumers(CheckpointRef(current),false);
+      current=prior_current;persist();}
     const auto saved=map;
     for(unsigned n=0;n<11;++n){map=saved;auto& r=*std::find_if(map.records.begin(),map.records.end(),[](const auto& r){return r.page_number==31;});if(n==0)map.states[31]=S::reserved;if(n==1)r.page_uuid=Id(175);if(n==2)r.page_generation++;if(n==3)r.owner_uuid=Id(175);if(n==4)r.page_type=6;if(n==5){r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;}
       if(n==6)r.allocation_uuid=map.records[0].allocation_uuid;if(n==7){map.creator_transaction_uuid=Id(162);map.creator_local_transaction_id=13;}if(n==8){map.header.page_uuid=Id(155);std::find_if(map.records.begin(),map.records.end(),[](const auto& r){return r.page_number==35;})->page_uuid=Id(155);}
@@ -3551,6 +3622,11 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
   }
 }
 int main(int argc,char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--checkpoint-owner-only"){
+    try {CanonicalCheckpoints();CanonicalCheckpointFiles();CanonicalCheckpointInventoryPair();
+      std::cout<<"checkpoint owner checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
+  }
   if(argc==2&&std::string_view(argv[1])=="--filespace-initialization-only"){
     try{CanonicalFilespaceInitialization();std::cout<<"filespace initialization checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}

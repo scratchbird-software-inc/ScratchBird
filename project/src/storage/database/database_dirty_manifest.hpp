@@ -62,6 +62,9 @@ struct NativeCheckpointRoot {
   std::array<scratchbird::core::platform::byte,32> predecessor_sha256{};
   bool completed = false;
   std::vector<NativeCheckpointRootReference> roots;
+  // Exclusive alternative to creator transaction UUID/local number. The
+  // image preserves lineage; a UUID is not durable operation authority.
+  scratchbird::core::platform::Uuid creator_operation_uuid;
 };
 enum class NativeCheckpointError {
   none, invalid_header, invalid_family, invalid_reference, invalid_roots,
