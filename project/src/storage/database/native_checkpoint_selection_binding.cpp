@@ -3,6 +3,7 @@
 #include "native_checkpoint_selection.hpp"
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
+#include "transaction_inventory_validation.hpp"
 #include "uuid.hpp"
 #include <algorithm>
 #include <mutex>
@@ -69,6 +70,11 @@ NativeBoundCheckpointSelection ReadNativeBoundCheckpointSelectionFromOpenDevices
       if(before.checkpoint_sha256!=selection.previous_checkpoint_sha256||old.checkpoint_generation>=cp.checkpoint_generation||old.root_set_generation>=cp.root_set_generation||
         old.timeline_uuid!=cp.timeline_uuid||before.inventory.next_local_transaction_id>pair.inventory.next_local_transaction_id||
         before.inventory.next_commit_sequence>pair.inventory.next_commit_sequence)return Fail(E::checkpoint_binding_mismatch);
+      // Individually valid, fully hashed snapshots can still contradict one
+      // another. Apply the same retained-history rule as inventory publication
+      // before this selection can become any downstream caller's authority.
+      if(*mga::ValidateLocalTransactionInventoryEvolution(before.inventory,pair.inventory))
+        return Fail(E::checkpoint_binding_mismatch);
       result.retained_image_bytes+=before.retained_image_bytes;
     }
     const auto target=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==4;});

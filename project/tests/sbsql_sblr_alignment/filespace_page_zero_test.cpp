@@ -3201,11 +3201,18 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     db::NativeCheckpointSelection selection;selection.header={sizes[p],0x30e,Id(1),Id(2),Id(155),31,1,0,Profile(p)};selection.object_uuid=Id(154);selection.bootstrap_uuid=zero.page_uuid;
     selection.publication_uuid=Id(153);selection.selection_generation=2;selection.checkpoint={Id(2),36,110,Profile(p)};selection.checkpoint_object_uuid=Id(49);selection.checkpoint_generation=2;selection.root_set_generation=9;selection.timeline_uuid=Id(97);
     selection.previous_selection_generation=1;selection.previous_checkpoint=disk::NativePageReference{Id(2),19,109,Profile(p)};selection.previous_checkpoint_object_uuid=Id(49);
-    std::optional<page::NativeTransactionInventoryPage> inventory_tail;
+    std::optional<page::NativeTransactionInventoryPage> inventory_tail, preceding_inventory;
+    std::array<u64,3> inventory_summary{13,13,13}, preceding_summary{13,13,13};
     const auto put=[&](u64 number,const Bytes& b){Check(device.WriteAt(number*sizes[p],b.data(),b.size()).ok()&&device.Sync().ok(),"persist independently authored selector graph");};
-    const auto persist=[&](){const auto ib=InventoryOracle(inv,13,13,13),mb=AllocationOracle(map),dbb=DirectoryOracle(directory),rb=RetentionOracle(retention),sb=SystemStateOracle(system);horizon.retention_sha256=WholeRootHash(rb);const auto hb=HorizonOracle(horizon);
+    const auto persist=[&](){const auto ib=InventoryOracle(inv,inventory_summary[0],inventory_summary[1],inventory_summary[2]),mb=AllocationOracle(map),dbb=DirectoryOracle(directory),rb=RetentionOracle(retention),sb=SystemStateOracle(system);horizon.retention_sha256=WholeRootHash(rb);const auto hb=HorizonOracle(horizon);
       for(auto* cp:{&initial,&current}){cp->roots[0]={1,0x301,InventoryRef(inv),inv.object_uuid,WholeRootHash(ib)};
         cp->roots[2]={3,9,{Id(2),15,105,Profile(p)},Id(45),WholeRootHash(dbb)};}
+      if(preceding_inventory){const auto& prior=*preceding_inventory;
+        const auto prior_bytes=InventoryOracle(prior,preceding_summary[0],preceding_summary[1],preceding_summary[2]);
+        initial.roots[0]={1,0x301,InventoryRef(prior),prior.object_uuid,WholeRootHash(prior_bytes)};
+        initial.selected_local_transaction_id=prior.inventory.next_local_transaction_id-1;
+        current.selected_local_transaction_id=inv.inventory.next_local_transaction_id-1;
+        put(prior.header.page_number,prior_bytes);}
       current.roots[3]={4,3,{Id(2),35,104,Profile(p)},Id(43),WholeRootHash(mb)};
       current.roots[2]={3,9,{Id(2),15,105,Profile(p)},Id(45),WholeRootHash(dbb)};
       current.roots[7]={8,8,{Id(2),11,101,Profile(p)},Id(41),WholeRootHash(sb)};
@@ -3360,6 +3367,82 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       std::thread a([&]{for(unsigned i=0;i<4;++i)if(read(budget).ok())++completed;}),b([&]{for(unsigned i=0;i<4;++i)if(db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),reverse,Id(2),budget).ok())++completed;});
       a.join();b.join();Check(completed==8,"actual opposite-order callers share binary-ordered guards");
     }
+    if(role==1){
+      // Independently framed, separately allocated old/current inventories.
+      // Reseal the complete graph: checksum or page-structure rejection cannot
+      // stand in for validating the relationship between admitted snapshots.
+      const auto saved_inv=inv;const auto saved_map=map;const auto saved_initial=initial,saved_current=current;
+      inv.inventory.entries.front().evidence_record_written=true;
+      inv.inventory.entries.back().commit_sequence=2;inv.inventory.next_commit_sequence=3;
+      auto terminal=inv.inventory.entries.front();terminal.identity.local_id=mga::MakeLocalTransactionId(15);
+      terminal.identity.transaction_uuid.value=Id(206);terminal.state=mga::TransactionState::rolled_back;
+      terminal.final_unix_epoch_millis=200;inv.inventory.entries.insert(inv.inventory.entries.begin()+1,terminal);
+      const auto base=inv;
+      preceding_inventory=base;preceding_inventory->header.page_number=22;preceding_inventory->header.page_uuid=Id(207);
+      map.states[22]=S::allocated;map.records.push_back({22,Id(208),Id(207),inv.object_uuid,Id(98),17,inv.header.page_generation,0,0x301});
+      std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
+      const auto old_base=*preceding_inventory;
+      const auto reset_history=[&](){inv=base;preceding_inventory=old_base;inventory_summary=preceding_summary={13,13,13};};
+      const auto assert_history=[&](bool valid,unsigned history_case=99){persist();
+        Check(db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),devices,CheckpointRef(initial),budget).ok(),"predecessor independently admits");
+        const auto candidate=db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),devices,CheckpointRef(current),budget);
+        if(!candidate.ok())std::cerr<<"history fixture valid="<<valid<<" case="<<history_case<<" profile="<<p<<" error="<<static_cast<unsigned>(candidate.error)<<" inventory="<<static_cast<unsigned>(candidate.inventory_error)<<'\n';
+        Check(candidate.ok(),"successor independently admits");
+        const auto writes=stage_writes;const auto observed=read(budget);
+        Check(stage_writes==writes,"inventory evolution admission is read-only");
+        if(valid)Check(observed.ok(),"legal selected inventory evolution");
+        else {empty(observed);Check(observed.error==E::checkpoint_binding_mismatch,"resealed conflicting inventory history refused at selection boundary");consumers(CheckpointRef(current),false);}
+      };
+      assert_history(true);
+      for(unsigned fault=0;fault<23;++fault){reset_history();auto& active=inv.inventory.entries[0];auto& ended=inv.inventory.entries[1];auto& committed_entry=inv.inventory.entries[2];
+        if(fault==0)active.begin_unix_epoch_millis++;
+        if(fault==1)active.begin_visible_through_local_transaction_id++;
+        if(fault==2)active.begin_visible_through_commit_sequence=1;
+        if(fault==3)active.evidence_record_required=false;
+        if(fault==4)active.evidence_record_written=false;
+        if(fault==5)ended.identity.transaction_uuid.value=Id(209);
+        if(fault==6)ended.identity.scope=mga::TransactionScope::cluster_global;
+        if(fault==7)committed_entry.final_unix_epoch_millis++;
+        if(fault==8){committed_entry.commit_sequence=3;inv.inventory.next_commit_sequence=4;}
+        if(fault==9)ended.state=mga::TransactionState::failed_terminal;
+        if(fault==10){ended.state=mga::TransactionState::active;ended.final_unix_epoch_millis=0;}
+        if(fault==11)ended.final_unix_epoch_millis++;
+        if(fault==12){inv.inventory.entries.erase(inv.inventory.entries.begin());inventory_summary={18,18,18};}
+        if(fault==13){active.state=mga::TransactionState::created;inventory_summary={13,18,18};}
+        if(fault==14){auto entry=active;entry.identity.local_id=mga::MakeLocalTransactionId(14);entry.identity.transaction_uuid.value=Id(210);inv.inventory.entries.insert(inv.inventory.entries.begin()+1,entry);}
+        if(fault==15){auto entry=ended;entry.identity.local_id=mga::MakeLocalTransactionId(18);inv.inventory.entries.erase(inv.inventory.entries.begin()+1);inv.inventory.entries.push_back(entry);inv.inventory.next_local_transaction_id=19;}
+        if(fault==16)ended.evidence_record_written=false;
+        if(fault==17){auto& old=preceding_inventory->inventory.entries[1];old.state=mga::TransactionState::archived;old.archived_from_state=mga::TransactionState::rolled_back;}
+        if(fault==18){preceding_inventory->inventory.entries[1].state=mga::TransactionState::failed_terminal;inv.inventory.entries.erase(inv.inventory.entries.begin()+1);}
+        if(fault==19){active.state=mga::TransactionState::committed;active.commit_sequence=1;inventory_summary={18,18,18};}
+        if(fault==20){auto entry=active;entry.identity.local_id=mga::MakeLocalTransactionId(18);entry.identity.transaction_uuid.value=Id(211);entry.state=mga::TransactionState::committed;entry.commit_sequence=1;inv.inventory.entries.push_back(entry);inv.inventory.next_local_transaction_id=19;}
+        if(fault==21){preceding_inventory->inventory.entries[2].evidence_record_written=true;committed_entry.evidence_record_written=false;}
+        if(fault==22){auto& old=preceding_inventory->inventory.entries[1];old.state=ended.state=mga::TransactionState::archived;old.archived_from_state=mga::TransactionState::rolled_back;ended.archived_from_state=mga::TransactionState::failed_terminal;}
+        assert_history(false,fault);
+        if(fault==0){
+          Check(device.Close().ok()&&second_device.Close().ok(),"release conflicting history before independent reopen");
+          const auto child=::fork();Check(child>=0,"fork conflicting history probe");
+          if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","bound-selector-probe","--bound-selector-probe",fixture.root.c_str(),profile.c_str(),"invalid-evolution",nullptr);::_exit(125);}
+          int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process rejects resealed conflicting inventory history");
+          Check(device.Open(path,disk::FileOpenMode::open_existing).ok()&&second_device.Open((fixture.root/"bound-selector-secondary").string(),disk::FileOpenMode::open_existing).ok(),"reopen owned history fixture");
+        }
+      }
+      for(unsigned progress=0;progress<10;++progress){reset_history();auto& active=inv.inventory.entries[0];auto& ended=inv.inventory.entries[1];
+        if(progress==0)active.state=mga::TransactionState::preparing;
+        if(progress==1)active.state=mga::TransactionState::prepared;
+        if(progress==2){active.state=mga::TransactionState::rolling_back;inventory_summary={18,18,18};}
+        if(progress==3){active.state=mga::TransactionState::committed;active.commit_sequence=3;inv.inventory.next_commit_sequence=4;inventory_summary={18,18,18};}
+        if(progress==4){ended.state=mga::TransactionState::archived;ended.archived_from_state=mga::TransactionState::rolled_back;}
+        if(progress==5)inv.inventory.entries.erase(inv.inventory.entries.begin()+1);
+        if(progress==6)preceding_inventory->inventory.entries.front().rollback_only=true;
+        if(progress==7){preceding_inventory->inventory.entries.front().state=mga::TransactionState::created;preceding_summary={13,18,18};}
+        if(progress==8){auto entry=active;entry.identity.local_id=mga::MakeLocalTransactionId(18);entry.identity.transaction_uuid.value=Id(211);entry.state=mga::TransactionState::created;inv.inventory.entries.push_back(entry);inv.inventory.next_local_transaction_id=19;}
+        if(progress==9){active.state=mga::TransactionState::archived;active.archived_from_state=mga::TransactionState::committed;active.commit_sequence=3;inv.inventory.next_commit_sequence=4;inventory_summary={18,18,18};}
+        assert_history(true,progress);
+      }
+      // Consistency positives above do not authorize transitions or pruning.
+      preceding_inventory.reset();inv=saved_inv;map=saved_map;initial=saved_initial;current=saved_current;inventory_summary={13,13,13};persist();
+    }
     for(unsigned n=0;n<5;++n){auto changed=selection;if(n==0)changed.bootstrap_uuid=Id(173);if(n==1)changed.checkpoint_sha256[0]^=1;if(n==2)changed.root_set_generation++;if(n==3)changed.timeline_uuid=Id(174);if(n==4)changed.previous_checkpoint_sha256[0]^=1;
       auto other=changed;other.header.page_number=32;other.header.page_uuid=Id(156);put(31,SelectionOracle(changed));put(32,SelectionOracle(other));empty(read(budget));consumers(CheckpointRef(current),false);persist();}
     const auto saved=map;
@@ -3484,12 +3567,16 @@ int main(int argc,char** argv) {
     try{CanonicalCatalogRootStaging();std::cout<<"catalog root stage checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
   }
-  if(argc==4&&std::string_view(argv[1])=="--bound-selector-probe"){
+  if((argc==4||argc==5)&&std::string_view(argv[1])=="--bound-selector-probe"){
     const std::filesystem::path root=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3]));if(p>=5)return 2;const auto q=(p+1)%5;
     disk::FileDevice first,second;
     if(!first.Open((root/"bound-selector").string(),disk::FileOpenMode::open_existing_read_only).ok()||
       !second.Open((root/"bound-selector-secondary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 3;
     const auto r=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},Id(2),8*sizes[p]);
+    if(argc==5)return std::string_view(argv[4])=="invalid-evolution"&&!r.ok()&&
+      r.error==db::NativeCheckpointSelectionError::checkpoint_binding_mismatch&&!r.selection&&
+      r.slots[0].empty()&&r.slots[1].empty()&&!r.checkpoint_inventory.checkpoint&&!r.predecessor.checkpoint&&
+      r.allocation.pages.empty()&&!r.retained_image_bytes?0:5;
     return r.ok()&&r.selection->selection_generation==2&&r.checkpoint_inventory.checkpoint->header.page_number==36&&
       r.predecessor.checkpoint->header.page_number==19&&r.allocation.state_counts[0]==1?0:4;
   }
