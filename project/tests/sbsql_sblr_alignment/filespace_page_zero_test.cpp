@@ -8,6 +8,7 @@
 #include "transaction_inventory_page.hpp"
 #include "database_dirty_manifest.hpp"
 #include "disk_device.hpp"
+#include "uuid.hpp"
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <algorithm>
@@ -34,6 +35,7 @@ unsigned hash_fault=0,reads=0,read_fault=0;
 unsigned full_digest_fault=0;
 unsigned stage_write_fault=0,stage_sync_fault=0,stage_writes=0,stage_syncs=0;
 unsigned stage_corrupt_read=0;
+const scratchbird::core::platform::TypedUuid* revoke_on_stage_sync=nullptr;
 unsigned observed_full_digests=0;
 bool count_full_digests=false;
 std::size_t observed_read_bytes=0;
@@ -89,7 +91,9 @@ extern "C" ssize_t __wrap_pwrite(int fd,const void* b,size_t n,off_t offset) {
 }
 extern "C" int __wrap_fsync(int fd) {
   ++stage_syncs;if(stage_sync_fault){stage_sync_fault=0;errno=EIO;return -1;}
-  return __real_fsync(fd);
+  const auto result=__real_fsync(fd);
+  if(result==0&&revoke_on_stage_sync){const auto id=*revoke_on_stage_sync;revoke_on_stage_sync=nullptr;scratchbird::transaction::mga::RevokePublishedSnapshotVector(id);}
+  return result;
 }
 extern "C" ssize_t __wrap_pread(int fd,void* b,size_t n,off_t offset) {
   if(pause_next_tree_read.exchange(false)) {tree_read_paused=true;while(!resume_tree_read.load())std::this_thread::yield();}
@@ -2413,6 +2417,164 @@ struct CatalogTestPin {
   }
   ~CatalogTestPin(){mga::RevokePublishedSnapshotVector(published.descriptor.snapshot_uuid);mga::ReleasePublishedSnapshotVector(published.descriptor.snapshot_uuid);}
 };
+void CanonicalCatalogVersionStaging(){using E=db::NativeCatalogVersionStageError;using S=page::NativeAllocationState;
+  for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=5;++role){const unsigned q=(p+1)%5;const bool primary=role<=4;
+    Fixture fixture;disk::FileDevice first,second;auto z1=Example(p,primary?role:1),z2=Example(q,5);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
+    z1.free_pages=z2.free_pages=z1.preallocated_pages=z2.preallocated_pages=0;
+    const auto path1=(fixture.root/"stage-primary").string(),path2=(fixture.root/"stage-secondary").string();
+    Check(first.Open(path1,disk::FileOpenMode::create_new).ok()&&second.Open(path2,disk::FileOpenMode::create_new).ok(),"own catalog staging filespaces");
+    const byte pad=0;Check(first.WriteAt(64*sizes[p]-1,&pad,1).ok()&&second.WriteAt(64*sizes[q]-1,&pad,1).ok(),"actual catalog staging capacity");
+    auto& target=primary?first:second;const auto profile=primary?p:q;const auto fs=primary?Id(2):Id(7);const auto& zero=primary?z1:z2;
+    auto inv=InventoryExample(p);inv.inventory.next_local_transaction_id=18;inv.inventory.next_commit_sequence=2;
+    auto& active=inv.inventory.entries[0];active.identity.local_id=mga::MakeLocalTransactionId(13);active.identity.transaction_uuid.value=Id(162);active.state=mga::TransactionState::active;active.commit_sequence=0;
+    auto committed=active;committed.identity.local_id=mga::MakeLocalTransactionId(17);committed.identity.transaction_uuid.value=Id(98);committed.state=mga::TransactionState::committed;committed.commit_sequence=1;inv.inventory.entries.push_back(committed);
+    const auto owner=inv.inventory.entries.front().identity;auto cp=CheckpointExample(p);auto leaf=LeafExample(profile);leaf.header.filespace_uuid=fs;
+    auto source_leaf=LeafExample(p);source_leaf.header.page_number=source_leaf.body.page_number=30;source_leaf.header.page_uuid=Id(151);
+    auto catalog_root=RootExample(p);catalog_root.creator_transaction_uuid=Id(98);
+    catalog_root.roots[0].page.page_number=30;
+    leaf.body.rows.clear();
+    page::NativeAllocationMap map;map.header={sizes[profile],3,Id(1),fs,Id(70),13,103,0,Profile(profile)};map.object_uuid=Id(43);map.map_generation=5;map.capacity_generation=6;map.total_pages=64;map.creator_transaction_uuid=Id(98);map.creator_local_transaction_id=17;map.states.assign(64,S::quarantined);
+    for(unsigned n:{0u,13u,21u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(120+n);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;map.states[n]=S::allocated;
+      if(n==0){r.page_uuid=zero.page_uuid;r.page_generation=zero.page_generation;r.page_type=primary?1:2;r.owner_uuid=fs;}
+      if(n==13){r.page_uuid=map.header.page_uuid;r.page_generation=103;r.page_type=3;r.owner_uuid=map.object_uuid;}
+      if(n==21){r.page_uuid=leaf.header.page_uuid;r.page_generation=7;r.page_type=6;r.owner_uuid=leaf.body.relation_uuid.value;r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;map.states[n]=S::reserved;}
+      map.records.push_back(r);}
+    page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=5;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
+    for(const auto* z:{&z1,&z2})directory.records.push_back({z->bootstrap,Id(z==&z1?190:191),z->page_uuid,z->page_generation,z->root_set_generation,z->total_pages,0,{}});
+    const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& bytes){const auto io=file.WriteAt(number*size,bytes.data(),bytes.size());Check(io.ok()&&io.bytes_transferred==bytes.size()&&file.Sync().ok(),"persist catalog staging fixture bytes");};
+    const auto persist=[&](){const auto ib=InventoryOracle(inv,13,13,13),ab=AllocationOracle(map),dbb=DirectoryOracle(directory),cb=RootOracle(catalog_root);
+      cp.selected_local_transaction_id=inv.inventory.next_local_transaction_id-1;
+      cp.roots[4].page={Id(2),12,102,Profile(p)};cp.roots[4].object_uuid=Id(42);cp.roots[4].sha256=WholeRootHash(cb);
+      cp.roots[8]=cp.roots[4];cp.roots[8].role=9;
+      put(first,12,sizes[p],cb);put(first,30,sizes[p],LeafOracle(source_leaf));
+      cp.roots[0].page=InventoryRef(inv);cp.roots[0].object_uuid=inv.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);
+      cp.roots[2].page={Id(2),15,105,Profile(p)};cp.roots[2].object_uuid=Id(45);cp.roots[2].sha256=WholeRootHash(dbb);
+      if(primary){cp.roots[3].page={fs,13,103,Profile(profile)};cp.roots[3].object_uuid=Id(43);cp.roots[3].sha256=WholeRootHash(ab);}
+      put(first,0,sizes[p],Oracle(z1));put(second,0,sizes[q],Oracle(z2));put(first,14,sizes[p],ib);put(first,15,sizes[p],dbb);put(target,13,sizes[profile],ab);put(first,19,sizes[p],CheckpointOracle(cp));};
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+
+    const u64 budget=std::max(4*sizes[p],3*sizes[p]+3*sizes[profile]);const Bytes blank(sizes[profile],0);
+    const auto reset=[&](){put(target,21,sizes[profile],blank);};
+    const auto actual=[&](auto& file,u64 number,unsigned size){Bytes b(size);const auto io=file.ReadAt(number*size,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size(),"read actual version staging bytes");return b;};
+    persist();CatalogTestPin snapshot(inv.inventory,13);
+    auto decoded=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(decoded.ok(),"decode source metadata fixture");
+    db::NativeCatalogVersionMutation request;request.relation_uuid=leaf.body.relation_uuid;request.page_number=21;request.transaction=owner;request.metadata=decoded.record;
+    request.metadata.record.header.row_uuid.value=Id(210);request.metadata.record.header.object_uuid.value=Id(211);
+    const auto create=request;const auto source_bytes=actual(first,30,sizes[p]);const auto root_bytes=actual(first,12,sizes[p]);const auto zero_bytes=actual(first,0,sizes[p]);
+    const auto stage=[&](u64 limit){return db::StageNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},snapshot.pin,request,leaf,limit);};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.row&&!r.stage.receipt,"failed version staging returns no receipt");};
+    const auto unchanged=[&](){Check(actual(first,30,sizes[p])==source_bytes&&actual(first,12,sizes[p])==root_bytes&&actual(first,0,sizes[p])==zero_bytes,"staging preserves predecessor and current-root selection");};
+    const auto verify=[&](const auto& result,u64 sequence,const auto& predecessor,bool retired){
+      if(!result.ok())std::cerr<<"version stage error="<<static_cast<int>(result.error)<<" source="<<static_cast<int>(result.source_error)<<" physical="<<static_cast<int>(result.stage.error)<<std::endl;
+      Check(result.ok(),"actual pinned native catalog version staging");
+      const auto bytes=actual(target,21,sizes[profile]);const auto stored=db::DecodeNativeCatalogLeaf(bytes);
+      Check(stored.ok()&&stored.page->body.rows.size()==1,"read actual staged successor");
+      const auto& row=stored.page->body.rows[0];const auto& metadata=stored.metadata.at(row.version_uuid);
+      Check(row.version_uuid==result.row->version_uuid&&scratchbird::core::uuid::IsEngineIdentityUuid(row.version_uuid)&&row.version_uuid!=Id(170)&&row.version_uuid!=Id(171)&&
+        row.row_uuid.value==request.metadata.record.header.row_uuid.value&&row.row_version==sequence&&row.previous_version_uuid==predecessor&&row.previous_row_version==(sequence==1?0:1)&&
+        row.storage_generation==7&&row.stable_slot_id==1&&!row.deleted&&metadata.record.header.deleted==retired&&metadata.definition_version==request.metadata.definition_version&&
+        row.transaction_uuid.value==Id(162)&&row.local_transaction_id==13&&metadata.record.header.object_uuid.value==request.metadata.record.header.object_uuid.value&&
+        result.row->filespace_uuid.value==fs&&result.row->page_number==21&&result.row->storage_generation==7&&result.stage.receipt->sha256==WholeRootHash(bytes),"generated identity and actual successor residency/metadata");
+      Check(LeafOracle(*stored.page)==bytes,"independent successor image packing");unchanged();
+    };
+    reset();auto result=stage(budget);verify(result,1,platform::Uuid{},false);
+    reset();request.metadata=decoded.record;request.expected_version_uuid=Id(170);request.metadata.definition_version=2;
+    result=stage(budget);verify(result,2,Id(170),false);
+    reset();request.metadata.record.header.deleted=true;request.metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;request.metadata.status=catalog::CatalogObjectStatus::retired;request.metadata.retired_transaction_uuid=owner.transaction_uuid;
+    result=stage(budget);verify(result,2,Id(170),true);
+    for(unsigned bad=0;bad<7;++bad){reset();request=create;
+      if(bad==0)request.metadata.record.header.object_uuid.value=Id(180);
+      if(bad==1)request.metadata.record.header.row_uuid.value=Id(160);
+      if(bad==2)request.expected_version_uuid=Id(170);
+      if(bad==3)request.metadata.definition_version=2;
+      if(bad==4)request.metadata.creator_local_transaction_id=17;
+      if(bad==5)request.relation_uuid.value=Id(212);
+      if(bad==6)request.page_number=22;
+      empty(stage(budget));Check(actual(target,21,sizes[profile])==blank,"invalid replacement/identity cannot write");unchanged();
+    }
+    request=create;reset();empty(stage(1));Check(actual(target,21,sizes[profile])==blank,"insufficient actual-image budget refuses before write");
+    request=create;reset();
+    catalog::CatalogNameEntry name;name.name_entry_uuid=request.metadata.record.header.object_uuid;name.name_vector_uuid={platform::UuidKind::object,Id(246)};name.object_uuid={platform::UuidKind::object,Id(245)};
+    name.object_class="schema";name.scope_uuid={platform::UuidKind::object,Id(164)};name.parent_schema_uuid=request.metadata.owning_schema_uuid;name.language_tag="en";
+    name.dialect_profile_uuid={platform::UuidKind::object,Id(247)};name.identifier_profile_uuid={platform::UuidKind::object,Id(248)};name.raw_name_text=name.display_name="actual staged name";
+    name.normalized_lookup_key={0,0xfe,1};name.exact_lookup_key={0xff,0};name.catalog_generation_id=1;name.created_transaction_uuid=owner.transaction_uuid;
+    name.security_policy_uuid={platform::UuidKind::object,Id(249)};name.resource_epoch=name.name_resolution_epoch=1;name.lifecycle_state=catalog::CatalogNameLifecycle::active;
+    request.metadata.record.header.kind=catalog::CatalogRecordKind::localized_name;request.metadata.record.header.parent_uuid=name.name_vector_uuid;request.metadata.default_name_uuid=name.name_entry_uuid;
+    request.metadata.name_vector_uuid=name.name_vector_uuid;request.metadata.security_policy_uuid=name.security_policy_uuid;request.metadata.resource_epoch=1;request.metadata.object_subtype="name_entry";request.metadata.record.payload.clear();request.name_payload=name;
+    const auto name_create=request;
+    result=stage(budget);verify(result,1,platform::Uuid{},false);
+    const auto name_image=db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile]));const auto& name_row=name_image.page->body.rows[0];
+    catalog::CatalogNameVersionBinding resident;resident.database_uuid={platform::UuidKind::database,Id(1)};resident.filespace_uuid={platform::UuidKind::filespace,fs};resident.row_uuid=request.metadata.record.header.row_uuid;
+    resident.version_uuid={platform::UuidKind::row,result.row->version_uuid};resident.catalog_object_uuid=name.name_entry_uuid;resident.creating_transaction_uuid=owner.transaction_uuid;
+    resident.page_id=21;resident.slot_id=1;resident.storage_generation=7;resident.version_sequence=1;resident.creating_transaction_number=13;resident.catalog_generation=1;
+    const auto& name_payload=name_image.metadata.at(name_row.version_uuid).record.payload;
+    const auto materialized=catalog::DecodeCatalogNameEnvelope(Bytes(name_payload.begin(),name_payload.end()),resident);
+    Check(materialized.ok()&&std::get<catalog::CatalogNameEntry>(materialized.record->payload).raw_name_text=="actual staged name","typed name envelope bound to actual newly staged residency");
+    request=create;
+    if(p==0&&role==1){
+      reset();reads=observed_full_digests=observed_allocations=0;track_reads=count_full_digests=count_allocations=true;
+      result=stage(budget);track_reads=count_full_digests=count_allocations=false;Check(result.ok(),"measure successful complete version staging");
+      const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
+      for(unsigned long n=0;n<=na;++n){reset();allocation_budget=n;result=stage(budget);allocation_budget=-1;
+        if(!result.ok())empty(result);else Check(db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile])).ok(),"allocation recovery preserves actual canonical successor");
+        unchanged();if(n==na)Check(result.ok(),"version allocation sweep reaches success");}
+      for(unsigned n=1;n<=nr;++n){reset();reads=0;read_fault=n;track_reads=true;result=stage(budget);track_reads=false;Check(!read_fault,"version actual read fault consumed");empty(result);unchanged();}
+      for(unsigned n=1;n<=nf;++n){reset();full_digest_fault=n;result=stage(budget);Check(!full_digest_fault,"version full digest fault consumed");empty(result);unchanged();}
+      for(unsigned mode=1;mode<=5;++mode){reset();hash_fault=mode;result=stage(budget);Check(!hash_fault,"version multipart digest failure consumed");empty(result);unchanged();}
+      reset();reads=0;stage_corrupt_read=nr;track_reads=true;result=stage(budget);track_reads=false;Check(!stage_corrupt_read,"version actual readback corruption consumed");empty(result);unchanged();
+      std::cout<<"catalog version allocations="<<na<<" reads="<<nr<<" full digests="<<nf<<std::endl;
+      for(unsigned mode=1;mode<=2;++mode){reset();stage_write_fault=mode;empty(stage(budget));Check(!stage_write_fault,"version write failure actually exercised");unchanged();}
+      reset();stage_sync_fault=1;empty(stage(budget));Check(!stage_sync_fault,"version sync failure actually exercised");unchanged();
+      reset();inv.inventory.entries[0].rollback_only=true;persist();empty(stage(budget));Check(actual(target,21,sizes[profile])==blank,"rollback-only writer cannot stage version");inv.inventory.entries[0].rollback_only=false;persist();
+      const auto saved_source=source_leaf;const auto saved_inventory=inv;
+      const auto rewrite=[](auto& row,const auto& edit){auto metadata=catalog::DecodeCatalogMetadataVersion(row.cells[0].value.payload);Check(metadata.ok(),"decode conflict fixture metadata");edit(metadata.record);
+        const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"encode conflict fixture metadata");row.cells[0].value.payload=encoded.bytes;};
+      auto other=committed;other.identity.local_id=mga::MakeLocalTransactionId(18);other.identity.transaction_uuid.value=Id(213);other.state=mga::TransactionState::active;other.commit_sequence=0;
+      inv.inventory.entries.push_back(other);inv.inventory.next_local_transaction_id=19;
+      auto& predecessor=source_leaf.body.rows[0];predecessor.transaction_uuid=committed.identity.transaction_uuid;predecessor.local_transaction_id=17;
+      rewrite(predecessor,[&](auto& m){m.creator_transaction_uuid=committed.identity.transaction_uuid;m.creator_local_transaction_id=17;});
+      auto successor=predecessor;successor.version_uuid=Id(214);successor.row_version=2;successor.previous_version_uuid=Id(170);successor.previous_row_version=1;successor.stable_slot_id=successor.internal_row_ordinal=3;
+      successor.transaction_uuid=other.identity.transaction_uuid;successor.local_transaction_id=18;
+      rewrite(successor,[&](auto& m){m.creator_transaction_uuid=other.identity.transaction_uuid;m.creator_local_transaction_id=18;m.definition_version=2;});source_leaf.body.rows.push_back(successor);
+      request=create;request.metadata=decoded.record;request.metadata.definition_version=2;request.expected_version_uuid=Id(170);
+      for(unsigned committed_later=0;committed_later<2;++committed_later){
+        if(committed_later){inv.inventory.entries.back().state=mga::TransactionState::committed;inv.inventory.entries.back().commit_sequence=2;inv.inventory.next_commit_sequence=3;}
+        persist();reset();const auto retained=actual(first,30,sizes[p]);result=stage(budget);empty(result);
+        if(result.error!=(committed_later?E::stale_version:E::row_reserved))std::cerr<<"conflict committed="<<committed_later<<" error="<<static_cast<int>(result.error)<<" source="<<static_cast<int>(result.source_error)<<std::endl;
+        Check(result.error==(committed_later?E::stale_version:E::row_reserved)&&actual(target,21,sizes[profile])==blank&&actual(first,30,sizes[p])==retained,"hidden committed successor or unresolved writer prevents stale replacement");
+      }
+      for(const auto outcome:{mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal})for(bool archived:{false,true}){
+        source_leaf=saved_source;inv=saved_inventory;other.state=archived?mga::TransactionState::archived:outcome;other.archived_from_state=archived?outcome:mga::TransactionState::none;other.commit_sequence=0;
+        inv.inventory.entries.push_back(other);inv.inventory.next_local_transaction_id=19;
+        auto& released=source_leaf.body.rows[0];released.transaction_uuid=other.identity.transaction_uuid;released.local_transaction_id=18;
+        rewrite(released,[&](auto& m){m.creator_transaction_uuid=other.identity.transaction_uuid;m.creator_local_transaction_id=18;});
+        persist();reset();const auto retained=actual(first,30,sizes[p]);request=create;request.metadata.record.header.object_uuid.value=Id(180);result=stage(budget);
+        Check(result.ok()&&result.row->row_version==1&&result.row->previous_version_uuid.is_nil()&&actual(first,30,sizes[p])==retained,"proven failed original creator releases object reservation without overwriting history");
+        reset();request.metadata.record.header.row_uuid.value=Id(160);result=stage(budget);empty(result);Check(result.error==E::stale_version&&actual(target,21,sizes[profile])==blank,"released object still requires a fresh logical row identity");
+      }
+      source_leaf=saved_source;inv=saved_inventory;source_leaf.body.rows[0].row_version=std::numeric_limits<u64>::max();persist();reset();
+      request=create;request.metadata=decoded.record;request.metadata.definition_version=2;request.expected_version_uuid=Id(170);
+      result=stage(budget);empty(result);Check(result.error==E::version_overflow&&actual(target,21,sizes[profile])==blank,"retained sequence overflow never wraps");
+      source_leaf=saved_source;auto source_name_binding=resident;source_name_binding.filespace_uuid.value=Id(2);source_name_binding.version_uuid.value=Id(170);source_name_binding.page_id=30;source_name_binding.storage_generation=1;
+      const auto source_name=catalog::EncodeCatalogNameEnvelope({source_name_binding,*name_create.name_payload});Check(source_name.ok(),"source typed name residency fixture");
+      source_leaf.body.rows[0].row_uuid=name_create.metadata.record.header.row_uuid;
+      rewrite(source_leaf.body.rows[0],[&](auto& m){m=name_create.metadata;m.record.payload.assign(source_name.bytes.begin(),source_name.bytes.end());});
+      persist();reset();const auto retained_name=actual(first,30,sizes[p]);request=name_create;request.expected_version_uuid=Id(170);request.metadata.definition_version=2;
+      auto& replacement_name=std::get<catalog::CatalogNameEntry>(*request.name_payload);replacement_name.raw_name_text=replacement_name.display_name="replacement staged name";replacement_name.normalized_lookup_key={0,0xfe,2};
+      result=stage(budget);Check(result.ok()&&result.row->row_version==2&&result.row->previous_version_uuid==Id(170)&&actual(first,30,sizes[p])==retained_name,"name replacement retains original identity and predecessor bytes");
+      const auto replaced=db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile]));Check(replaced.ok(),"actual replacement name page");
+      auto replaced_binding=resident;replaced_binding.version_uuid.value=result.row->version_uuid;replaced_binding.version_sequence=2;
+      const auto& replaced_payload=replaced.metadata.at(result.row->version_uuid).record.payload;const auto replaced_name=catalog::DecodeCatalogNameEnvelope(Bytes(replaced_payload.begin(),replaced_payload.end()),replaced_binding);
+      Check(replaced_name.ok()&&std::get<catalog::CatalogNameEntry>(replaced_name.record->payload).raw_name_text=="replacement staged name","replacement name uses new physical residency");
+      reset();replacement_name.created_transaction_uuid=committed.identity.transaction_uuid;result=stage(budget);empty(result);Check(result.error==E::stale_version&&actual(target,21,sizes[profile])==blank,"name replacement cannot rewrite original creator");
+      source_leaf=saved_source;inv=saved_inventory;persist();unchanged();
+    }
+    request=create;reset();revoke_on_stage_sync=&snapshot.published.descriptor.snapshot_uuid;result=stage(budget);
+    Check(!revoke_on_stage_sync&&result.error==E::snapshot_failure,"snapshot revoked during actual stage sync");empty(result);
+    Check(db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile])).ok(),"post-write snapshot refusal does not misrepresent durable reserved bytes");unchanged();
+    reset();empty(stage(budget));Check(actual(target,21,sizes[profile])==blank,"revoked snapshot cannot stage");unchanged();
+  }
+}
 void CheckpointCatalogRelations() {
   using E=db::NativeCheckpointCatalogRelationError;
   const auto empty=[](const auto& r){Check(!r.ok()&&!r.checkpoint.checkpoint_inventory.checkpoint&&r.checkpoint.catalogs.empty()
@@ -2673,6 +2835,9 @@ void CheckpointCatalogRelations() {
   }
 }
 int main(int argc,char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--catalog-version-stage-only"){
+    try{CanonicalCatalogVersionStaging();std::cout<<"catalog version stage checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--catalog-stage-only"){
     try{CanonicalCatalogLeafStaging();std::cout<<"catalog stage checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}

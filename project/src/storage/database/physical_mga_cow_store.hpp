@@ -371,6 +371,29 @@ struct PhysicalMgaCowMutationBatchResult {
   }
 };
 
+enum class NativeCatalogVersionStageError {
+  none, invalid_request, invalid_metadata, source_failure, snapshot_failure,
+  writer_not_writable, object_reserved, row_reserved, stale_version,
+  version_overflow, identity_failure, stage_failure, resource_exhausted, io_failure
+};
+struct NativeCatalogVersionStageResult {
+  NativeCatalogVersionStageError error=NativeCatalogVersionStageError::invalid_request;
+  NativePinnedCatalogReadError source_error=NativePinnedCatalogReadError::none;
+  NativeCatalogLeafStageResult stage;
+  std::optional<PhysicalMgaCowRowReceipt> row;
+  DiagnosticRecord diagnostic;
+  bool ok() const noexcept {return error==NativeCatalogVersionStageError::none&&stage.ok()&&row.has_value();}
+};
+// Actual pinned native source -> generated MGA successor -> reserved type6
+// write/readback. Not a multi-page batch, catalog-root publication or SQL result.
+NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
+    u16 catalog_selector,u16 relation_role,const NativeCatalogRelationBinding&,
+    const scratchbird::transaction::mga::PublishedSnapshotPin&,
+    const NativeCatalogVersionMutation&,const NativeCatalogLeafPage& empty_destination,
+    u64 maximum_retained_image_bytes) noexcept;
+
 struct PhysicalMgaCowFinalizeResult {
   Status status;
   scratchbird::transaction::mga::LocalTransactionInventory inventory;
