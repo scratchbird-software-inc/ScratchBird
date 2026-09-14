@@ -1188,4 +1188,59 @@ NativeCheckpointSystemStateResult VerifyCurrentNativeCheckpointSystemStateFromOp
   }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}catch(const std::length_error&){return fail(Error::resource_exhausted);}catch(...){return fail(Error::io_failure);}
 }
 
+NativeCheckpointHorizonResult VerifyCurrentNativeCheckpointHorizonFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,u64 budget) noexcept {
+  using namespace native_checkpoint;namespace mga=scratchbird::transaction::mga;namespace page=scratchbird::storage::page;
+  const auto fail=[](Error e){NativeCheckpointHorizonResult r;r.error=e;return r;};
+  const auto ref=[](const auto& r){return disk::NativePageReference{r.filespace_uuid,r.page_number,r.page_generation,r.page_size_profile_uuid};};
+  try{
+    if(!V7(database_uuid)||devices.empty()||!budget)return fail(Error::invalid_reference);
+    auto locked=LockFilespaces(devices);if(locked.error!=Error::none)return fail(locked.error);
+    auto pair=VerifyNativeCheckpointInventoryFromOpenDevices(database_uuid,locked.ordered,checkpoint,budget);
+    if(!pair.ok()){auto r=fail(pair.error);r.checkpoints.error=pair.error;r.checkpoints.inventory_error=pair.inventory_error;return r;}
+    const auto primary=std::lower_bound(locked.ordered.begin(),locked.ordered.end(),checkpoint.filespace_uuid,[](const auto& f,const auto& id){return f.filespace_uuid<id;});
+    if(primary==locked.ordered.end()||primary->filespace_uuid!=checkpoint.filespace_uuid||primary->page_size_profile_uuid!=checkpoint.page_size_profile_uuid)return fail(Error::invalid_filespace);
+    const disk::FilespaceBootstrapBinding binding{database_uuid,primary->filespace_uuid,primary->page_size_profile_uuid};
+    const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(*primary->device,&binding);
+    if(!zero.ok())return fail(zero.error==disk::FilespacePageZeroError::resource_exhausted?Error::resource_exhausted:
+      zero.error==disk::FilespacePageZeroError::hash_provider_failure?Error::hash_failure:zero.error==disk::FilespacePageZeroError::io_failure?Error::io_failure:Error::invalid_filespace);
+    const auto current=std::find_if(zero.record->roots.begin(),zero.record->roots.end(),[](const auto& r){return r.kind==9;});
+    if(current==zero.record->roots.end()||current->page_type!=checkpoint.page_type||current->object_uuid!=checkpoint.object_uuid||
+        ref(*current)!=ref(checkpoint)||zero.record->root_set_generation!=pair.checkpoint->root_set_generation)return fail(Error::binding_mismatch);
+    const auto target=std::find_if(pair.checkpoint->roots.begin(),pair.checkpoint->roots.end(),[](const auto& r){return r.role==2;});
+    const auto retention=std::find_if(pair.checkpoint->roots.begin(),pair.checkpoint->roots.end(),[](const auto& r){return r.role==10;});
+    if(target==pair.checkpoint->roots.end()||retention==pair.checkpoint->roots.end())return fail(Error::invalid_roots);
+    auto horizons=page::ReadNativeHorizonRootFromOpenDevices(database_uuid,locked.ordered,target->object_uuid,target->page,budget-pair.retained_image_bytes);
+    if(!horizons.ok()){auto r=fail(Error::horizon_failure);r.horizon_error=horizons.error;return r;}
+    const auto digest=hash::ComputeSha256Digest(horizons.pages.front().bytes);if(!digest.ok())return fail(Error::hash_failure);
+    if(digest.digest!=target->sha256)return fail(Error::invalid_integrity);
+    const auto& h=*horizons.pages.front().root;const bool cluster=pair.checkpoint->flags&4;
+    if(bool(h.flags&1)!=cluster||bool(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::cluster_authority_required)!=cluster)return fail(Error::binding_mismatch);
+    const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(h.creator_local_transaction_id));
+    if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=h.creator_transaction_uuid||(!cluster&&creator.entry.identity.scope!=mga::TransactionScope::local_node))return fail(Error::horizon_creator_mismatch);
+    if(!mga::HasCommittedInventoryOutcome(creator.entry))return fail(Error::horizon_creator_not_committed);
+    if(h.retention!=retention->page||h.retention_object_uuid!=retention->object_uuid||h.retention_sha256!=retention->sha256)return fail(Error::horizon_retention_mismatch);
+    std::optional<disk::FilespaceRootReference> oldest;u64 oldest_generation=pair.checkpoint->checkpoint_generation;
+    for(const auto& image:horizons.pages)for(const auto& record:image.root->records){
+      if(record.local_boundary>pair.inventory.next_local_transaction_id)return fail(Error::horizon_boundary_mismatch);
+      if(!record.checkpoint)continue;
+      if(record.checkpoint_object_uuid!=pair.checkpoint->object_uuid||record.checkpoint_generation>pair.checkpoint->checkpoint_generation)return fail(Error::horizon_observation_mismatch);
+      if(record.checkpoint_generation<oldest_generation){const auto& r=*record.checkpoint;oldest_generation=record.checkpoint_generation;oldest=disk::FilespaceRootReference{9,0x300,r.filespace_uuid,r.page_number,r.page_generation,r.page_size_profile_uuid,record.checkpoint_object_uuid};}
+    }
+    NativeCheckpointHistoryResult history;
+    if(oldest){pair=NativeCheckpointInventoryResult{};history=VerifyNativeCheckpointHistoryFromOpenDevices(database_uuid,locked.ordered,checkpoint,*oldest,budget-horizons.retained_image_bytes);
+      if(!history.ok()){auto r=fail(history.error);r.checkpoints.error=history.error;r.checkpoints.inventory_error=history.inventory_error;return r;}}
+    else{history.error=Error::none;history.retained_image_bytes=pair.retained_image_bytes;history.checkpoints.push_back(std::move(pair));}
+    std::map<u64,const NativeCheckpointRoot*> observed;std::set<Uuid> checkpoint_ids;
+    for(const auto& value:history.checkpoints){observed.emplace(value.checkpoint->checkpoint_generation,&*value.checkpoint);checkpoint_ids.insert(value.checkpoint->header.page_uuid);}
+    for(const auto& image:horizons.pages){if(checkpoint_ids.contains(image.root->header.page_uuid))return fail(Error::binding_mismatch);
+      for(const auto& record:image.root->records)if(record.checkpoint){const auto at=observed.find(record.checkpoint_generation);
+        if(at==observed.end()||at->second->object_uuid!=record.checkpoint_object_uuid||ref(at->second->header)!=*record.checkpoint)return fail(Error::horizon_observation_mismatch);}}
+    NativeCheckpointHorizonResult result;result.error=Error::none;result.retained_image_bytes=history.retained_image_bytes+horizons.retained_image_bytes;
+    result.checkpoints=std::move(history);result.horizons=std::move(horizons);return result;
+  }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}catch(const std::length_error&){return fail(Error::resource_exhausted);}catch(...){return fail(Error::io_failure);}
+}
+
 }  // namespace scratchbird::storage::database

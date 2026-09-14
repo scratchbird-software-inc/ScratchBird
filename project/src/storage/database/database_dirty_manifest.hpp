@@ -18,6 +18,7 @@
 #include "native_allocation_map.hpp"
 #include "native_filespace_directory.hpp"
 #include "native_system_state.hpp"
+#include "native_horizon_root.hpp"
 
 #include <array>
 #include <optional>
@@ -71,7 +72,9 @@ enum class NativeCheckpointError {
   allocation_record_creator_mismatch, policy_relation_mismatch, directory_failure,
   directory_creator_mismatch, directory_creator_not_committed, system_state_failure,
   system_state_creator_mismatch, system_state_creator_not_committed,
-  system_state_clean_mismatch, system_state_clean_not_committed, system_state_observation_mismatch
+  system_state_clean_mismatch, system_state_clean_not_committed, system_state_observation_mismatch,
+  horizon_failure, horizon_creator_mismatch, horizon_creator_not_committed,
+  horizon_retention_mismatch, horizon_boundary_mismatch, horizon_observation_mismatch
 };
 struct NativeCheckpointRootResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_family;
@@ -211,6 +214,22 @@ struct NativeCheckpointSystemStateResult {
 // Actual current root/creator/observation binding, NOT proof of shutdown,
 // quiescence, operation completion, whole-root selection or a publication base.
 NativeCheckpointSystemStateResult VerifyCurrentNativeCheckpointSystemStateFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u64 maximum_retained_image_bytes) noexcept;
+
+struct NativeCheckpointHorizonResult {
+  NativeCheckpointError error=NativeCheckpointError::invalid_reference;
+  scratchbird::storage::page::NativeHorizonError horizon_error=scratchbird::storage::page::NativeHorizonError::none;
+  NativeCheckpointHistoryResult checkpoints;
+  scratchbird::storage::page::NativeHorizonChainResult horizons;
+  u64 retained_image_bytes=0;
+  bool ok() const noexcept {return error==NativeCheckpointError::none&&checkpoints.ok()&&horizons.ok();}
+};
+// Current selection, creator, retention declaration and actual checkpoint
+// observations. Not actual horizon calculation, retention or cleanup authority.
+NativeCheckpointHorizonResult VerifyCurrentNativeCheckpointHorizonFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
     const scratchbird::storage::disk::FilespaceRootReference& checkpoint,

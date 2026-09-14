@@ -2016,6 +2016,66 @@ void CanonicalCheckpointDirectory() {
   }
 }
 
+Bytes HorizonOracle(const page::NativeHorizonRoot& v){auto common=RootExample();common.header=v.header;auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
+  const auto ref=[&](std::size_t at,const disk::NativePageReference& r){PutUuid(b,at,r.filespace_uuid);Number(b,at+16,8,r.page_number);Number(b,at+24,8,r.page_generation);PutUuid(b,at+32,r.page_size_profile_uuid);};
+  std::copy_n("SBHOR001",8,b.begin()+128);Number(b,136,2,1);Number(b,138,2,384);Number(b,140,4,512+160*v.records.size());PutUuid(b,144,v.object_uuid);Number(b,160,8,v.epoch);PutUuid(b,168,v.creator_transaction_uuid);Number(b,184,8,v.creator_local_transaction_id);
+  Number(b,192,8,v.flags);Number(b,200,8,v.total_records);Number(b,208,8,v.first_record);Number(b,216,4,v.records.size());ref(224,v.retention);PutUuid(b,272,v.retention_object_uuid);std::copy(v.retention_sha256.begin(),v.retention_sha256.end(),b.begin()+288);
+  if(v.next)ref(320,*v.next);std::copy(v.next_sha256.begin(),v.next_sha256.end(),b.begin()+368);Number(b,400,8,v.minimum_blocker);
+  for(std::size_t i=0;i<v.records.size();++i){const auto at=512+i*160;const auto& r=v.records[i];Number(b,at,2,static_cast<disk::u16>(r.kind));Number(b,at+2,2,static_cast<disk::u16>(r.owner_kind));Number(b,at+4,4,r.flags);Number(b,at+8,8,r.local_boundary);
+    PutUuid(b,at+16,r.owner_uuid);PutUuid(b,at+32,r.pin_uuid);PutUuid(b,at+48,r.checkpoint_object_uuid);Number(b,at+64,8,r.checkpoint_generation);PutUuid(b,at+72,r.diagnostic_uuid);if(r.checkpoint)ref(at+88,*r.checkpoint);}
+  const auto digest=WholeRootHash(b);std::copy(digest.begin(),digest.end(),b.begin()+408);return b;
+}
+void CanonicalCheckpointHorizons(){using E=db::NativeCheckpointError;
+  for(unsigned p=0;p<5;++p){const unsigned q=(p+1)%5;Fixture fixture;disk::FileDevice first,second;const auto path1=(fixture.root/"horizon-primary").string(),path2=(fixture.root/"horizon-shadow").string();
+    auto z1=Example(p),z2=Example(q,2);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& r:z2.roots)r.filespace_uuid=Id(7);
+    Check(first.Open(path1,disk::FileOpenMode::create_new).ok()&&second.Open(path2,disk::FileOpenMode::create_new).ok(),"own actual checkpoint horizon devices");const byte pad=0;
+    Check(first.WriteAt(z1.total_pages*sizes[p]-1,&pad,1).ok()&&second.WriteAt(z2.total_pages*sizes[q]-1,&pad,1).ok(),"actual checkpoint horizon capacities");
+    auto inv=InventoryExample(p);inv.inventory.next_local_transaction_id=18;inv.inventory.next_commit_sequence=3;
+    auto& original=inv.inventory.entries.front();original.identity.local_id=mga::MakeLocalTransactionId(11);original.identity.transaction_uuid.value=Id(91);original.state=mga::TransactionState::committed;original.commit_sequence=1;
+    auto active=original;active.identity.local_id=mga::MakeLocalTransactionId(16);active.identity.transaction_uuid.value=Id(99);active.state=mga::TransactionState::active;active.commit_sequence=0;
+    auto writer=original;writer.identity.local_id=mga::MakeLocalTransactionId(17);writer.identity.transaction_uuid.value=Id(98);writer.commit_sequence=2;inv.inventory.entries.push_back(active);inv.inventory.entries.push_back(writer);
+    const auto checkpoint=CheckpointExample(p);page::NativeHorizonRoot head;head.header={sizes[p],0x302,Id(1),Id(2),Id(80),24,124,0,Profile(p)};head.object_uuid=Id(112);head.epoch=3;head.creator_transaction_uuid=Id(91);head.creator_local_transaction_id=11;head.total_records=2;
+    head.retention=checkpoint.roots[9].page;head.retention_object_uuid=checkpoint.roots[9].object_uuid;head.retention_sha256=checkpoint.roots[9].sha256;head.next=disk::NativePageReference{Id(7),25,125,Profile(q)};
+    page::NativeHorizonRecord record;record.local_boundary=16;record.owner_uuid=Id(92);record.checkpoint_object_uuid=Id(49);record.checkpoint_generation=1;record.checkpoint=disk::NativePageReference{Id(2),19,109,Profile(p)};head.records.push_back(record);
+    auto tail=head;tail.header={sizes[q],0x302,Id(1),Id(7),Id(81),25,125,0,Profile(q)};tail.first_record=1;tail.next.reset();tail.records[0].kind=page::NativeHorizonKind::oat;tail.records[0].local_boundary=18;
+    const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& bytes){const auto io=file.WriteAt(number*size,bytes.data(),bytes.size());Check(io.ok()&&io.bytes_transferred==bytes.size()&&file.Sync().ok(),"persist independently authored checkpoint horizon image");};
+    const auto persist=[&](const auto& inventory,const auto& primary,auto a,const auto& b,bool older=false,bool stale=false){auto cp=checkpoint;const auto ib=InventoryOracle(inventory,16,16,16),tb=HorizonOracle(b);a.next_sha256=WholeRootHash(tb);const auto hb=HorizonOracle(a);
+      cp.roots[0].page=InventoryRef(inventory);cp.roots[0].object_uuid=inventory.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);cp.roots[1].page={Id(2),24,124,Profile(p)};cp.roots[1].object_uuid=Id(112);cp.roots[1].sha256=WholeRootHash(hb);if(stale)cp.roots[1].sha256[0]^=1;
+      if(older){auto old=cp;old.header.page_number=20;old.header.page_generation=110;old.header.page_uuid=Id(95);old.root_set_generation=7;const auto bytes=CheckpointOracle(old);put(first,20,sizes[p],bytes);
+        auto unrelated=old;unrelated.header.page_number=21;unrelated.header.page_generation=111;unrelated.header.page_uuid=Id(94);put(first,21,sizes[p],CheckpointOracle(unrelated));cp.checkpoint_generation=2;cp.predecessor=disk::NativePageReference{Id(2),20,110,Profile(p)};cp.predecessor_sha256=WholeRootHash(bytes);}
+      put(first,0,sizes[p],Oracle(primary));put(second,0,sizes[q],Oracle(z2));put(first,14,sizes[p],ib);put(first,24,sizes[p],hb);put(second,25,sizes[q],tb);put(first,19,sizes[p],CheckpointOracle(cp));};
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};const u64 limit=3*sizes[p]+sizes[q],history_limit=5*sizes[p]+sizes[q];
+    const auto read=[&](u64 budget){return db::VerifyCurrentNativeCheckpointHorizonFromOpenDevices(Id(1),devices,CheckpointRef(checkpoint),budget);};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.retained_image_bytes&&r.checkpoints.checkpoints.empty()&&!r.checkpoints.retained_image_bytes&&r.horizons.pages.empty()&&!r.horizons.retained_image_bytes,"checkpoint horizon failure returns no prefix");};
+    const auto hash_failure=[&](const auto& r){return r.error==E::hash_failure||(r.error==E::inventory_failure&&r.checkpoints.inventory_error==page::NativeInventoryError::hash_failure)||(r.error==E::horizon_failure&&r.horizon_error==page::NativeHorizonError::hash_failure);};
+    persist(inv,z1,head,tail);reads=observed_full_digests=0;observed_allocations=0;track_reads=count_allocations=count_full_digests=true;auto result=read(limit);track_reads=count_allocations=count_full_digests=false;const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
+    auto expected=head;expected.next_sha256=WholeRootHash(HorizonOracle(tail));Check(result.ok()&&result.retained_image_bytes==limit&&result.horizons.pages.size()==2&&result.checkpoints.checkpoints.size()==1&&result.horizons.pages[0].bytes==HorizonOracle(expected)&&result.horizons.pages[1].bytes==HorizonOracle(tail)&&!result.checkpoints.checkpoints[0].inventory.publication_base,"current committed actual horizon binding without CAS or cleanup grant");
+    result=read(limit-1);empty(result);for(unsigned n=1;n<=nr;++n){reads=0;read_fault=n;track_reads=true;result=read(limit);track_reads=false;read_fault=0;empty(result);}
+    for(unsigned n=1;n<=nf;++n){full_digest_fault=n;result=read(limit);Check(!full_digest_fault&&hash_failure(result),"current horizon full hash failure consumed and propagated");empty(result);}full_digest_fault=nf+1;result=read(limit);Check(full_digest_fault==1&&result.ok(),"horizon full hash terminal success");full_digest_fault=0;
+    for(unsigned n=1;n<=5;++n){hash_fault=n;result=read(limit);Check(!hash_fault,"horizon multipart hash failure consumed");empty(result);}
+    if(p==0){for(unsigned long n=0;n<=na;++n){allocation_budget=n;result=read(limit);allocation_budget=-1;if(result.ok())Check(result.retained_image_bytes==limit&&result.horizons.pages.size()==2&&result.checkpoints.checkpoints.size()==1,"complete current horizon allocation recovery");else empty(result);if(n==na)Check(result.ok(),"current horizon allocation terminal success");}std::cout<<"checkpoint horizon allocation sites="<<na<<" full digests="<<nf<<std::endl;}
+    auto zero=z1;zero.root_set_generation++;persist(inv,zero,head,tail);result=read(limit);empty(result);Check(result.error==E::binding_mismatch,"horizon checkpoint must be current");
+    persist(inv,z1,head,tail,false,true);result=read(limit);empty(result);Check(result.error==E::invalid_integrity,"complete horizon head digest matches actual checkpoint");
+    for(unsigned n=0;n<7;++n){auto a=head,b=tail;if(n==0)a.creator_transaction_uuid=b.creator_transaction_uuid=Id(200);if(n==1){a.creator_transaction_uuid=b.creator_transaction_uuid=Id(99);a.creator_local_transaction_id=b.creator_local_transaction_id=16;}
+      if(n==2)a.retention_object_uuid=b.retention_object_uuid=Id(200);if(n==3){a.retention.page_number=b.retention.page_number=41;}if(n==4){a.retention_sha256[0]^=1;b.retention_sha256[0]^=1;}
+      if(n==5)a.records[0].local_boundary=19;if(n==6)a.flags=b.flags=1;persist(inv,z1,a,b);result=read(limit);empty(result);Check(result.error==(n==0?E::horizon_creator_mismatch:n==1?E::horizon_creator_not_committed:n<=4?E::horizon_retention_mismatch:n==5?E::horizon_boundary_mismatch:E::binding_mismatch),"specific horizon authority failure cause");}
+    for(const auto origin:{mga::TransactionState::committed,mga::TransactionState::rolled_back,mga::TransactionState::failed_terminal}){auto inventory=inv;auto& e=inventory.inventory.entries[0];e.state=mga::TransactionState::archived;e.archived_from_state=origin;if(origin!=mga::TransactionState::committed)e.commit_sequence=0;persist(inventory,z1,head,tail);result=read(limit);if(origin==mga::TransactionState::committed)Check(result.ok(),"archived committed horizon creator");else{empty(result);Check(result.error==E::horizon_creator_not_committed,"archived noncommit cannot certify horizon");}}
+    auto inventory=inv;inventory.inventory.entries[0].identity.scope=mga::TransactionScope::cluster_global;persist(inventory,z1,head,tail);result=read(limit);empty(result);Check(result.error==E::horizon_creator_mismatch,"global creator cannot certify standalone horizon");
+    auto a=head,b=tail;a.records[0].checkpoint_generation=2;persist(inv,z1,a,b);result=read(limit);empty(result);Check(result.error==E::horizon_failure||result.error==E::horizon_observation_mismatch,"future checkpoint observation rejected");
+    a=head;a.records[0].checkpoint->page_number=21;a.records[0].checkpoint->page_generation=111;persist(inv,z1,a,tail);result=read(limit);empty(result);Check(result.error==E::horizon_observation_mismatch,"alternate current-generation checkpoint reference rejected");
+    a=head;a.header.page_uuid=checkpoint.header.page_uuid;persist(inv,z1,a,tail);result=read(limit);empty(result);Check(result.error==E::binding_mismatch,"known checkpoint and horizon page UUIDs cannot alias");
+    a=head;b=tail;for(auto* v:{&a,&b}){v->records[0].checkpoint.reset();v->records[0].checkpoint_object_uuid={};v->records[0].checkpoint_generation=0;}persist(inv,z1,a,b);Check(read(limit).ok(),"absent observations retain current pair only");
+    a=head;b=tail;a.records[0].checkpoint_generation=2;b.records[0].checkpoint=disk::NativePageReference{Id(2),20,110,Profile(p)};persist(inv,z1,a,b,true);
+    reads=observed_full_digests=0;observed_allocations=0;track_reads=count_allocations=count_full_digests=true;result=read(history_limit);track_reads=count_allocations=count_full_digests=false;const auto hn=reads,hf=observed_full_digests;const auto ha=observed_allocations;
+    Check(result.ok()&&result.horizons.pages.size()==2&&result.checkpoints.checkpoints.size()==2&&result.retained_image_bytes==history_limit&&result.checkpoints.checkpoints.front().checkpoint->checkpoint_generation==2&&result.checkpoints.checkpoints.back().checkpoint->checkpoint_generation==1,"one actual history resolves mixed current and historical observations");
+    result=read(history_limit-1);empty(result);for(unsigned n=1;n<=hn;++n){reads=0;read_fault=n;track_reads=true;result=read(history_limit);track_reads=false;read_fault=0;empty(result);}
+    for(unsigned n=1;n<=hf;++n){full_digest_fault=n;result=read(history_limit);Check(!full_digest_fault&&hash_failure(result),"historical horizon full hash failure cause");empty(result);}full_digest_fault=hf+1;result=read(history_limit);Check(full_digest_fault==1&&result.ok(),"historical horizon full hash terminal success");full_digest_fault=0;
+    if(p==0){for(unsigned long n=0;n<=ha;++n){allocation_budget=n;result=read(history_limit);allocation_budget=-1;if(result.ok())Check(result.horizons.pages.size()==2&&result.checkpoints.checkpoints.size()==2&&result.retained_image_bytes==history_limit,"complete horizon history allocation recovery");else empty(result);if(n==ha)Check(result.ok(),"horizon history allocation terminal success");}std::cout<<"checkpoint horizon history allocation sites="<<ha<<" full digests="<<hf<<std::endl;}
+    b.records[0].checkpoint=disk::NativePageReference{Id(2),21,111,Profile(p)};persist(inv,z1,a,b,true);result=read(history_limit);empty(result);Check(result.error==E::history_mismatch,"independently valid unrelated older checkpoint is not ancestry");
+    persist(inv,z1,head,tail);Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"actual read-only checkpoint horizon reopen");Check(read(limit).ok()&&first.read_only()&&second.read_only(),"current horizon binding after actual reopen");
+  }
+}
+
 Bytes SystemStateOracle(const db::NativeSystemState& s) {
   auto common=RootExample();common.header=s.header;auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
   const auto ref=[&](std::size_t at,const disk::NativePageReference& r){PutUuid(b,at,r.filespace_uuid);Number(b,at+16,8,r.page_number);Number(b,at+24,8,r.page_generation);PutUuid(b,at+32,r.page_size_profile_uuid);};
@@ -2489,6 +2549,9 @@ void CheckpointCatalogRelations() {
   }
 }
 int main(int argc,char** argv) {
+  if(argc==2&&std::string_view(argv[1])=="--checkpoint-horizon-only"){
+    try{CanonicalCheckpointHorizons();std::cout<<"checkpoint horizon checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--checkpoint-system-only") {
     try { CanonicalCheckpointSystemState();std::cout<<"checkpoint system-state checks="<<checks<<" failures=0\n";return 0; }
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
