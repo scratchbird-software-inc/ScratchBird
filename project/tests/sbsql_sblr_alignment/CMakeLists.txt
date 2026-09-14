@@ -8339,6 +8339,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_native_checkpoint_selection native_checkpoint_selection_test.cpp)
   add_executable(sbsql_sblr_alignment_native_publication_watermark native_publication_watermark_test.cpp)
   add_executable(sbsql_sblr_alignment_native_publication_plan native_publication_plan_test.cpp)
+  add_executable(sbsql_sblr_alignment_native_management_operation native_management_operation_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_management_operation PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_management_operation PRIVATE sb_storage_database)
+  target_link_options(sbsql_sblr_alignment_native_management_operation PRIVATE
+    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
+    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
+  add_test(NAME sbsql_sblr_alignment_native_management_operation COMMAND sbsql_sblr_alignment_native_management_operation)
+  set_tests_properties(sbsql_sblr_alignment_native_management_operation PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_management_operation;binary_UUID;record_codec;not_SQL_E2E" TIMEOUT 120)
   target_compile_features(sbsql_sblr_alignment_native_publication_plan PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_publication_plan PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_native_publication_plan PRIVATE
