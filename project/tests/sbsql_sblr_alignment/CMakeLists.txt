@@ -8327,6 +8327,29 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_native_system_state native_system_state_test.cpp)
   add_executable(sbsql_sblr_alignment_native_checkpoint_selection native_checkpoint_selection_test.cpp)
   add_executable(sbsql_sblr_alignment_native_publication_watermark native_publication_watermark_test.cpp)
+  add_executable(sbsql_sblr_alignment_native_publication_coordinator native_publication_coordinator_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_publication_coordinator PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_publication_coordinator PRIVATE sb_storage_database)
+  target_link_options(sbsql_sblr_alignment_native_publication_coordinator PRIVATE
+    -Wl,--wrap=pwrite -Wl,--wrap=pread -Wl,--wrap=fsync -Wl,--wrap=EVP_Digest
+    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
+    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
+  add_test(NAME sbsql_sblr_alignment_native_publication_coordinator
+    COMMAND sbsql_sblr_alignment_native_publication_coordinator)
+  set_tests_properties(sbsql_sblr_alignment_native_publication_coordinator PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_publication;actual_files;fault;not_SQL_E2E" TIMEOUT 180)
+  foreach(shard RANGE 0 3)
+    add_test(NAME sbsql_sblr_alignment_native_publication_coordinator_allocations_${shard}
+      COMMAND sbsql_sblr_alignment_native_publication_coordinator --allocations ${shard})
+    set_tests_properties(sbsql_sblr_alignment_native_publication_coordinator_allocations_${shard} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_publication;allocation_faults;not_SQL_E2E" TIMEOUT 180)
+    foreach(mode recover_first recover_second recover_stable)
+      add_test(NAME sbsql_sblr_alignment_native_publication_coordinator_allocations_${shard}_${mode}
+        COMMAND sbsql_sblr_alignment_native_publication_coordinator --allocations ${shard} ${mode})
+      set_tests_properties(sbsql_sblr_alignment_native_publication_coordinator_allocations_${shard}_${mode} PROPERTIES
+        LABELS "sbsql_sblr_alignment;native_publication;allocation_faults;not_SQL_E2E" TIMEOUT 180)
+    endforeach()
+  endforeach()
   target_compile_features(sbsql_sblr_alignment_native_publication_watermark PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_publication_watermark PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_native_publication_watermark PRIVATE
