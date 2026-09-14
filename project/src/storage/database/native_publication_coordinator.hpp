@@ -11,7 +11,7 @@ enum class NativePublicationError {
   allocation_mismatch, image_failure, binding_mismatch, repair_required,
   stale_base, generation_exhausted, hash_failure, resource_exhausted,
   io_failure, preimage_changed, readback_mismatch, cluster_requires_authority,
-  encrypted_requires_authority
+  encrypted_requires_authority, operation_pending, request_mismatch
 };
 struct NativePublicationSnapshot {
   NativeCheckpointSelection selection;
@@ -36,7 +36,10 @@ class NativePublicationLease {
   std::unique_ptr<Impl> impl_;
   friend NativePublicationReservation ReserveNativePublicationGenerationOnOpenDevices(
     const Uuid&,const std::vector<disk::NativeFilespaceDevice>&,const Uuid&,
-    const NativePublicationSnapshot&,const Uuid&,u64) noexcept;
+    const NativePublicationSnapshot&,const Uuid&,u64,const NativePublicationIntent*) noexcept;
+  friend NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(
+    const Uuid&,const std::vector<disk::NativeFilespaceDevice>&,const Uuid&,
+    const NativePublicationSnapshot&,const Uuid&,const NativePublicationIntent&,u64) noexcept;
 };
 struct NativePublicationReservation {
   NativePublicationError error=NativePublicationError::invalid_request;
@@ -55,5 +58,13 @@ NativePublicationInspection RecoverNativePublicationGenerationOnOpenDevices(
 // No page reservation, checkpoint publication, transaction finality or SQL receipt.
 NativePublicationReservation ReserveNativePublicationGenerationOnOpenDevices(
   const Uuid&,const std::vector<disk::NativeFilespaceDevice>&,const Uuid&,
-  const NativePublicationSnapshot&,const Uuid& operation_uuid,u64) noexcept;
+  const NativePublicationSnapshot&,const Uuid& operation_uuid,u64,
+  const NativePublicationIntent* intent=nullptr) noexcept;
+// Reacquire an exact pending request after explicit inspection/recovery. Copies
+// all caller data, verifies unchanged durable replicas and retains device guards.
+// Does not increment a counter or grant authentication, execution or publication.
+NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(
+  const Uuid&,const std::vector<disk::NativeFilespaceDevice>&,const Uuid&,
+  const NativePublicationSnapshot&,const Uuid& operation_uuid,
+  const NativePublicationIntent&,u64) noexcept;
 } // namespace scratchbird::storage::database

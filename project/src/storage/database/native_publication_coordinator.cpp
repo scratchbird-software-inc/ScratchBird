@@ -185,18 +185,38 @@ NativePublicationInspection RecoverNativePublicationGenerationOnOpenDevices(cons
 }
 NativePublicationReservation ReserveNativePublicationGenerationOnOpenDevices(const Uuid& db,
     const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,
-    const NativePublicationSnapshot& expected,const Uuid& operation,u64 budget) noexcept {
+    const NativePublicationSnapshot& expected,const Uuid& operation,u64 budget,const NativePublicationIntent* intent) noexcept {
   try {
     Require(V7(operation),E::invalid_request);auto c=Prepare(db,devices,primary,budget,true,false);
     Require(SameBase(expected,c->snapshot),E::stale_base);
     auto w=c->snapshot.watermark;
+    Require(!w.intent||w.watermark==c->snapshot.selection.checkpoint_generation,E::operation_pending);
     Require(operation!=w.operation_uuid&&operation!=c->snapshot.selection.publication_uuid,E::invalid_request);
     Require(w.watermark!=std::numeric_limits<u64>::max(),E::generation_exhausted);
     w.previous_watermark=w.watermark;++w.watermark;w.previous_state_sha256=c->snapshot.state_sha256;w.operation_uuid=operation;
+    w.intent=intent?std::optional<NativePublicationIntent>(*intent):std::nullopt;
     const auto& s=c->snapshot.selection;w.base_checkpoint=s.checkpoint;w.base_checkpoint_object_uuid=s.checkpoint_object_uuid;
     w.base_checkpoint_sha256=s.checkpoint_sha256;w.base_checkpoint_generation=s.checkpoint_generation;w.base_root_set_generation=s.root_set_generation;
     auto images=EncodePair(*c,w);const auto encoded=DecodeNativePublicationWatermark(images[0]);Backend(encoded.error);Require(encoded.ok(),E::image_failure);
     auto impl=std::make_unique<NativePublicationLease::Impl>();impl->snapshot={s,*encoded.state,encoded.state_sha256};impl->context=std::move(c);
+    auto lease=std::unique_ptr<NativePublicationLease>(new NativePublicationLease(std::move(impl)));
+    std::vector<byte> scratch(lease->impl_->context->zero.bootstrap.page_size_bytes);
+    Publish(*lease->impl_->context,images,scratch);
+    return {E::none,std::move(lease)};
+  }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
+   catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+}
+NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(const Uuid& db,
+    const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,
+    const NativePublicationSnapshot& expected,const Uuid& operation,const NativePublicationIntent& intent,u64 budget) noexcept {
+  try {
+    auto c=Prepare(db,devices,primary,budget,true,false);
+    Require(SameBase(expected,c->snapshot),E::stale_base);
+    const auto& w=c->snapshot.watermark;
+    Require(w.intent&&w.watermark>c->snapshot.selection.checkpoint_generation,E::invalid_request);
+    Require(w.operation_uuid==operation&&*w.intent==intent,E::request_mismatch);
+    auto images=EncodePair(*c,w);
+    auto impl=std::make_unique<NativePublicationLease::Impl>();impl->snapshot=c->snapshot;impl->context=std::move(c);
     auto lease=std::unique_ptr<NativePublicationLease>(new NativePublicationLease(std::move(impl)));
     std::vector<byte> scratch(lease->impl_->context->zero.bootstrap.page_size_bytes);
     Publish(*lease->impl_->context,images,scratch);

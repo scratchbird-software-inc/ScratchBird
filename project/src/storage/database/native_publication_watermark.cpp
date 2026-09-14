@@ -15,6 +15,7 @@ namespace {
 using namespace core::platform;
 using E = NativePublicationWatermarkError;
 constexpr std::size_t kUsed = 512, kStateSeal = 368, kImageSeal = 400;
+constexpr std::array<byte,8> kIntentDomain{'S','B','P','A','G','S','T','2'};
 
 bool Zero(const byte* bytes, std::size_t size) {
   return std::all_of(bytes, bytes + size, [](byte value) { return value == 0; });
@@ -80,7 +81,18 @@ E Validate(const NativePublicationWatermark& state) {
   if (state.base_checkpoint.filespace_uuid == header.filespace_uuid &&
       (state.base_checkpoint.page_size_profile_uuid != header.page_size_profile_uuid ||
        state.base_checkpoint.page_number == header.page_number)) return E::invalid_reference;
+  if(state.intent){const auto& intent=*state.intent;
+    if(!V7(intent.initiator_uuid)||!V7(intent.request_context_uuid)||!V7(intent.policy_snapshot_uuid))return E::invalid_identity;
+    if(state.watermark==1||intent.initiator_kind<1||intent.initiator_kind>8||
+       Zero(intent.normalized_request_sha256.data(),32))return E::invalid_family;
+  }
   return E::none;
+}
+auto StateDigest(const byte* family,bool intent) {
+  if(!intent)return core::hash::ComputeSha256Digest(family,240);
+  const core::hash::HashDigestSegment parts[]={{kIntentDomain.data(),kIntentDomain.size()},
+    {family,240},{family+304,208}};
+  return core::hash::ComputeSha256DigestParts(parts,3);
 }
 bool SameBase(const NativePublicationWatermark& a, const NativePublicationWatermark& b) {
   return a.base_checkpoint == b.base_checkpoint &&
@@ -100,10 +112,11 @@ NativePublicationWatermarkImage EncodeNativePublicationWatermark(
     std::vector<byte> bytes(state.header.page_size_bytes, 0);
     std::copy(common.bytes->begin(), common.bytes->end(), bytes.begin());
     auto* family = bytes.data() + 128;
-    std::copy_n("SBPAG001", 8, family);
-    StoreLittle16(family + 8, 1);
-    StoreLittle16(family + 10, 384);
-    StoreLittle32(family + 12, kUsed);
+    const bool intent=state.intent.has_value();
+    std::copy_n(intent?"SBPAG002":"SBPAG001", 8, family);
+    StoreLittle16(family + 8, intent?2:1);
+    StoreLittle16(family + 10, intent?512:384);
+    StoreLittle32(family + 12, intent?640:kUsed);
     PutUuid(family + 16, state.object_uuid);
     PutUuid(family + 32, state.bootstrap_uuid);
     PutUuid(family + 48, state.timeline_uuid);
@@ -116,7 +129,13 @@ NativePublicationWatermarkImage EncodeNativePublicationWatermark(
     PutUuid(family + 160, state.base_checkpoint_object_uuid);
     std::copy(state.base_checkpoint_sha256.begin(), state.base_checkpoint_sha256.end(), family + 176);
     std::copy(state.previous_state_sha256.begin(), state.previous_state_sha256.end(), family + 208);
-    const auto state_hash = core::hash::ComputeSha256Digest(family, 240);
+    if(intent){const auto& request=*state.intent;
+      PutUuid(family+304,request.initiator_uuid);PutUuid(family+320,request.request_context_uuid);
+      PutUuid(family+336,request.policy_snapshot_uuid);
+      std::copy(request.normalized_request_sha256.begin(),request.normalized_request_sha256.end(),family+352);
+      StoreLittle16(family+384,request.initiator_kind);StoreLittle16(family+386,1);
+    }
+    const auto state_hash = StateDigest(family,intent);
     if (!state_hash.ok()) return Fail(E::hash_failure);
     std::copy(state_hash.digest.begin(), state_hash.digest.end(), bytes.begin() + kStateSeal);
     const auto image_hash = ImageDigest(bytes);
@@ -140,11 +159,13 @@ NativePublicationWatermarkImage DecodeNativePublicationWatermark(
     if (!std::equal(image_hash.digest.begin(), image_hash.digest.end(), bytes.begin() + kImageSeal))
       return Fail(E::invalid_integrity);
     const auto* family = bytes.data() + 128;
-    if (std::string_view(reinterpret_cast<const char*>(family), 8) != "SBPAG001" ||
-        LoadLittle16(family + 8) != 1 || LoadLittle16(family + 10) != 384 ||
-        LoadLittle32(family + 12) != kUsed || !Zero(family + 304, 80) ||
-        !Zero(bytes.data() + kUsed, bytes.size() - kUsed)) return Fail(E::invalid_family);
-    const auto state_hash = core::hash::ComputeSha256Digest(family, 240);
+    const auto version=LoadLittle16(family+8);
+    const bool intent=version==2;const std::size_t used=intent?640:kUsed;
+    if ((version!=1&&!intent)||std::string_view(reinterpret_cast<const char*>(family),8)!=(intent?"SBPAG002":"SBPAG001")||
+        LoadLittle16(family+10)!=(intent?512:384)||LoadLittle32(family+12)!=used||
+        !Zero(family+(intent?388:304),intent?124:80)||
+        (intent&&LoadLittle16(family+386)!=1)||!Zero(bytes.data()+used,bytes.size()-used))return Fail(E::invalid_family);
+    const auto state_hash = StateDigest(family,intent);
     if (!state_hash.ok()) return Fail(E::hash_failure);
     if (!std::equal(state_hash.digest.begin(), state_hash.digest.end(), bytes.begin() + kStateSeal))
       return Fail(E::invalid_integrity);
@@ -162,6 +183,11 @@ NativePublicationWatermarkImage DecodeNativePublicationWatermark(
     state.base_checkpoint_object_uuid = GetUuid(family + 160);
     std::copy_n(family + 176, 32, state.base_checkpoint_sha256.begin());
     std::copy_n(family + 208, 32, state.previous_state_sha256.begin());
+    if(intent){NativePublicationIntent request;
+      request.initiator_uuid=GetUuid(family+304);request.request_context_uuid=GetUuid(family+320);
+      request.policy_snapshot_uuid=GetUuid(family+336);request.initiator_kind=LoadLittle16(family+384);
+      std::copy_n(family+352,32,request.normalized_request_sha256.begin());state.intent=request;
+    }
     const auto valid = Validate(state);
     if (valid != E::none) return Fail(valid);
     return {E::none, std::move(state), state_hash.digest, bytes};
@@ -193,7 +219,7 @@ NativePublicationWatermarkImage ClassifyNativePublicationWatermarkPair(
         if (state->base_checkpoint.filespace_uuid == header->filespace_uuid &&
             state->base_checkpoint.page_number == header->page_number) return Fail(E::invalid_pair);
     if (a.watermark == b.watermark) {
-      if (!std::equal(first.begin() + 128, first.begin() + 400, second.begin() + 128))
+      if (a.intent!=b.intent||!std::equal(first.begin() + 128, first.begin() + 400, second.begin() + 128))
         return Fail(E::invalid_pair);
       return left;
     }
@@ -206,6 +232,7 @@ NativePublicationWatermarkImage ClassifyNativePublicationWatermarkPair(
         new_state.operation_uuid == old_state.operation_uuid ||
         new_state.base_checkpoint_generation < old_state.base_checkpoint_generation ||
         new_state.base_checkpoint_generation > old_state.watermark ||
+        (old_state.intent&&new_state.base_checkpoint_generation!=old_state.watermark)||
         new_state.base_root_set_generation < old_state.base_root_set_generation ||
         (new_state.base_checkpoint_generation == old_state.base_checkpoint_generation &&
          !SameBase(new_state, old_state))) return Fail(E::invalid_pair);

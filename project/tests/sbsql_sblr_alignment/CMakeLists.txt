@@ -8353,7 +8353,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       COMMAND sbsql_sblr_alignment_native_publication_coordinator --allocations ${shard})
     set_tests_properties(sbsql_sblr_alignment_native_publication_coordinator_allocations_${shard} PROPERTIES
       LABELS "sbsql_sblr_alignment;native_publication;allocation_faults;not_SQL_E2E" TIMEOUT 180)
-    foreach(mode recover_first recover_second recover_stable)
+    foreach(mode recover_first recover_second recover_stable reserve_intent resume_intent)
       add_test(NAME sbsql_sblr_alignment_native_publication_coordinator_allocations_${shard}_${mode}
         COMMAND sbsql_sblr_alignment_native_publication_coordinator --allocations ${shard} ${mode})
       set_tests_properties(sbsql_sblr_alignment_native_publication_coordinator_allocations_${shard}_${mode} PROPERTIES

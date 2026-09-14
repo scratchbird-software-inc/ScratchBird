@@ -67,9 +67,12 @@ struct Node {
   auto Inspect(){return db::InspectNativePublicationGenerationOnOpenDevices(Id(1),devices,Id(2),budget);}
   auto Recover(){return db::RecoverNativePublicationGenerationOnOpenDevices(Id(1),devices,Id(2),budget);}
   auto Reserve(const db::NativePublicationSnapshot& base,unsigned op){return db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),devices,Id(2),base,Id(op),budget);}
+  auto ReserveIntent(const db::NativePublicationSnapshot& base,unsigned op,const db::NativePublicationIntent& intent){return db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),devices,Id(2),base,Id(op),budget,&intent);}
+  auto Resume(const db::NativePublicationSnapshot& base,unsigned op,const db::NativePublicationIntent& intent){return db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),devices,Id(2),base,Id(op),intent,budget);}
   std::vector<byte> Read(){std::vector<byte> bytes(64*size);const auto r=device.ReadAt(0,bytes.data(),bytes.size());Check(r.ok()&&r.bytes_transferred==bytes.size(),"actual complete read");return bytes;}
   void Restore(const std::vector<byte>& bytes){const auto r=device.WriteAt(0,bytes.data(),bytes.size());Check(r.ok()&&r.bytes_transferred==bytes.size()&&device.Sync().ok(),"isolated fixture restore");}
 };
+db::NativePublicationIntent Intent(){db::NativePublicationIntent i;i.initiator_uuid=Id(4);i.request_context_uuid=Id(90);i.policy_snapshot_uuid=Id(91);i.normalized_request_sha256.fill(92);i.initiator_kind=4;return i;}
 auto Page(const std::vector<byte>& bytes,u64 n,u64 size){return std::vector<byte>(bytes.begin()+n*size,bytes.begin()+(n+1)*size);}
 void Replace(std::vector<byte>& bytes,u64 n,const std::vector<byte>& page){std::copy(page.begin(),page.end(),bytes.begin()+n*page.size());}
 void UnchangedExceptWatermarks(const std::vector<byte>& a,const std::vector<byte>& b,const Node& n){
@@ -114,6 +117,69 @@ void InstallSelectedCheckpointFixture(Node& n){
   }
   n.Restore(bytes);
 }
+void IntentReservations(Fixture& fixture){
+  using E=db::NativePublicationError;
+  for(unsigned profile=0;profile<5;++profile){const auto path=fixture.Next();Node n(path,profile);
+    const auto original=n.Read();const auto initial=n.Inspect();Check(initial.ok(),"intent initial actual base");
+    const auto request=Intent();auto input=request;Arm();auto reserved=n.ReserveIntent(*initial.snapshot,300,input);const auto reserve_calls=calls;Off();
+    Check(reserved.ok()&&reserve_calls[write_call]==2&&reserve_calls[sync_call]==3,"actual durable intent reservation");
+    input.normalized_request_sha256={};Check(reserved.lease->snapshot().watermark.intent==request,"lease owns request copy");reserved.lease.reset();
+    const auto pending_bytes=n.Read();UnchangedExceptWatermarks(original,pending_bytes,n);
+    for(unsigned slot=0;slot<2;++slot){const auto b=Page(pending_bytes,n.first+slot,n.size);
+      Check(std::equal(request.initiator_uuid.bytes.begin(),request.initiator_uuid.bytes.end(),b.begin()+432)&&
+        std::equal(request.request_context_uuid.bytes.begin(),request.request_context_uuid.bytes.end(),b.begin()+448)&&
+        std::equal(request.policy_snapshot_uuid.bytes.begin(),request.policy_snapshot_uuid.bytes.end(),b.begin()+464)&&
+        std::equal(request.normalized_request_sha256.begin(),request.normalized_request_sha256.end(),b.begin()+480)&&
+        b[135]=='2'&&b[136]==2&&b[512]==4&&b[513]==0&&b[514]==1&&b[515]==0,"independent persisted binary intent fields");}
+    auto pending=n.Inspect();Check(pending.ok()&&pending.snapshot->watermark.intent==request,"actual intent inspection");
+    for(bool plain:{false,true}){Arm();auto r=plain?n.Reserve(*pending.snapshot,301):n.ReserveIntent(*pending.snapshot,301,request);Off();
+      Check(!r.ok()&&!r.lease&&r.error==E::operation_pending&&!calls[write_call]&&n.Read()==pending_bytes,"pending request cannot be displaced");}
+    for(unsigned field=0;field<7;++field){auto bad=request;auto expected=*pending.snapshot;unsigned op=300;
+      if(field==0)bad.initiator_uuid=Id(93);if(field==1)bad.request_context_uuid=Id(93);if(field==2)bad.policy_snapshot_uuid=Id(93);
+      if(field==3)bad.normalized_request_sha256[0]^=1;if(field==4)bad.initiator_kind=5;if(field==5)op=301;if(field==6)expected=*initial.snapshot;
+      Arm();auto r=n.Resume(expected,op,bad);Off();Check(!r.ok()&&!r.lease&&!calls[write_call]&&!calls[sync_call]&&
+        r.error==(field==6?E::stale_base:E::request_mismatch)&&n.Read()==pending_bytes,"resume exact request and base before effects");}
+    std::array<unsigned,call_count> resume_calls;
+    {Arm();auto resumed=n.Resume(*pending.snapshot,300,request);resume_calls=calls;Off();
+      Check(resumed.ok()&&!resume_calls[write_call]&&resume_calls[sync_call]==3&&
+        resumed.lease->snapshot().state_sha256==pending.snapshot->state_sha256&&n.Read()==pending_bytes,"resume reacquires durable unchanged reservation");
+      std::atomic<bool> entered=false,acquired=false;std::thread contender([&]{entered=true;auto guard=n.device.AcquireOperationGuard();acquired=true;});
+      while(!entered.load())std::this_thread::yield();const bool held=!acquired.load();resumed.lease.reset();contender.join();Check(held&&acquired,"resumed lease retains and releases device guard");}
+    if(profile==0){
+      for(unsigned kind=0;kind<call_count;++kind)for(unsigned at=1;at<=resume_calls[kind];++at){Arm(kind,at);auto r=n.Resume(*pending.snapshot,300,request);Off();
+        Check(calls[kind]>=at&&!r.ok()&&!r.lease&&n.Read()==pending_bytes,"every resume fault withholds lease without changing storage");}
+      for(unsigned kind=0;kind<call_count;++kind)for(unsigned at=1;at<=reserve_calls[kind];++at){n.Restore(original);Arm(kind,at);auto r=n.ReserveIntent(*initial.snapshot,300,request);Off();
+        Check(calls[kind]>=at&&!r.ok()&&!r.lease,"every intent reserve physical/hash fault");const auto recovered=n.Recover();
+        Check(recovered.ok()&&((recovered.snapshot->watermark.watermark==1&&!recovered.snapshot->watermark.intent)||
+          (recovered.snapshot->watermark.watermark==2&&recovered.snapshot->watermark.intent==request)),"recovery preserves exact surviving request");
+        UnchangedExceptWatermarks(original,n.Read(),n);}
+      for(unsigned slot=1;slot<=2;++slot)for(unsigned prefix:{1u,432u,500u,520u,640u}){n.Restore(original);Arm();torn_at=slot;torn_bytes=prefix;
+        auto r=n.ReserveIntent(*initial.snapshot,300,request);torn_at=0;Off();Check(!r.ok()&&!r.lease,"torn intent never yields lease");
+        const auto recovered=n.Recover();Check(recovered.ok()&&(!recovered.snapshot->watermark.intent||recovered.snapshot->watermark.intent==request),"torn intent retains exact recoverable provenance");}
+      n.Restore(pending_bytes);InstallSelectedCheckpointFixture(n);
+      const auto selected=n.Inspect();Check(selected.ok()&&selected.snapshot->selection.checkpoint_generation==2,"intent follows independently selected checkpoint fixture");
+      auto following=request;following.request_context_uuid=Id(94);following.normalized_request_sha256.fill(95);
+      Arm(write_call,2);auto interrupted=n.ReserveIntent(*selected.snapshot,301,following);Off();Check(!interrupted.ok()&&!interrupted.lease,"interrupt next intent after prior selection");
+      const auto recovered=n.Recover();Check(recovered.ok()&&recovered.snapshot->watermark.watermark==3&&recovered.snapshot->watermark.intent==following,"next intent lineage survives ordered recovery");
+      {auto resumed=n.Resume(*recovered.snapshot,301,following);Check(resumed.ok()&&resumed.lease->snapshot().watermark.base_checkpoint_generation==2,"resume next request against actual newer checkpoint");}
+      std::cout<<"intent reserve sites=";for(auto v:reserve_calls)std::cout<<v<<',';std::cout<<" resume sites=";for(auto v:resume_calls)std::cout<<v<<',';std::cout<<'\n';
+    }
+    if(profile==0){n.Restore(original);Check(n.device.Close().ok(),"release before intent process-loss fault");
+      const auto killed=fork();Check(killed>=0,"fork intent writer");if(killed==0){Node owned(path,profile,false);const auto base=owned.Inspect();
+        if(!base.ok())_exit(94);Arm();kill_second=true;(void)owned.ReserveIntent(*base.snapshot,300,request);_exit(95);}
+      int exit_status=0;Check(waitpid(killed,&exit_status,0)==killed&&WIFEXITED(exit_status)&&WEXITSTATUS(exit_status)==86,"intent process lost after first durable replica");
+      {Node recovering(path,profile,false);Check(!recovering.Inspect().ok(),"mixed intent replica is not silently promoted");
+        const auto recovered=recovering.Recover();Check(recovered.ok()&&recovered.snapshot->watermark.watermark==2&&recovered.snapshot->watermark.intent==request,"recovery binds actual surviving intent after process loss");}
+    }else {n.Restore(pending_bytes);Check(n.device.Close().ok(),"release intent node before fresh executable");}
+    const auto child=fork();Check(child>=0,"intent fresh process fork");if(child==0){const auto p=std::to_string(profile);execl("/proc/self/exe","intent-probe","--intent-probe",path.c_str(),p.c_str(),nullptr);_exit(95);}
+    int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable binds and resumes actual intent");
+    {Node owned(path,profile,false);const auto state=owned.Inspect();Check(state.ok(),"owned intent after probe");
+      Arm();auto wrong=db::ResumeNativePublicationGenerationOnOpenDevices(Id(99),owned.devices,Id(2),*state.snapshot,Id(300),request,owned.budget);Off();
+      Check(!wrong.ok()&&!wrong.lease&&!calls[write_call]&&!calls[sync_call],"resume refuses foreign database binding");
+      Check(owned.device.Close().ok()&&owned.device.Open(path.string(),disk::FileOpenMode::open_existing_read_only).ok(),"open intent read-only");
+      Arm();auto readonly=owned.Resume(*state.snapshot,300,request);Off();Check(!readonly.ok()&&!readonly.lease&&!calls[write_call]&&!calls[sync_call],"read-only intent cannot issue resumed lease");}
+  }
+}
 }
 void* operator new(std::size_t n){if(count_allocations&&++allocations==allocation_fault)throw std::bad_alloc();
   if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
@@ -150,15 +216,25 @@ extern "C" int __real_EVP_DigestFinal_ex(EVP_MD_CTX*,unsigned char*,unsigned int
 extern "C" int __wrap_EVP_DigestFinal_ex(EVP_MD_CTX* c,unsigned char* out,unsigned int* n){return Hit(final_call)?0:__real_EVP_DigestFinal_ex(c,out,n);}
 int main(int argc,char** argv){try{
   Fixture fixture;
+  if(argc==4&&std::string_view(argv[1])=="--intent-probe"){
+    const unsigned profile=std::stoul(argv[3]);Check(profile<5,"intent probe profile");Node n(argv[2],profile,false);
+    const auto before=n.Read();const auto state=n.Inspect();Check(state.ok()&&state.snapshot->watermark.intent==Intent(),"fresh intent actual metadata");
+    {auto resumed=n.Resume(*state.snapshot,300,Intent());Check(resumed.ok()&&resumed.lease->snapshot().watermark.watermark==2,"fresh process resumed existing generation");}
+    Check(n.Read()==before,"fresh resume leaves entire node unchanged");return 0;
+  }
   if(argc>=2&&std::string_view(argv[1])=="--allocations"){
     const unsigned shard=argc>=3?std::stoul(argv[2]):0;Check(shard<4,"allocation shard");
     const std::string_view mode=argc==4?argv[3]:"reserve";
-    Check(mode=="reserve"||mode=="recover_first"||mode=="recover_second"||mode=="recover_stable","allocation operation profile");
+    Check(mode=="reserve"||mode=="reserve_intent"||mode=="resume_intent"||mode=="recover_first"||mode=="recover_second"||mode=="recover_stable","allocation operation profile");
     const auto path=fixture.Next();Node n(path,0);const auto original=n.Read();const auto initial=n.Inspect();Check(initial.ok(),"allocation base");
     auto starting=original;
+    std::optional<db::NativePublicationSnapshot> resume_base;
+    if(mode=="resume_intent"){{auto r=n.ReserveIntent(*initial.snapshot,80,Intent());Check(r.ok(),"durable intent allocation baseline");}
+      starting=n.Read();const auto observed=n.Inspect();Check(observed.ok(),"resume allocation base");resume_base=observed.snapshot;}
     if(mode=="recover_first"||mode=="recover_second"){const auto slot=n.first+(mode=="recover_second"?1:0);
       std::fill(starting.begin()+slot*n.size,starting.begin()+(slot+1)*n.size,0);}
-    const auto invoke=[&](Node& node){if(mode=="reserve"){auto r=node.Reserve(*initial.snapshot,80);return std::pair{r.ok(),r.lease!=nullptr};}
+    const auto invoke=[&](Node& node){if(mode=="reserve"||mode=="reserve_intent"||mode=="resume_intent"){
+      auto r=mode=="resume_intent"?node.Resume(*resume_base,80,Intent()):mode=="reserve_intent"?node.ReserveIntent(*initial.snapshot,80,Intent()):node.Reserve(*initial.snapshot,80);return std::pair{r.ok(),r.lease!=nullptr};}
       const auto r=node.Recover();return std::pair{r.ok(),r.snapshot.has_value()};};
     n.Restore(starting);count_allocations=true;allocations=0;allocation_fault=1;const auto warm=invoke(n);count_allocations=false;Check(!warm.first&&!warm.second,"warm failure path");
     Check(n.device.Close().ok(),"release node for allocation children");
@@ -172,10 +248,11 @@ int main(int argc,char** argv){try{
       if(child==0){Node owned(path,0,false);owned.Restore(starting);
         count_allocations=true;allocations=0;allocation_fault=at;const auto r=invoke(owned);count_allocations=false;
         if(allocations<at||r.first||r.second){std::cerr<<"allocation site="<<at<<" observed="<<allocations<<'\n';_exit(83);}
-        const auto recovered=owned.Recover();_exit(recovered.ok()&&(mode=="reserve"||owned.Read()==original)?0:84);}
+        const auto recovered=owned.Recover();_exit(recovered.ok()&&(mode=="reserve"||mode=="reserve_intent"||owned.Read()==(mode=="resume_intent"?starting:original))?0:84);}
       Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"every reached allocation failure withholds lease and remains recoverable");}
     std::cout<<"PASS coordinator allocation sites="<<sites<<" mode="<<mode<<" shard="<<shard<<" checks="<<checks<<'\n';return 0;
   }
+  IntentReservations(fixture);
   for(unsigned profile=0;profile<5;++profile){const auto path=fixture.Next();Node n(path,profile);const auto initial=n.Read();
     const auto inspected=n.Inspect();Check(inspected.ok()&&inspected.snapshot->watermark.watermark==1,"actual bound initial watermark");
     auto reserved=n.Reserve(*inspected.snapshot,10);Check(reserved.ok(),"actual durable reservation");

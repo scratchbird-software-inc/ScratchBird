@@ -49,7 +49,11 @@ void Ref(Bytes& b,std::size_t at,const d::NativePageReference& r) {
 }
 void Seal(Bytes& b,bool state=true) {
   std::array<byte,32> sha{};
-  if(state){Check(SHA256(b.data()+128,240,sha.data())!=nullptr,"independent state SHA256");std::copy(sha.begin(),sha.end(),b.begin()+368);}
+  if(state){if(b[136]==2){const std::string_view domain="SBPAGST2";Bytes material(domain.begin(),domain.end());
+      material.insert(material.end(),b.begin()+128,b.begin()+368);material.insert(material.end(),b.begin()+432,b.begin()+640);
+      Check(SHA256(material.data(),material.size(),sha.data())!=nullptr,"independent intent state SHA256");
+    }else Check(SHA256(b.data()+128,240,sha.data())!=nullptr,"independent state SHA256");
+    std::copy(sha.begin(),sha.end(),b.begin()+368);}
   std::fill(b.begin()+400,b.begin()+432,0);
   Check(SHA256(b.data(),b.size(),sha.data())!=nullptr,"independent full SHA256");std::copy(sha.begin(),sha.end(),b.begin()+400);
 }
@@ -61,12 +65,15 @@ Bytes Oracle(const db::NativePublicationWatermark& s) {
   Num(b,72,8,h.page_number);Num(b,80,8,h.page_generation);Num(b,88,8,h.flags);
   Put(b,104,h.page_size_profile_uuid);Num(b,120,2,1);
   u64 fnv=14695981039346656037ull;for(unsigned i=0;i<128;++i){fnv^=b[i];fnv*=1099511628211ull;}Num(b,96,8,fnv);
-  std::copy_n("SBPAG001",8,b.begin()+128);Num(b,136,2,1);Num(b,138,2,384);Num(b,140,4,512);
+  std::copy_n(s.intent?"SBPAG002":"SBPAG001",8,b.begin()+128);Num(b,136,2,s.intent?2:1);Num(b,138,2,s.intent?512:384);Num(b,140,4,s.intent?640:512);
   Put(b,144,s.object_uuid);Put(b,160,s.bootstrap_uuid);Put(b,176,s.timeline_uuid);
   Num(b,192,8,s.watermark);Num(b,200,8,s.base_checkpoint_generation);Num(b,208,8,s.base_root_set_generation);Num(b,216,8,s.previous_watermark);
   Put(b,224,s.operation_uuid);Ref(b,240,s.base_checkpoint);Put(b,288,s.base_checkpoint_object_uuid);
   std::copy(s.base_checkpoint_sha256.begin(),s.base_checkpoint_sha256.end(),b.begin()+304);
-  std::copy(s.previous_state_sha256.begin(),s.previous_state_sha256.end(),b.begin()+336);Seal(b);return b;
+  std::copy(s.previous_state_sha256.begin(),s.previous_state_sha256.end(),b.begin()+336);
+  if(s.intent){const auto& i=*s.intent;Put(b,432,i.initiator_uuid);Put(b,448,i.request_context_uuid);Put(b,464,i.policy_snapshot_uuid);
+    std::copy(i.normalized_request_sha256.begin(),i.normalized_request_sha256.end(),b.begin()+480);Num(b,512,2,i.initiator_kind);Num(b,514,2,1);}
+  Seal(b);return b;
 }
 db::NativePublicationWatermark Example(unsigned p=0) {
   const auto& profile=d::kCanonicalFilespacePageProfiles[p];db::NativePublicationWatermark s;
@@ -85,7 +92,45 @@ void Empty(const db::NativePublicationWatermarkImage& r) {
         "no state/image/digest on failure");
 }
 void Invalid(const db::NativePublicationWatermark& s){Empty(db::EncodeNativePublicationWatermark(s));Empty(db::DecodeNativePublicationWatermark(Oracle(s)));}
+void IntentTests(){
+  for(unsigned profile=0;profile<5;++profile){auto state=Next(Example(profile));
+    db::NativePublicationIntent intent;intent.initiator_uuid=Id(40);intent.request_context_uuid=Id(41);intent.policy_snapshot_uuid=Id(42);
+    intent.normalized_request_sha256.fill(43);intent.initiator_kind=4;state.intent=intent;
+    const auto bytes=Oracle(state),other=Oracle(Other(state));
+    const auto encoded=db::EncodeNativePublicationWatermark(state);Check(encoded.ok()&&encoded.bytes==bytes,"independent complete intent bytes");
+    const auto decoded=db::DecodeNativePublicationWatermark(bytes);Check(decoded.ok()&&decoded.state->intent==state.intent&&Oracle(*decoded.state)==bytes,"binary intent retained");
+    Check(db::ClassifyNativePublicationWatermarkPair(bytes,other).ok(),"stable intent replicas");
+    for(unsigned field=0;field<11;++field){auto bad=state;
+      if(field==0)bad.intent->initiator_uuid={};if(field==1)bad.intent->request_context_uuid={};if(field==2)bad.intent->policy_snapshot_uuid={};
+      if(field==3)bad.intent->initiator_uuid.bytes[6]=0x40;if(field==4)bad.intent->request_context_uuid.bytes[8]=0;
+      if(field==5)bad.intent->policy_snapshot_uuid.bytes[6]=0x40;if(field==6)bad.intent->normalized_request_sha256={};
+      if(field==7)bad.intent->initiator_kind=0;if(field==8)bad.intent->initiator_kind=9;if(field==9)bad.intent->initiator_kind=65535;
+      if(field==10){bad.watermark=1;bad.previous_watermark=0;bad.previous_state_sha256={};}Invalid(bad);}
+    for(unsigned kind=1;kind<=8;++kind){auto s=state;s.intent->initiator_kind=kind;Check(db::EncodeNativePublicationWatermark(s).bytes==Oracle(s),"all declared initiator kinds");}
+    for(unsigned at=516;at<640;++at){auto bad=bytes;bad[at]=1;Seal(bad);Empty(db::DecodeNativePublicationWatermark(bad));}
+    for(unsigned at:{135u,136u,138u,140u,514u,515u}){auto bad=bytes;bad[at]^=8;Seal(bad);Empty(db::DecodeNativePublicationWatermark(bad));}
+    for(unsigned at:{447u,463u,479u,511u,512u}){auto bad=bytes;bad[at]^=1;Seal(bad,false);const auto r=db::DecodeNativePublicationWatermark(bad);
+      Empty(r);Check(r.error==E::invalid_integrity,"intent bound by state digest, not only outer seal");}
+    auto without=state;without.intent.reset();auto alias=Oracle(without);alias[135]='2';Num(alias,136,2,2);Num(alias,138,2,512);Num(alias,140,4,640);Num(alias,514,2,1);Seal(alias);Empty(db::DecodeNativePublicationWatermark(alias));
+    auto different=Other(state);different.intent->normalized_request_sha256[0]^=1;
+    auto pair=db::ClassifyNativePublicationWatermarkPair(bytes,Oracle(different));Empty(pair);Check(pair.error==E::invalid_pair,"same generation cannot change request");
+    auto newer=Next(Other(state));pair=db::ClassifyNativePublicationWatermarkPair(bytes,Oracle(newer));Empty(pair);
+    Check(pair.error==E::invalid_pair,"pending intent cannot be displaced against old checkpoint");
+    newer.base_checkpoint_generation=state.watermark;newer.base_root_set_generation++;newer.base_checkpoint.page_number=25;
+    pair=db::ClassifyNativePublicationWatermarkPair(bytes,Oracle(newer));Empty(pair);Check(pair.error==E::repair_required,"selected prior intent allows next request but pair needs repair");
+    const auto old=Oracle(Example(profile));pair=db::ClassifyNativePublicationWatermarkPair(old,other);Empty(pair);
+    Check(pair.error==E::repair_required,"version1 to intent transition retains exact previous state");
+    for(unsigned mode=0;mode<3;++mode){bool success=false;
+      for(long n=0;n<20;++n){allocation_budget=n;const auto r=mode==0?db::EncodeNativePublicationWatermark(state):mode==1?db::DecodeNativePublicationWatermark(bytes):db::ClassifyNativePublicationWatermarkPair(bytes,other);allocation_budget=-1;
+        if(r.ok()){success=true;break;}Empty(r);Check(r.error==E::resource_exhausted,"intent allocation failure");}Check(success,"intent allocation sweep complete");
+      for(unsigned fault=1;fault<=5;++fault)for(unsigned target=1;target<=(mode==2?4u:2u);++target){hash_fault=fault;hash_target=target;hash_seen=0;hash_active=false;
+        const auto r=mode==0?db::EncodeNativePublicationWatermark(state):mode==1?db::DecodeNativePublicationWatermark(bytes):db::ClassifyNativePublicationWatermarkPair(bytes,other);
+        Check(hash_fault==0&&r.error==E::hash_failure,"intent state/image provider fault");Empty(r);}
+    }
+  }
+}
 void Test() {
+  IntentTests();
   for(unsigned p=0;p<5;++p)for(bool advanced:{false,true}) {
     auto s=Example(p);if(advanced)s=Next(s);
     const auto first=Oracle(s),second=Oracle(Other(s));const auto encoded=db::EncodeNativePublicationWatermark(s);

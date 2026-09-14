@@ -15,6 +15,12 @@ using core::platform::u64;
 
 // MGA-NATIVE-PUBLICATION-WATERMARK-IMAGE-001.
 // Durable operation-state IMAGE only. No live allocator/transaction authority.
+struct NativePublicationIntent {
+  Uuid initiator_uuid, request_context_uuid, policy_snapshot_uuid;
+  std::array<byte,32> normalized_request_sha256{};
+  core::platform::u16 initiator_kind=0;
+  bool operator==(const NativePublicationIntent&) const = default;
+};
 struct NativePublicationWatermark {
   disk::NativeCommonPageHeader header;
   Uuid object_uuid, bootstrap_uuid, timeline_uuid, operation_uuid;
@@ -23,6 +29,7 @@ struct NativePublicationWatermark {
   disk::NativePageReference base_checkpoint;
   Uuid base_checkpoint_object_uuid;
   std::array<byte, 32> base_checkpoint_sha256{}, previous_state_sha256{};
+  std::optional<NativePublicationIntent> intent;
 };
 enum class NativePublicationWatermarkError {
   none, invalid_header, invalid_family, invalid_identity, invalid_reference,
