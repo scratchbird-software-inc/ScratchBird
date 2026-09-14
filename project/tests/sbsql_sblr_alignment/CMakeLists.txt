@@ -1,6 +1,33 @@
 # Copyright (c) 2026 ScratchBird Software Inc.
 # SPDX-License-Identifier: MPL-2.0
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  foreach(language IN ITEMS c cpp)
+    set(abi_target sbsql_sblr_alignment_cluster_gateway_abi_layout_${language})
+    add_executable(${abi_target} cluster_gateway_abi_layout_test.${language})
+    target_include_directories(${abi_target} PRIVATE ../../include/shared)
+    set_target_properties(${abi_target} PROPERTIES
+      C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
+      CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    add_test(NAME ${abi_target} COMMAND ${abi_target})
+    set_tests_properties(${abi_target} PROPERTIES TIMEOUT 30
+      LABELS "sbsql_sblr_alignment;cluster_gateway;canonical_abi_layout;not_runtime_acceptance")
+    add_library(${abi_target}_symbols OBJECT cluster_gateway_abi_layout_test.${language})
+    target_include_directories(${abi_target}_symbols PRIVATE ../../include/shared)
+    target_compile_definitions(${abi_target}_symbols PRIVATE SB_CG_SYMBOL_PROBE=1)
+    set_target_properties(${abi_target}_symbols PROPERTIES
+      C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
+      CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
+    add_dependencies(${abi_target} ${abi_target}_symbols)
+    add_test(NAME ${abi_target}_symbols
+      COMMAND ${CMAKE_COMMAND} -DSB_NM=${CMAKE_NM}
+        -DSB_OBJECT_FILE=$<TARGET_OBJECTS:${abi_target}_symbols>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/cluster_gateway_abi_symbols_test.cmake)
+    set_tests_properties(${abi_target}_symbols PROPERTIES TIMEOUT 30
+      LABELS "sbsql_sblr_alignment;cluster_gateway;canonical_abi_symbol_references;not_runtime_acceptance")
+  endforeach()
+endif()
+
 if(TARGET sb_cluster_provider AND NOT SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY)
   get_target_property(sb_alignment_provider_dependencies sb_cluster_provider LINK_LIBRARIES)
   if(NOT sb_alignment_provider_dependencies STREQUAL "sb_engine_api_diagnostics")
