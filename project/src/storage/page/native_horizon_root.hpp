@@ -29,6 +29,7 @@ struct NativeHorizonRecord {
   u64 checkpoint_generation=0;
   Uuid diagnostic_uuid;
   std::optional<disk::NativePageReference> checkpoint;
+  Uuid horizon_uuid, timeline_uuid;
 };
 struct NativeHorizonRoot {
   disk::NativeCommonPageHeader header;
