@@ -312,13 +312,14 @@ int main(int argc,char** argv){try{
           "isolated allocation fault and preservation checks");continue;}}
       disk::FileDevice device;const auto path=fixture.Next();
       Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"allocation fault device");
-      const auto request=Request();allocations=0;allocation_fault=at;count_allocations=true;
+      const auto request=Request();const auto lost=device.failed_io_latency_observations();allocations=0;allocation_fault=at;count_allocations=true;
       const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*8192);count_allocations=false;
       if(at==0){Check(r.ok(),"allocation baseline");sites=allocations;
         Check(!single||(wanted>0&&wanted<=sites),"requested allocation site actually exists");
         std::cout<<"allocation_sites="<<sites<<std::endl;}
-      else {if(allocations<at||r.ok()||r.receipt)std::cerr<<"allocation_failure_site="<<at<<" observed="<<allocations<<" error="<<static_cast<unsigned>(r.error)<<" receipt="<<r.receipt.has_value()<<'\n';
-        Check(allocations>=at&&!r.ok()&&!r.receipt,"allocation failure cannot certify a partial graph");
+      else {const bool isolated_observation=r.ok()&&device.failed_io_latency_observations()==lost+1;
+        Check(allocations>=at&&(isolated_observation||(!r.ok()&&!r.receipt)),"required allocation failure cannot certify a partial graph");
+        if(isolated_observation)Inspect(device,request);
         if(device.Size().size_bytes)Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*8192).error==
           db::NativeCreationWorkspaceError::device_not_empty,"allocation failure preserves nonempty attempt");}
       Check(device.Close().ok()&&fs::remove(path),"remove only the closed disposable attempt after its preservation checks");

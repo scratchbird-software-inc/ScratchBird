@@ -246,10 +246,12 @@ int main(int argc,char** argv){try{
     Check(waitpid(measured,&status,0)==measured&&WIFEXITED(status)&&WEXITSTATUS(status)==0&&count==sizeof sites&&sites,"measured reopened-device allocation sites");
     for(unsigned at=1+shard;at<=sites;at+=4){const auto child=fork();Check(child>=0,"allocation fault fork");
       if(child==0){Node owned(path,0,false);owned.Restore(starting);
+        const auto lost=owned.device.failed_io_latency_observations();
         count_allocations=true;allocations=0;allocation_fault=at;const auto r=invoke(owned);count_allocations=false;
-        if(allocations<at||r.first||r.second){std::cerr<<"allocation site="<<at<<" observed="<<allocations<<'\n';_exit(83);}
+        const bool isolated_observation=r.first&&r.second&&owned.device.failed_io_latency_observations()==lost+1;
+        if(allocations<at||((r.first||r.second)&&!isolated_observation)){std::cerr<<"allocation site="<<at<<" observed="<<allocations<<'\n';_exit(83);}
         const auto recovered=owned.Recover();_exit(recovered.ok()&&(mode=="reserve"||mode=="reserve_intent"||owned.Read()==(mode=="resume_intent"?starting:original))?0:84);}
-      Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"every reached allocation failure withholds lease and remains recoverable");}
+      Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"required allocation failure withholds lease; isolated observation loss preserves actual outcome");}
     std::cout<<"PASS coordinator allocation sites="<<sites<<" mode="<<mode<<" shard="<<shard<<" checks="<<checks<<'\n';return 0;
   }
   IntentReservations(fixture);

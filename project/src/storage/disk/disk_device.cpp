@@ -75,15 +75,6 @@ double ElapsedMicros(Clock::time_point start) {
   return static_cast<double>(std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - start).count());
 }
 
-void RecordDiskLatency(const char* family, double micros, const std::string& path, const char* operation, const char* result) {
-  (void)scratchbird::core::metrics::ObserveHistogram(
-      family,
-      scratchbird::core::metrics::Labels({{"component", "storage.disk"}, {"operation", operation}, {"result", result},
-                                          {"device_class", path.empty() ? "unopened" : "file"}}),
-      micros,
-      "storage_disk");
-}
-
 void RecordDiskError(const char* reason, const std::string& path) {
   (void)scratchbird::core::metrics::IncrementCounter(
       "sb_storage_device_errors_total",
@@ -1152,6 +1143,30 @@ int RouteOwnershipLease::AcquireDataFile(const std::string& path) {
 
 FileDevice::FileDevice() = default;
 
+void FileDevice::ObserveIoLatency(LatencyOperation operation,double micros,const char* result) noexcept {
+  const auto increment=[](std::atomic<u64>& counter) noexcept {
+    auto value=counter.load(std::memory_order_relaxed);
+    while(value!=std::numeric_limits<u64>::max()&&
+      !counter.compare_exchange_weak(value,value+1,std::memory_order_relaxed)){}
+  };
+  try {
+    namespace metrics=scratchbird::core::metrics;
+    const auto family=operation==LatencyOperation::read?"sb_storage_device_read_latency_microseconds":
+      operation==LatencyOperation::write?"sb_storage_device_write_latency_microseconds":"sb_storage_fsync_latency_microseconds";
+    const auto name=operation==LatencyOperation::read?"read_at":operation==LatencyOperation::write?"write_at":"sync";
+    bool accepted=metrics::ObserveHistogram(family,metrics::Labels({{"component","storage.disk"},{"operation",name},
+      {"result",result},{"device_class",path_.empty()?"unopened":"file"}}),micros,"storage_disk").ok;
+    if(!metric_filespace_uuid_.empty()){
+      const auto observe=operation==LatencyOperation::read?metrics::ObserveFilespaceDeviceReadLatency:
+        operation==LatencyOperation::write?metrics::ObserveFilespaceDeviceWriteLatency:metrics::ObserveFilespaceFsyncLatency;
+      const auto scoped=observe(micros,metric_database_uuid_,metric_filespace_uuid_,metric_node_uuid_,metric_filespace_role_,
+        metric_device_class_.empty()?"file":metric_device_class_);
+      accepted=scoped.ok&&accepted;
+    }
+    if(!accepted)increment(rejected_io_latency_);
+  }catch(...){increment(failed_io_latency_);}
+}
+
 FileDevice::~FileDevice() {
 #ifdef _WIN32
   if (file_handle_ != nullptr) {
@@ -1611,16 +1626,7 @@ IoResult FileDevice::ReadAt(u64 offset, void* buffer, usize bytes) {
   IoResult result;
   result.status = DiskOkStatus();
   result.bytes_transferred = transferred;
-  RecordDiskLatency("sb_storage_device_read_latency_microseconds", ElapsedMicros(metric_start), path_, "read_at", "ok");
-  if (!metric_filespace_uuid_.empty()) {
-    (void)scratchbird::core::metrics::ObserveFilespaceDeviceReadLatency(
-        ElapsedMicros(metric_start),
-        metric_database_uuid_,
-        metric_filespace_uuid_,
-        metric_node_uuid_,
-        metric_filespace_role_,
-        metric_device_class_.empty() ? "file" : metric_device_class_);
-  }
+  ObserveIoLatency(LatencyOperation::read,ElapsedMicros(metric_start),"ok");
   return result;
 }
 
@@ -1681,16 +1687,7 @@ IoResult FileDevice::WriteAt(u64 offset, const void* buffer, usize bytes) {
   IoResult result;
   result.status = DiskOkStatus();
   result.bytes_transferred = bytes;
-  RecordDiskLatency("sb_storage_device_write_latency_microseconds", ElapsedMicros(metric_start), path_, "write_at", "ok");
-  if (!metric_filespace_uuid_.empty()) {
-    (void)scratchbird::core::metrics::ObserveFilespaceDeviceWriteLatency(
-        ElapsedMicros(metric_start),
-        metric_database_uuid_,
-        metric_filespace_uuid_,
-        metric_node_uuid_,
-        metric_filespace_role_,
-        metric_device_class_.empty() ? "file" : metric_device_class_);
-  }
+  ObserveIoLatency(LatencyOperation::write,ElapsedMicros(metric_start),"ok");
   return result;
 }
 
@@ -1829,16 +1826,7 @@ IoResult FileDevice::Sync() {
   if (read_only_) {
     IoResult result;
     result.status = DiskOkStatus();
-    RecordDiskLatency("sb_storage_fsync_latency_microseconds", ElapsedMicros(metric_start), path_, "sync", "read_only_noop");
-    if (!metric_filespace_uuid_.empty()) {
-      (void)scratchbird::core::metrics::ObserveFilespaceFsyncLatency(
-          ElapsedMicros(metric_start),
-          metric_database_uuid_,
-          metric_filespace_uuid_,
-          metric_node_uuid_,
-          metric_filespace_role_,
-          metric_device_class_.empty() ? "file" : metric_device_class_);
-    }
+    ObserveIoLatency(LatencyOperation::sync,ElapsedMicros(metric_start),"read_only_noop");
     return result;
   }
 
@@ -1855,16 +1843,7 @@ IoResult FileDevice::Sync() {
 
   IoResult result;
   result.status = DiskOkStatus();
-  RecordDiskLatency("sb_storage_fsync_latency_microseconds", ElapsedMicros(metric_start), path_, "sync", "ok");
-  if (!metric_filespace_uuid_.empty()) {
-    (void)scratchbird::core::metrics::ObserveFilespaceFsyncLatency(
-        ElapsedMicros(metric_start),
-        metric_database_uuid_,
-        metric_filespace_uuid_,
-        metric_node_uuid_,
-        metric_filespace_role_,
-        metric_device_class_.empty() ? "file" : metric_device_class_);
-  }
+  ObserveIoLatency(LatencyOperation::sync,ElapsedMicros(metric_start),"ok");
   return result;
 }
 

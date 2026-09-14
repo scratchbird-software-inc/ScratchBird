@@ -12,6 +12,7 @@
 #include "runtime_platform.hpp"
 
 #include <memory>
+#include <atomic>
 #include <mutex>
 #include <string>
 
@@ -185,6 +186,11 @@ class FileDevice {
   IoResult WriteAt(u64 offset, const void* buffer, usize bytes);
   PreallocateExtentResult PreallocateExtent(u64 offset, u64 bytes);
   IoResult Sync();
+  // Observation loss is not a physical I/O error. These lifetime counters
+  // expose incomplete latency telemetry without allocating or recursing into
+  // the metric registry. They deliberately survive Close/Open on this object.
+  u64 rejected_io_latency_observations() const noexcept {return rejected_io_latency_.load(std::memory_order_relaxed);}
+  u64 failed_io_latency_observations() const noexcept {return failed_io_latency_.load(std::memory_order_relaxed);}
   void SetMetricContext(std::string database_uuid,
                         std::string filespace_uuid,
                         std::string node_uuid,
@@ -204,6 +210,9 @@ class FileDevice {
   }
 
  private:
+  enum class LatencyOperation { read, write, sync };
+  void ObserveIoLatency(LatencyOperation, double micros, const char* result) noexcept;
+  std::atomic<u64> rejected_io_latency_{0}, failed_io_latency_{0};
   std::recursive_mutex operation_mutex_;
   IoResult MakeIoError(std::string diagnostic_code,
                        std::string message_key,

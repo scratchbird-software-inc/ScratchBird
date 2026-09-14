@@ -143,8 +143,9 @@ int main(int argc,char** argv){try{
     Check(mode=="first"||mode=="second"||mode=="stable","allocation recovery profile");
     if(mode=="first"){damaged=original;std::fill(damaged.begin()+17*size,damaged.begin()+18*size,0);}
     if(mode=="stable")damaged=original;
-    Restore(device,damaged);allocations=0;allocation_fault=1;count_allocations=true;
-    const auto warm=Recover(device,request);count_allocations=false;Check(!warm.ok()&&!warm.receipt,"warm failed recovery");
+    Restore(device,damaged);const auto warm_loss=device.failed_io_latency_observations();allocations=0;allocation_fault=1;count_allocations=true;
+    const auto warm=Recover(device,request);count_allocations=false;
+    Check((!warm.ok()&&!warm.receipt)||(warm.ok()&&device.failed_io_latency_observations()==warm_loss+1&&Read(device,0,original.size())==original),"warm required-allocation refusal or exact recovery with recorded observation loss");
     Check(device.Close().ok(),"close before independent allocation children");
     // Measure the same reopened-device operation in a child of this warmed
     // parent. Measuring on the create_new parent's device counted one extra
@@ -162,9 +163,10 @@ int main(int argc,char** argv){try{
       count_bytes==sizeof sites&&sites,"isolated repeatable allocation site count");
     for(unsigned at=1+shard;at<=sites;at+=4){const auto child=fork();Check(child>=0,"allocation fork");
       if(child==0){try{disk::FileDevice d;Check(d.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"allocation child owns file");
-        Restore(d,damaged);allocations=0;allocation_fault=at;count_allocations=true;const auto r=Recover(d,request);count_allocations=false;
-        if(allocations<at||r.ok()||r.receipt||r.repaired_slots)std::cerr<<"observed allocations="<<allocations<<" error="<<static_cast<unsigned>(r.error)<<" receipt="<<r.receipt.has_value()<<'\n';
-        Check(allocations>=at&&!r.ok()&&!r.receipt&&!r.repaired_slots,"every reached allocation fault returns no receipt");
+        Restore(d,damaged);const auto lost=d.failed_io_latency_observations();allocations=0;allocation_fault=at;count_allocations=true;const auto r=Recover(d,request);count_allocations=false;
+        const bool isolated_observation=r.ok()&&d.failed_io_latency_observations()==lost+1;
+        Check(allocations>=at&&(isolated_observation||(!r.ok()&&!r.receipt&&!r.repaired_slots)),"required allocation fault returns no receipt; latency loss is separately recorded");
+        if(isolated_observation)Check(Read(d,0,original.size())==original,"observation loss permits only exact actual recovery");
         Check(d.Close().ok(),"allocation child releases file");_exit(0);
       }catch(const std::exception& e){std::cerr<<"allocation "<<at<<": "<<e.what()<<'\n';_exit(1);}}
       int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"isolated allocation failure child");

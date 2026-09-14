@@ -400,7 +400,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME sbsql_sblr_alignment_native_inventory_successor_staging
     COMMAND sbsql_sblr_alignment_filespace_page_zero --inventory-stage-only)
   set_tests_properties(sbsql_sblr_alignment_native_inventory_successor_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_inventory;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 300)
+    LABELS "sbsql_sblr_alignment;native_inventory;actual_staging;binary_UUID;not_SQL_E2E"
+    TIMEOUT 900 RUN_SERIAL TRUE)
   add_test(NAME sbsql_sblr_alignment_native_btree_staging
     COMMAND sbsql_sblr_alignment_filespace_page_zero --btree-stage-only)
   set_tests_properties(sbsql_sblr_alignment_native_btree_staging PROPERTIES
@@ -8341,11 +8342,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(sbsql_sblr_alignment_native_publication_plan PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_publication_plan PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_native_publication_plan PRIVATE
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync
     -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
     -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
   add_test(NAME sbsql_sblr_alignment_native_publication_plan COMMAND sbsql_sblr_alignment_native_publication_plan)
   set_tests_properties(sbsql_sblr_alignment_native_publication_plan PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_publication_plan;binary_UUID;lease_preflight;not_SQL_E2E" TIMEOUT 120)
+    LABELS "sbsql_sblr_alignment;native_publication_plan;binary_UUID;actual_files;fault;not_SQL_E2E" TIMEOUT 180)
+  foreach(shard RANGE 0 3)
+    add_test(NAME sbsql_sblr_alignment_native_publication_plan_allocations_${shard}
+      COMMAND sbsql_sblr_alignment_native_publication_plan --allocations ${shard})
+    set_tests_properties(sbsql_sblr_alignment_native_publication_plan_allocations_${shard} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_publication_plan;allocation_faults;not_SQL_E2E" TIMEOUT 180)
+  endforeach()
   add_executable(sbsql_sblr_alignment_native_publication_coordinator native_publication_coordinator_test.cpp)
   target_compile_features(sbsql_sblr_alignment_native_publication_coordinator PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_publication_coordinator PRIVATE sb_storage_database)

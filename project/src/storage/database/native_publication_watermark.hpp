@@ -30,6 +30,13 @@ struct NativePublicationWatermark {
   Uuid base_checkpoint_object_uuid;
   std::array<byte, 32> base_checkpoint_sha256{}, previous_state_sha256{};
   std::optional<NativePublicationIntent> intent;
+  struct PlanAnchor {
+    disk::NativePageReference page;
+    Uuid object_uuid;
+    std::array<byte,32> sha256{}, reservation_state_sha256{};
+    bool operator==(const PlanAnchor&) const = default;
+  };
+  std::optional<PlanAnchor> publication_plan;
 };
 enum class NativePublicationWatermarkError {
   none, invalid_header, invalid_family, invalid_identity, invalid_reference,

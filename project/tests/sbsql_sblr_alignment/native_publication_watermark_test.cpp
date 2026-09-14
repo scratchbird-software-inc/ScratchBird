@@ -49,8 +49,8 @@ void Ref(Bytes& b,std::size_t at,const d::NativePageReference& r) {
 }
 void Seal(Bytes& b,bool state=true) {
   std::array<byte,32> sha{};
-  if(state){if(b[136]==2){const std::string_view domain="SBPAGST2";Bytes material(domain.begin(),domain.end());
-      material.insert(material.end(),b.begin()+128,b.begin()+368);material.insert(material.end(),b.begin()+432,b.begin()+640);
+  if(state){if(b[136]==2||b[136]==3){const std::string_view domain=b[136]==3?"SBPAGST3":"SBPAGST2";Bytes material(domain.begin(),domain.end());
+      material.insert(material.end(),b.begin()+128,b.begin()+368);material.insert(material.end(),b.begin()+432,b.begin()+(b[136]==3?768:640));
       Check(SHA256(material.data(),material.size(),sha.data())!=nullptr,"independent intent state SHA256");
     }else Check(SHA256(b.data()+128,240,sha.data())!=nullptr,"independent state SHA256");
     std::copy(sha.begin(),sha.end(),b.begin()+368);}
@@ -65,7 +65,8 @@ Bytes Oracle(const db::NativePublicationWatermark& s) {
   Num(b,72,8,h.page_number);Num(b,80,8,h.page_generation);Num(b,88,8,h.flags);
   Put(b,104,h.page_size_profile_uuid);Num(b,120,2,1);
   u64 fnv=14695981039346656037ull;for(unsigned i=0;i<128;++i){fnv^=b[i];fnv*=1099511628211ull;}Num(b,96,8,fnv);
-  std::copy_n(s.intent?"SBPAG002":"SBPAG001",8,b.begin()+128);Num(b,136,2,s.intent?2:1);Num(b,138,2,s.intent?512:384);Num(b,140,4,s.intent?640:512);
+  std::copy_n(s.publication_plan?"SBPAG003":s.intent?"SBPAG002":"SBPAG001",8,b.begin()+128);
+  Num(b,136,2,s.publication_plan?3:s.intent?2:1);Num(b,138,2,s.publication_plan?640:s.intent?512:384);Num(b,140,4,s.publication_plan?768:s.intent?640:512);
   Put(b,144,s.object_uuid);Put(b,160,s.bootstrap_uuid);Put(b,176,s.timeline_uuid);
   Num(b,192,8,s.watermark);Num(b,200,8,s.base_checkpoint_generation);Num(b,208,8,s.base_root_set_generation);Num(b,216,8,s.previous_watermark);
   Put(b,224,s.operation_uuid);Ref(b,240,s.base_checkpoint);Put(b,288,s.base_checkpoint_object_uuid);
@@ -73,6 +74,8 @@ Bytes Oracle(const db::NativePublicationWatermark& s) {
   std::copy(s.previous_state_sha256.begin(),s.previous_state_sha256.end(),b.begin()+336);
   if(s.intent){const auto& i=*s.intent;Put(b,432,i.initiator_uuid);Put(b,448,i.request_context_uuid);Put(b,464,i.policy_snapshot_uuid);
     std::copy(i.normalized_request_sha256.begin(),i.normalized_request_sha256.end(),b.begin()+480);Num(b,512,2,i.initiator_kind);Num(b,514,2,1);}
+  if(s.publication_plan){const auto& p=*s.publication_plan;Ref(b,516,p.page);Put(b,564,p.object_uuid);
+    std::copy(p.sha256.begin(),p.sha256.end(),b.begin()+580);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),b.begin()+612);}
   Seal(b);return b;
 }
 db::NativePublicationWatermark Example(unsigned p=0) {
@@ -129,7 +132,50 @@ void IntentTests(){
     }
   }
 }
+void AnchorTests(){
+  for(unsigned profile=0;profile<5;++profile){auto origin=Next(Example(profile));
+    db::NativePublicationIntent intent;intent.initiator_uuid=Id(40);intent.request_context_uuid=Id(41);intent.policy_snapshot_uuid=Id(42);
+    intent.normalized_request_sha256.fill(43);intent.initiator_kind=4;origin.intent=intent;
+    const auto bare=Oracle(origin);auto state=origin;
+    db::NativePublicationWatermark::PlanAnchor anchor;anchor.page={state.header.filespace_uuid,40,1,state.header.page_size_profile_uuid};
+    anchor.object_uuid=Id(50);anchor.sha256.fill(51);std::copy_n(bare.begin()+368,32,anchor.reservation_state_sha256.begin());state.publication_plan=anchor;
+    const auto bytes=Oracle(state),other=Oracle(Other(state));
+    const auto encoded=db::EncodeNativePublicationWatermark(state);Check(encoded.ok()&&encoded.bytes==bytes,"independent version3 complete bytes");
+    const auto decoded=db::DecodeNativePublicationWatermark(bytes);Check(decoded.ok()&&decoded.state->publication_plan==state.publication_plan&&Oracle(*decoded.state)==bytes,"anchor roundtrip");
+    Check(db::ClassifyNativePublicationWatermarkPair(bytes,other).ok(),"stable anchored replicas");
+    for(bool reverse:{false,true}){const auto pair=db::ClassifyNativePublicationWatermarkPair(reverse?bare:bytes,reverse?other:Oracle(Other(origin)));
+      Check(pair.error==E::repair_required,"structural same-generation origin transition");Empty(pair);}
+    for(unsigned at=644;at<768;++at){auto bad=bytes;bad[at]=1;Seal(bad);Empty(db::DecodeNativePublicationWatermark(bad));}
+    for(unsigned at:{612u,643u}){auto bad=bytes;bad[at]^=1;Seal(bad);Empty(db::DecodeNativePublicationWatermark(bad));}
+    for(unsigned field=0;field<14;++field){auto bad=state;auto& a=*bad.publication_plan;
+      switch(field){case 0:a.page.page_number=0;break;case 1:a.page.page_generation=0;break;
+        case 2:a.page.page_number=state.header.page_number;break;case 3:a.page=state.base_checkpoint;break;
+        case 4:a.page.filespace_uuid=Id(60);break;case 5:a.page.page_size_profile_uuid=Id(61);break;
+        case 6:a.object_uuid={};break;case 7:a.object_uuid.bytes[6]=0x40;break;
+        case 8:a.object_uuid=state.object_uuid;break;case 9:a.object_uuid=state.bootstrap_uuid;break;
+        case 10:a.sha256={};break;case 11:a.reservation_state_sha256={};break;
+        case 12:a.reservation_state_sha256[0]^=1;break;case 13:bad.intent.reset();break;}Invalid(bad);}
+    auto alias=state;alias.publication_plan->page.page_number=Other(state).header.page_number;
+    Check(db::EncodeNativePublicationWatermark(alias).ok(),"other slot alias individually shape valid");
+    Check(db::ClassifyNativePublicationWatermarkPair(Oracle(alias),other).error==E::invalid_pair,"anchor cannot own other replica");
+    auto conflicting=Other(state);conflicting.publication_plan->sha256[0]^=1;
+    Check(db::ClassifyNativePublicationWatermarkPair(bytes,Oracle(conflicting)).error==E::invalid_pair,"same watermark cannot replace plan");
+    auto newer=Next(Other(state));newer.publication_plan.reset();newer.base_checkpoint_generation=state.watermark;
+    newer.base_root_set_generation=2;newer.base_checkpoint.page_number=25;
+    const auto next_bare=Oracle(newer);Check(db::ClassifyNativePublicationWatermarkPair(bytes,next_bare).error==E::repair_required,"next reservation retains complete anchored lineage");
+    newer.publication_plan=anchor;std::copy_n(next_bare.begin()+368,32,newer.publication_plan->reservation_state_sha256.begin());
+    Check(db::ClassifyNativePublicationWatermarkPair(bytes,Oracle(newer)).error==E::invalid_pair,"new generation cannot arrive already anchored");
+    for(unsigned mode=0;mode<3;++mode){bool success=false;
+      for(long n=0;n<20;++n){allocation_budget=n;const auto r=mode==0?db::EncodeNativePublicationWatermark(state):mode==1?db::DecodeNativePublicationWatermark(bytes):db::ClassifyNativePublicationWatermarkPair(bytes,other);allocation_budget=-1;
+        if(r.ok()){success=true;break;}Empty(r);Check(r.error==E::resource_exhausted,"anchor allocation failure");}Check(success,"anchor allocation sweep complete");
+      for(unsigned fault=1;fault<=5;++fault)for(unsigned target=1;target<=(mode==2?6u:3u);++target){hash_fault=fault;hash_target=target;hash_seen=0;hash_active=false;
+        const auto r=mode==0?db::EncodeNativePublicationWatermark(state):mode==1?db::DecodeNativePublicationWatermark(bytes):db::ClassifyNativePublicationWatermarkPair(bytes,other);
+        Check(hash_fault==0&&r.error==E::hash_failure,"anchor origin/state/image hash fault");Empty(r);}
+    }
+  }
+}
 void Test() {
+  AnchorTests();
   IntentTests();
   for(unsigned p=0;p<5;++p)for(bool advanced:{false,true}) {
     auto s=Example(p);if(advanced)s=Next(s);

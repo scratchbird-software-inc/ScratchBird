@@ -24,6 +24,7 @@ struct NativePublicationInspection {
   bool ok() const noexcept {return error==NativePublicationError::none&&snapshot.has_value();}
 };
 struct NativePublicationReservation;
+struct NativePublicationPlan;
 class NativePublicationLease {
  public:
   ~NativePublicationLease();
@@ -40,6 +41,8 @@ class NativePublicationLease {
   friend NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(
     const Uuid&,const std::vector<disk::NativeFilespaceDevice>&,const Uuid&,
     const NativePublicationSnapshot&,const Uuid&,const NativePublicationIntent&,u64) noexcept;
+  friend NativePublicationInspection InstallNativePublicationPlanOnLease(
+    NativePublicationLease&,const NativePublicationPlan&,const std::vector<byte>&,u64) noexcept;
 };
 struct NativePublicationReservation {
   NativePublicationError error=NativePublicationError::invalid_request;
@@ -67,4 +70,10 @@ NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(
   const Uuid&,const std::vector<disk::NativeFilespaceDevice>&,const Uuid&,
   const NativePublicationSnapshot&,const Uuid& operation_uuid,
   const NativePublicationIntent&,u64) noexcept;
+// Durable primary plan ownership, write, sync and full readback. Does not
+// publish the target checkpoint or authenticate/complete a management request.
+// Ambiguous failure requires explicit inspection/recovery and a resumed lease.
+NativePublicationInspection InstallNativePublicationPlanOnLease(
+  NativePublicationLease&,const NativePublicationPlan&,
+  const std::vector<byte>& target_checkpoint,u64 maximum_retained_image_bytes) noexcept;
 } // namespace scratchbird::storage::database

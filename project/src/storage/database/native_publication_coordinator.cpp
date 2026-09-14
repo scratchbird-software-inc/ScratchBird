@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_publication_coordinator.hpp"
+#include "native_publication_plan.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <new>
 #include <set>
 #include <stdexcept>
+#include <type_traits>
 
 namespace scratchbird::storage::database {
 namespace {
@@ -98,7 +100,8 @@ std::unique_ptr<Context> Prepare(const Uuid& database,const std::vector<disk::Na
   }
   c->bound=ReadNativeBoundCheckpointSelectionFromOpenDevices(database,c->devices,primary_uuid,budget-6*size);
   if(!c->bound.ok())throw c->bound.error==NativeCheckpointSelectionError::hash_failure?E::hash_failure:
-    c->bound.error==NativeCheckpointSelectionError::resource_exhausted?E::resource_exhausted:E::checkpoint_failure;
+    c->bound.error==NativeCheckpointSelectionError::resource_exhausted?E::resource_exhausted:
+    c->bound.error==NativeCheckpointSelectionError::io_failure?E::io_failure:E::checkpoint_failure;
   for(unsigned i=0;i<2;++i){
     const auto root=std::find_if(z.roots.begin(),z.roots.end(),[&](const auto& r){return r.kind==20+i;});
     Require(root!=z.roots.end(),E::bootstrap_failure);
@@ -135,7 +138,9 @@ std::unique_ptr<Context> Prepare(const Uuid& database,const std::vector<disk::Na
     const auto pair=ClassifyNativePublicationWatermarkPair(c->bytes[0],c->bytes[1]);Backend(pair.error);
     c->stable=pair.ok();
     if(!c->stable)Require(pair.error==NativePublicationWatermarkError::repair_required&&
-      c->decoded[0].state->watermark>c->decoded[1].state->watermark,E::image_failure);
+      (c->decoded[0].state->watermark>c->decoded[1].state->watermark||
+       (c->decoded[0].state->watermark==c->decoded[1].state->watermark&&
+        c->decoded[0].state->publication_plan&&!c->decoded[1].state->publication_plan)),E::image_failure);
   }else {Require(c->decoded[0].ok()||c->decoded[1].ok(),E::image_failure);selected=c->decoded[0].ok()?0:1;}
   Require(c->stable||recover,E::repair_required);
   c->snapshot={*c->bound.selection,*c->decoded[selected].state,c->decoded[selected].state_sha256};
@@ -195,6 +200,7 @@ NativePublicationReservation ReserveNativePublicationGenerationOnOpenDevices(con
     Require(w.watermark!=std::numeric_limits<u64>::max(),E::generation_exhausted);
     w.previous_watermark=w.watermark;++w.watermark;w.previous_state_sha256=c->snapshot.state_sha256;w.operation_uuid=operation;
     w.intent=intent?std::optional<NativePublicationIntent>(*intent):std::nullopt;
+    w.publication_plan.reset();
     const auto& s=c->snapshot.selection;w.base_checkpoint=s.checkpoint;w.base_checkpoint_object_uuid=s.checkpoint_object_uuid;
     w.base_checkpoint_sha256=s.checkpoint_sha256;w.base_checkpoint_generation=s.checkpoint_generation;w.base_root_set_generation=s.root_set_generation;
     auto images=EncodePair(*c,w);const auto encoded=DecodeNativePublicationWatermark(images[0]);Backend(encoded.error);Require(encoded.ok(),E::image_failure);
@@ -221,6 +227,62 @@ NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(cons
     std::vector<byte> scratch(lease->impl_->context->zero.bootstrap.page_size_bytes);
     Publish(*lease->impl_->context,images,scratch);
     return {E::none,std::move(lease)};
+  }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
+   catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+}
+NativePublicationInspection InstallNativePublicationPlanOnLease(NativePublicationLease& lease,
+    const NativePublicationPlan& plan,const std::vector<byte>& checkpoint,u64 budget) noexcept {
+  try {
+    const u64 size=plan.header.page_size_bytes;
+    Require(size&&budget>=6*size&&checkpoint.size()<=(budget-6*size)/2,E::resource_exhausted);
+    const u64 allowance=6*size+2*checkpoint.size();
+    const auto backend=[](NativePublicationPlanError e){
+      if(e==NativePublicationPlanError::hash_failure)throw E::hash_failure;
+      if(e==NativePublicationPlanError::resource_exhausted)throw E::resource_exhausted;
+      Require(e==NativePublicationPlanError::none,E::binding_mismatch);
+    };
+    backend(BindNativePublicationPlanToLease(plan,lease,checkpoint));
+    auto image=EncodeNativePublicationPlan(plan);backend(image.error);
+    const auto& held=lease.impl_->snapshot;const auto& owned=*lease.impl_->context;
+    auto c=Prepare(held.watermark.header.database_uuid,owned.devices,
+      owned.zero.bootstrap.filespace_uuid,budget-allowance,true,false);
+    Require(SameBase(held,c->snapshot),E::stale_base);
+    const auto& original=c->snapshot.watermark;
+    Require(original.intent&&original.watermark>c->snapshot.selection.checkpoint_generation,E::invalid_request);
+    Require(plan.header.filespace_uuid==c->zero.bootstrap.filespace_uuid&&
+      plan.header.page_size_profile_uuid==c->zero.bootstrap.page_size_profile_uuid&&
+      size==c->zero.bootstrap.page_size_bytes,E::invalid_request);
+    bool free=false;
+    for(const auto& allocation:c->bound.allocation.pages){const auto& m=*allocation.map;
+      if(plan.header.page_number<m.first_page||plan.header.page_number-m.first_page>=m.states.size())continue;
+      free=m.states[plan.header.page_number-m.first_page]==page::NativeAllocationState::free&&
+        std::none_of(m.records.begin(),m.records.end(),[&](const auto& r){return r.page_number==plan.header.page_number;});break;
+    }
+    Require(free,E::allocation_mismatch);
+    std::vector<byte> preimage(size),scratch(size);
+    const auto read_plan=[&](std::vector<byte>& into){const auto r=c->primary->ReadAt(plan.header.page_number*size,into.data(),into.size());Require(r.ok()&&r.bytes_transferred==into.size(),E::io_failure);};
+    read_plan(preimage);
+    if(!original.publication_plan)Require(std::all_of(preimage.begin(),preimage.end(),[](byte b){return b==0;}),E::preimage_changed);
+    auto next=original;
+    next.publication_plan=NativePublicationWatermark::PlanAnchor{
+      {plan.header.filespace_uuid,plan.header.page_number,plan.header.page_generation,plan.header.page_size_profile_uuid},
+      plan.object_uuid,image.sha256,plan.reservation_state_sha256};
+    auto images=EncodePair(*c,next);auto decoded=DecodeNativePublicationWatermark(images[0]);Backend(decoded.error);Require(decoded.ok(),E::image_failure);
+    NativePublicationSnapshot snapshot{c->snapshot.selection,*decoded.state,decoded.state_sha256};
+    std::vector<byte>().swap(decoded.bytes);
+    static_assert(std::is_nothrow_copy_assignable_v<NativePublicationSnapshot>);
+    for(unsigned i=0;i<2;++i){auto& slot=c->decoded[i];slot.error=NativePublicationWatermarkError::none;
+      slot.state=next;slot.state->header=c->headers[i];slot.state_sha256=snapshot.state_sha256;}
+    c->snapshot=snapshot;c->stable=true;
+    // The durable anchor owns the intended free page before its first byte
+    // changes. Recovery of metadata alone is not plan-installation success.
+    Publish(*c,images,scratch);
+    read_plan(scratch);Require(scratch==preimage,E::preimage_changed);
+    if(preimage!=image.bytes){const auto r=c->primary->WriteAt(plan.header.page_number*size,image.bytes.data(),image.bytes.size());Require(r.ok()&&r.bytes_transferred==image.bytes.size(),E::io_failure);}
+    Require(c->primary->Sync().ok(),E::io_failure);read_plan(scratch);Require(scratch==image.bytes,E::readback_mismatch);
+    c->bytes=std::move(images);
+    lease.impl_->snapshot=snapshot;lease.impl_->context=std::move(c);
+    return {E::none,std::move(snapshot)};
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
    catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
 }

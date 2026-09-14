@@ -14,13 +14,17 @@
 #include <new>
 #include <source_location>
 #include <stdexcept>
-namespace {long allocation_budget=-1;bool counting=false;unsigned long allocations=0;unsigned hash_fault=0,hash_target=1,hash_seen=0;bool hash_active=false;}
+#include <cerrno>
+#include <sys/wait.h>
+#include <unistd.h>
+namespace {long allocation_budget=-1;bool counting=false;unsigned long allocations=0;unsigned hash_fault=0,hash_target=1,hash_seen=0;bool hash_active=false,hash_counting=false;
+bool io_counting=false;unsigned reads=0,writes=0,syncs=0,read_fault=0,write_fault=0,sync_fault=0,kill_write=0,corrupt_read=0;std::size_t torn_bytes=0;int allocation_shard=-1;}
 void* operator new(std::size_t n){if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
-extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new(){hash_active=hash_fault&&++hash_seen==hash_target;if(hash_active&&hash_fault==1){hash_fault=0;return nullptr;}return __real_EVP_MD_CTX_new();}
+extern "C" EVP_MD_CTX* __wrap_EVP_MD_CTX_new(){hash_active=(hash_fault||hash_counting)&&++hash_seen==hash_target&&hash_fault;if(hash_active&&hash_fault==1){hash_fault=0;return nullptr;}return __real_EVP_MD_CTX_new();}
 extern "C" int __real_EVP_DigestInit_ex(EVP_MD_CTX*,const EVP_MD*,ENGINE*);
 extern "C" int __wrap_EVP_DigestInit_ex(EVP_MD_CTX* c,const EVP_MD* m,ENGINE* e){if(hash_active&&hash_fault==2){hash_fault=0;return 0;}return __real_EVP_DigestInit_ex(c,m,e);}
 extern "C" int __real_EVP_DigestUpdate(EVP_MD_CTX*,const void*,size_t);
@@ -29,7 +33,7 @@ extern "C" int __real_EVP_DigestFinal_ex(EVP_MD_CTX*,unsigned char*,unsigned int
 extern "C" int __wrap_EVP_DigestFinal_ex(EVP_MD_CTX* c,unsigned char* b,unsigned int* n){if(hash_active&&hash_fault==4){hash_fault=0;return 0;}const int r=__real_EVP_DigestFinal_ex(c,b,n);if(hash_active&&hash_fault==5){hash_fault=0;*n=31;}return r;}
 extern "C" int __real_EVP_Digest(const void*,size_t,unsigned char*,unsigned int*,const EVP_MD*,ENGINE*);
 extern "C" int __wrap_EVP_Digest(const void* data,size_t bytes,unsigned char* out,unsigned int* size,const EVP_MD* md,ENGINE* engine) {
-  const bool selected=hash_fault&&++hash_seen==hash_target;
+  const bool selected=(hash_fault||hash_counting)&&++hash_seen==hash_target&&hash_fault;
   const auto mode=selected?hash_fault:0;
   if(selected)hash_fault=0;
   if(mode&&mode!=5)return 0;
@@ -37,13 +41,27 @@ extern "C" int __wrap_EVP_Digest(const void* data,size_t bytes,unsigned char* ou
   if(mode==5)*size=31;
   return result;
 }
+extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
+extern "C" ssize_t __wrap_pread(int fd,void* data,size_t n,off_t at){
+ if(io_counting&&++reads==read_fault){errno=EIO;return -1;}const auto result=__real_pread(fd,data,n,at);
+ if(io_counting&&reads==corrupt_read&&result>0)static_cast<unsigned char*>(data)[result-1]^=1;return result;
+}
+extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
+extern "C" ssize_t __wrap_pwrite(int fd,const void* data,size_t n,off_t at){
+ if(io_counting){++writes;if(writes==kill_write)_exit(86);
+   if(writes==write_fault){if(torn_bytes){const auto result=__real_pwrite(fd,data,std::min(n,torn_bytes),at);if(result<0)return result;}
+     errno=EIO;return -1;}}
+ return __real_pwrite(fd,data,n,at);
+}
+extern "C" int __real_fsync(int);
+extern "C" int __wrap_fsync(int fd){if(io_counting&&++syncs==sync_fault){errno=EIO;return -1;}return __real_fsync(fd);}
 
 
 namespace {
 using namespace scratchbird::core::platform;
 namespace db=scratchbird::storage::database;namespace d=scratchbird::storage::disk;namespace mga=scratchbird::transaction::mga;
 using Bytes=std::vector<byte>;using E=db::NativePublicationPlanError;unsigned checks=0;
-void Check(bool v,const char* why){++checks;if(!v)throw std::runtime_error(why);}
+void Check(bool v,const char* why,std::source_location at=std::source_location::current()){++checks;if(!v)throw std::runtime_error(std::string(why)+" line="+std::to_string(at.line()));}
 Uuid Id(unsigned n){Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
 void Num(Bytes& b,std::size_t at,unsigned n,u64 v){for(unsigned i=0;i<n;++i)b[at+i]=v>>(8*i);}
 void Put(Bytes& b,std::size_t at,const Uuid& id){std::copy(id.bytes.begin(),id.bytes.end(),b.begin()+at);}
@@ -74,7 +92,7 @@ struct Fixture {
   Check(device.Open(path.string(),d::FileOpenMode::create_new).ok(),"owned device");devices={{Id(2),page.uuid,&device}};
   Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,r,budget).ok(),"actual genesis");
  }
- ~Fixture(){device.Close();std::error_code ec;std::filesystem::remove(path,ec);std::filesystem::remove(path.parent_path(),ec);}
+ ~Fixture(){device.Close();std::error_code ec;std::filesystem::remove_all(path.parent_path(),ec);}
  Bytes Read(u64 page,u64 count=1){Bytes b(size*count);const auto r=device.ReadAt(page*size,b.data(),b.size());Check(r.ok()&&r.bytes_transferred==b.size(),"owned read");return b;}
 };
 auto GraphOracle(Bytes b){const auto used=LoadLittle32(b.data()+140);std::fill(b.begin()+336,b.begin()+400,0);bool found=false;
@@ -94,6 +112,96 @@ Bytes Finish(db::NativePublicationPlan& p,db::NativeCheckpointRoot cp){
 template<class F> void Allocations(F&& call){
  counting=true;allocations=0;const auto baseline=call();counting=false;const auto sites=allocations;Check(baseline,"allocation baseline");
  for(unsigned long n=0;n<sites;++n){allocation_budget=n;const auto succeeded=call();allocation_budget=-1;Check(!succeeded,"allocation failure withholds result");}
+}
+void InstallTests(Fixture& f,db::NativePublicationReservation& reservation,const db::NativePublicationPlan& p,const Bytes& target,const Bytes& bare,unsigned profile){
+ using PE=db::NativePublicationError;
+ const auto encoded=Oracle(p);const auto original=reservation.lease->snapshot();
+ const auto install=[&]{return db::InstallNativePublicationPlanOnLease(*reservation.lease,p,target,f.budget);};
+ const auto reset_io=[] {io_counting=false;reads=writes=syncs=read_fault=write_fault=sync_fault=kill_write=corrupt_read=0;torn_bytes=0;};
+ const auto restore=[&]{reset_io();reservation.lease.reset();const auto r=f.device.WriteAt(0,bare.data(),bare.size());
+   Check(r.ok()&&r.bytes_transferred==bare.size()&&f.device.Sync().ok(),"restore isolated reserved fixture");
+   const auto inspected=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(inspected.ok(),"inspect restored origin");
+   reservation=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*inspected.snapshot,p.operation_uuid,p.intent,f.budget);Check(reservation.ok(),"resume actual origin");};
+ const auto verify=[&]{const auto all=f.Read(0,64);auto expected=bare;
+   const auto& snapshot=reservation.lease->snapshot();const auto& state=snapshot.watermark;
+   Check(state.publication_plan&&state.watermark==original.watermark.watermark&&snapshot.selection.checkpoint_generation==1,"plan ownership is not checkpoint publication");
+   Check(state.publication_plan->reservation_state_sha256==original.state_sha256&&state.publication_plan->sha256==Sha(encoded),"anchor binds original reservation and full plan bytes");
+   Check(f.Read(p.header.page_number)==encoded,"actual installed plan bytes");
+   // Resolve both owned slots from the actual genesis geometry, independently
+   // of the installer. Only those slots and the intended plan may change.
+   const auto first=original.watermark.header.page_number;
+   for(u64 page:{first,first+1,p.header.page_number})std::copy_n(all.begin()+page*f.size,f.size,expected.begin()+page*f.size);
+   Check(all==expected,"no checkpoint/catalog/inventory/allocation/selector writes");
+   auto a=db::DecodeNativePublicationWatermark(f.Read(first));auto b=db::DecodeNativePublicationWatermark(f.Read(first+1));
+   Check(a.ok()&&b.ok()&&a.state->publication_plan==state.publication_plan&&b.state->publication_plan==state.publication_plan,"both real replicas own plan");
+ };
+ const auto resume=[&]{reset_io();reservation.lease.reset();const auto recovered=db::RecoverNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
+   Check(recovered.ok(),"explicit actual recovery after interrupted install");
+   reservation=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*recovered.snapshot,p.operation_uuid,p.intent,f.budget);Check(reservation.ok(),"resume exact recovered intent");};
+ if(allocation_shard>=0){counting=true;allocations=0;const auto measured=install();counting=false;const auto sites=allocations;Check(measured.ok(),"measure installer allocation sites");restore();
+   for(unsigned long at=allocation_shard;at<sites;at+=4){reset_io();const auto lost=f.device.failed_io_latency_observations();io_counting=true;allocation_budget=at;const auto failed=install();allocation_budget=-1;io_counting=false;
+     if(failed.ok()){Check(f.device.failed_io_latency_observations()==lost+1,"only recorded nonauthoritative observation loss permits successful allocation-fault install");verify();restore();continue;}
+     if(!(failed.error==PE::resource_exhausted&&!failed.snapshot&&writes==0))std::cerr<<"allocation site="<<at<<" total="<<sites<<" error="<<static_cast<unsigned>(failed.error)<<" writes="<<writes<<'\n';
+     Check(failed.error==PE::resource_exhausted&&!failed.snapshot&&writes==0,"every allocation fault precedes all installation writes");
+     Check(reservation.lease->snapshot().state_sha256==original.state_sha256&&f.Read(0,64)==bare,"allocation failure preserves exact disk and lease");}
+   allocation_budget=sites;const auto complete=install();allocation_budget=-1;Check(complete.ok(),"allocation boundary reaches complete installation");verify();
+   const auto lost=f.device.failed_io_latency_observations(),rejected=f.device.rejected_io_latency_observations();Check(lost>0,"allocation sweep exercises actual telemetry loss");
+   reservation.lease.reset();Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"reopen after telemetry faults");
+   allocation_budget=0;const bool quality_preserved=f.device.failed_io_latency_observations()==lost&&f.device.rejected_io_latency_observations()==rejected;allocation_budget=-1;
+   Check(quality_preserved,"allocation-free observation loss counters survive close/reopen");
+   std::cout<<"installation allocation sites="<<sites<<" shard="<<allocation_shard<<'\n';return;}
+ reset_io();io_counting=true;hash_counting=true;hash_seen=0;const auto result=install();hash_counting=false;io_counting=false;
+ const auto read_sites=reads,write_sites=writes,sync_sites=syncs,hash_sites=hash_seen;
+ Check(result.ok()&&write_sites==3&&sync_sites==4,"actual ordered anchor pair and plan installation");verify();
+ const auto installed=f.Read(0,64);reset_io();io_counting=true;const auto repeated=install();io_counting=false;
+ Check(repeated.ok()&&writes==0&&syncs==4&&f.Read(0,64)==installed,"same lease retry synchronizes without rewriting or consuming generation");
+ reservation.lease.reset();Check(f.device.Close().ok(),"close installed node");Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"reopen installed node");
+ resume();Check(db::BindNativePublicationPlanToLease(p,*reservation.lease,target)==E::none&&install().ok(),"reopened anchor binds original plan and retries");verify();
+ auto changed=p;changed.security_generation++;auto cp=*db::DecodeNativeCheckpointRoot(target).root;const auto changed_target=Finish(changed,cp);
+ Check(db::InstallNativePublicationPlanOnLease(*reservation.lease,changed,changed_target,f.budget).error==PE::binding_mismatch,"cannot replace anchored plan with resealed different plan");
+ auto junk=Bytes(f.size,0x7a);auto wr=f.device.WriteAt(p.header.page_number*f.size,junk.data(),junk.size());Check(wr.ok()&&f.device.Sync().ok(),"simulate anchored partial owned plan bytes");
+ Check(install().ok(),"exact anchor permits repairing its own partial bytes");verify();
+ restore();wr=f.device.WriteAt(p.header.page_number*f.size,junk.data(),junk.size());Check(wr.ok()&&f.device.Sync().ok(),"unanchored dirty free-page fixture");
+ reset_io();io_counting=true;const auto dirty=install();io_counting=false;Check(dirty.error==PE::preimage_changed&&!dirty.snapshot&&writes==0,"unanchored nonzero bytes cannot be overwritten");
+ restore();Check(db::InstallNativePublicationPlanOnLease(*reservation.lease,p,target,8*f.size-1).error==PE::resource_exhausted,"installer reserve budget");
+ for(u64 page:{original.watermark.header.page_number-2,u64{64}}){changed=p;changed.header.page_number=page;const auto bad_target=Finish(changed,cp);
+   reset_io();io_counting=true;const auto refused=db::InstallNativePublicationPlanOnLease(*reservation.lease,changed,bad_target,f.budget);io_counting=false;
+   Check(refused.error==PE::allocation_mismatch&&!refused.snapshot&&writes==0,"actual allocated/out-of-range plan page refused");}
+ if(profile==0){
+   restore();Check(install().ok(),"prepare reverse anchor pair");reservation.lease.reset();
+   const auto first=original.watermark.header.page_number;wr=f.device.WriteAt(first*f.size,bare.data()+first*f.size,f.size);Check(wr.ok()&&f.device.Sync().ok(),"reverse pair fixture");
+   const auto reverse=db::RecoverNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
+   Check(reverse.error==PE::image_failure&&!reverse.snapshot,"actual recovery refuses second-only anchored state");restore();
+   for(unsigned kind=0;kind<3;++kind)for(unsigned at=1;at<=(kind==0?read_sites:kind==1?write_sites:sync_sites);++at){restore();
+     reset_io();(kind==0?read_fault:kind==1?write_fault:sync_fault)=at;io_counting=true;const auto failed=install();io_counting=false;
+     Check(!failed.ok()&&!failed.snapshot,"each measured I/O fault withholds installation snapshot");
+     Check(reservation.lease->snapshot().state_sha256==original.state_sha256,"failed installation never changes retained lease");
+     resume();Check(install().ok(),"I/O failure recover resume retry");verify();}
+   for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hash_sites;++at){restore();reset_io();io_counting=true;
+     hash_fault=mode;hash_target=at;hash_seen=0;hash_active=false;const auto failed=install();io_counting=false;const bool consumed=hash_fault==0;hash_fault=0;hash_active=false;
+     if(!(consumed&&failed.error==PE::hash_failure&&!failed.snapshot&&writes==0))std::cerr<<"hash mode="<<mode<<" site="<<at<<" seen="<<hash_seen<<" consumed="<<consumed<<" error="<<static_cast<unsigned>(failed.error)<<" writes="<<writes<<'\n';
+     Check(consumed&&failed.error==PE::hash_failure&&!failed.snapshot&&writes==0,"every measured hash failure precedes any mutation");
+     Check(f.Read(0,64)==bare,"hash failure leaves exact origin");}
+   for(unsigned at:{read_sites-1,read_sites}){restore();reset_io();corrupt_read=at;io_counting=true;const auto failed=install();io_counting=false;
+     Check(failed.error==(at==read_sites?PE::readback_mismatch:PE::preimage_changed)&&!failed.snapshot,"plan preimage and full readback equality enforced");
+     reset_io();Check(install().error==PE::stale_base,"ambiguous anchor mutation requires explicit lease resumption");resume();Check(install().ok(),"readback failure resume retry");verify();}
+   for(unsigned at=1;at<=write_sites;++at)for(std::size_t prefix:{1u,400u,640u,768u}){restore();reset_io();write_fault=at;torn_bytes=prefix;io_counting=true;
+     const auto failed=install();io_counting=false;Check(!failed.ok()&&!failed.snapshot,"torn anchor/plan write withheld");
+     resume();Check(install().ok(),"torn write recover resume retry");verify();}
+   // No device or lease crosses fork: the child opens and reacquires ownership.
+   for(unsigned at:{2u,3u}){restore();reservation.lease.reset();Check(f.device.Close().ok(),"close before process loss trial");
+     const auto child=fork();Check(child>=0,"fork installer");if(child==0){d::FileDevice own;if(!own.Open(f.path.string(),d::FileOpenMode::open_existing).ok())_exit(80);
+       std::vector<d::NativeFilespaceDevice> files{{Id(2),p.header.page_size_profile_uuid,&own}};
+       auto inspected=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),files,Id(2),f.budget);if(!inspected.ok())_exit(81);
+       auto held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),files,Id(2),*inspected.snapshot,p.operation_uuid,p.intent,f.budget);if(!held.ok())_exit(82);
+       reset_io();kill_write=at;io_counting=true;const auto ignored=db::InstallNativePublicationPlanOnLease(*held.lease,p,target,f.budget);(void)ignored;_exit(83);}
+     int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,"actual process loss at ordered install write");
+     Check(f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"reopen after process loss");resume();
+     Check(reservation.lease->snapshot().watermark.publication_plan.has_value()&&f.Read(p.header.page_number)==Bytes(f.size),"recovered anchor does not claim absent plan installed");
+     Check(install().ok(),"process loss recovery exact plan installation");verify();}
+   std::cout<<"installation sites reads="<<read_sites<<" writes="<<write_sites<<" syncs="<<sync_sites<<" hashes="<<hash_sites<<'\n';
+ }
+ reset_io();
 }
 void Test(unsigned profile){
  Fixture f(profile);const auto prior=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(prior.ok(),"actual reserve base");
@@ -146,7 +254,9 @@ void Test(unsigned profile){
  Allocations([&]{return db::EncodeNativePublicationPlan(p).ok();});Allocations([&]{return db::DecodeNativePublicationPlan(encoded.bytes).ok();});
  Allocations([&]{return db::ComputeNativePublicationTargetGraphDigest(target).ok();});Allocations([&]{return db::BindNativePublicationPlanToLease(p,*reservation.lease,target)==E::none;});
  Check(f.Read(0,64)==unchanged,"preflight never writes plan or checkpoint or reports execution");
+ InstallTests(f,reservation,p,target,unchanged,profile);
  reservation.lease.reset();
 }
 }
-int main(){try{for(unsigned p=0;p<5;++p)Test(p);std::cout<<"PASS native publication plan checks="<<checks<<" preflight_only=true\n";}catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL plan "<<checks<<": "<<e.what()<<'\n';return 1;}}
+int main(int argc,char** argv){try{if(argc==3&&std::string_view(argv[1])=="--allocations"){allocation_shard=std::stoi(argv[2]);Check(allocation_shard>=0&&allocation_shard<4,"allocation shard range");}else Check(argc==1,"test arguments");
+ for(unsigned p=0;p<(allocation_shard<0?5u:1u);++p)Test(p);std::cout<<"PASS native publication plan checks="<<checks<<" installed_metadata_only=true not_SQL_E2E=true\n";}catch(const std::exception& e){allocation_budget=-1;hash_fault=0;io_counting=false;std::cerr<<"FAIL plan "<<checks<<": "<<e.what()<<'\n';return 1;}}

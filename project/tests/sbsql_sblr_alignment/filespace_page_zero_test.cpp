@@ -3379,8 +3379,11 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       inv.inventory.entries.front().rollback_only=false;persist_stage();
       if(p==0&&role==1&&!mixed_inventory){
         unsigned long allocation_sites=0;bool allocation_terminal=false;
-        for(unsigned long fault=0;fault<=na;++fault){reset();allocation_budget=fault;staged=stage(stage_budget);const auto remaining=allocation_budget;allocation_budget=-1;
-          if(staged.ok()){Check(remaining>=0&&staged.receipts.size()==2&&bytes(23)==expected[0]&&bytes(24)==expected[1],"inventory terminal success consumed no allocation fault and wrote exact chain");allocation_sites=fault;allocation_terminal=true;break;}
+        for(unsigned long fault=0;fault<=na;++fault){reset();const auto loss=device.failed_io_latency_observations()+second_device.failed_io_latency_observations();
+          allocation_budget=fault;staged=stage(stage_budget);const auto remaining=allocation_budget;allocation_budget=-1;
+          if(staged.ok()){Check(staged.receipts.size()==2&&bytes(23)==expected[0]&&bytes(24)==expected[1],"inventory success wrote exact complete chain");
+            if(remaining<0){Check(device.failed_io_latency_observations()+second_device.failed_io_latency_observations()==loss+1,"only isolated recorded telemetry loss permits consumed allocation fault");continue;}
+            allocation_sites=fault;allocation_terminal=true;break;}
           Check(remaining<0,"inventory allocation injection actually consumed");no_receipts(staged);}
         Check(allocation_terminal,"inventory allocation sweep reached uninjected success");
         for(unsigned fault=1;fault<=nr;++fault){reset();reads=0;read_fault=fault;track_reads=true;staged=stage(stage_budget);track_reads=false;Check(!read_fault,"inventory read fault consumed");no_receipts(staged);}
@@ -3591,7 +3594,12 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
         admitted.checkpoint_inventory.inventory_pages.back().header.filespace_uuid==Id(7),"actual complete mixed-profile control allocations admitted");
       empty(read(mixed_budget-1));
       if(p==0&&role==1){
-        for(unsigned long fault=0;fault<=mixed_allocations;++fault){allocation_budget=fault;const auto r=read(mixed_budget);allocation_budget=-1;if(fault<mixed_allocations)empty(r);else Check(r.ok(),"mixed control allocation fault terminal success");}
+        for(unsigned long fault=0;fault<=mixed_allocations;++fault){const auto loss=device.failed_io_latency_observations()+second_device.failed_io_latency_observations();
+          allocation_budget=fault;const auto r=read(mixed_budget);allocation_budget=-1;
+          if(r.ok()){Check(r.selection->checkpoint_sha256==admitted.selection->checkpoint_sha256&&r.retained_image_bytes==admitted.retained_image_bytes&&
+              r.checkpoint_inventory.inventory_pages.size()==2&&r.predecessor.inventory_pages.size()==2,"complete mixed control admission despite telemetry loss");
+            if(fault<mixed_allocations)Check(device.failed_io_latency_observations()+second_device.failed_io_latency_observations()==loss+1,"mixed read success requires recorded observation loss");}
+          else empty(r);if(fault==mixed_allocations)Check(r.ok(),"mixed control allocation fault terminal success");}
         for(unsigned fault=1;fault<=mixed_reads;++fault){reads=0;read_fault=fault;track_reads=true;const auto r=read(mixed_budget);track_reads=false;Check(!read_fault,"mixed control read fault consumed");empty(r);}
         for(unsigned fault=1;fault<=mixed_digests;++fault){full_digest_fault=fault;const auto r=read(mixed_budget);Check(!full_digest_fault,"mixed control hash fault consumed");empty(r);}
         std::cout<<"mixed control allocations="<<mixed_allocations<<" reads="<<mixed_reads<<" digests="<<mixed_digests<<std::endl;
