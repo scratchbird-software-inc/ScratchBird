@@ -96,7 +96,7 @@ E Validate(const NativePublicationWatermark& state) {
        (plan.page.filespace_uuid==state.base_checkpoint.filespace_uuid&&plan.page.page_number==state.base_checkpoint.page_number))return E::invalid_reference;
   }
   if(state.abandonment){const auto& resolution=*state.abandonment;
-    if(!state.intent||state.intent->recovery_profile!=1||!V7(resolution.resolution_uuid)||
+    if(!state.intent||(state.intent->recovery_profile!=1&&state.intent->recovery_profile!=2)||!V7(resolution.resolution_uuid)||
        resolution.resolution_uuid==state.operation_uuid||Zero(resolution.pending_state_sha256.data(),32))return E::invalid_family;
   }
   return E::none;
@@ -163,7 +163,7 @@ NativePublicationWatermarkImage EncodeNativePublicationWatermark(
       StoreLittle16(family+384,request.initiator_kind);StoreLittle16(family+386,1);
     }
     if(version==4)StoreLittle16(family+516,state.intent->recovery_profile);
-    if(state.abandonment){StoreLittle16(family+518,1);PutUuid(family+520,state.abandonment->resolution_uuid);
+    if(state.abandonment){StoreLittle16(family+518,state.intent->recovery_profile);PutUuid(family+520,state.abandonment->resolution_uuid);
       std::copy(state.abandonment->pending_state_sha256.begin(),state.abandonment->pending_state_sha256.end(),family+536);
     }
     if(state.publication_plan){const auto& plan=*state.publication_plan;
@@ -206,7 +206,8 @@ NativePublicationWatermarkImage DecodeNativePublicationWatermark(
         LoadLittle16(family+10)!=(version>=3?640:intent?512:384)||LoadLittle32(family+12)!=used||
         !Zero(family+(version==4?568:version==3?516:intent?388:304),version==4?72:intent?124:80)||
         (intent&&LoadLittle16(family+386)!=1)||!Zero(bytes.data()+used,bytes.size()-used))return Fail(E::invalid_family);
-    if(version==4&&((LoadLittle16(family+516)!=1&&LoadLittle16(family+516)!=2)||LoadLittle16(family+518)>1||
+    if(version==4&&((LoadLittle16(family+516)!=1&&LoadLittle16(family+516)!=2)||
+       (LoadLittle16(family+518)&&LoadLittle16(family+518)!=LoadLittle16(family+516))||
        (!LoadLittle16(family+518)&&!Zero(family+520,48))))return Fail(E::invalid_family);
     const bool anchor=version==3||(version==4&&!Zero(family+388,128));
     if(anchor){const auto origin=OriginDigest(family,version);if(!origin.ok())return Fail(E::hash_failure);
@@ -283,7 +284,8 @@ NativePublicationWatermarkImage ClassifyNativePublicationWatermarkPair(
     if (a.watermark == b.watermark) {
       if(bool(a.abandonment)!=bool(b.abandonment)){
         const auto& resolved=a.abandonment?left:right;const auto& pending=a.abandonment?right:left;
-        return Fail(pending.state->intent&&pending.state->intent->recovery_profile==1&&
+        return Fail(pending.state->intent&&(pending.state->intent->recovery_profile==1||pending.state->intent->recovery_profile==2)&&
+          resolved.state->intent==pending.state->intent&&
           resolved.state->abandonment->pending_state_sha256==pending.state_sha256?E::repair_required:E::invalid_pair);
       }
       if(bool(a.publication_plan)!=bool(b.publication_plan)){

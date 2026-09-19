@@ -78,7 +78,7 @@ Bytes Oracle(const db::NativePublicationWatermark& s) {
   if(s.publication_plan){const auto& p=*s.publication_plan;Ref(b,516,p.page);Put(b,564,p.object_uuid);
     std::copy(p.sha256.begin(),p.sha256.end(),b.begin()+580);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),b.begin()+612);}
   if(profiled)Num(b,644,2,s.intent->recovery_profile);
-  if(s.abandonment){Num(b,646,2,1);Put(b,648,s.abandonment->resolution_uuid);std::copy(s.abandonment->pending_state_sha256.begin(),s.abandonment->pending_state_sha256.end(),b.begin()+664);}
+  if(s.abandonment){Num(b,646,2,s.intent->recovery_profile);Put(b,648,s.abandonment->resolution_uuid);std::copy(s.abandonment->pending_state_sha256.begin(),s.abandonment->pending_state_sha256.end(),b.begin()+664);}
   Seal(b);return b;
 }
 db::NativePublicationWatermark Example(unsigned p=0) {
@@ -178,8 +178,8 @@ void AnchorTests(){
   }
 }
 void ResolutionTests(){
- for(unsigned profile=0;profile<5;++profile)for(unsigned attached=0;attached<2;++attached){auto pending=Next(Example(profile));
-  pending.intent=db::NativePublicationIntent{Id(40),Id(41),Id(42),{},4,1};pending.intent->normalized_request_sha256.fill(43);
+ for(u16 recovery_profile:{u16(1),u16(2)})for(unsigned profile=0;profile<5;++profile)for(unsigned attached=0;attached<2;++attached){auto pending=Next(Example(profile));
+  pending.intent=db::NativePublicationIntent{Id(40),Id(41),Id(42),{},4,recovery_profile};pending.intent->normalized_request_sha256.fill(43);
   if(attached){const auto origin=Oracle(pending);db::NativePublicationWatermark::PlanAnchor anchor;
    anchor.page={Id(2),30,2,pending.header.page_size_profile_uuid};anchor.object_uuid=Id(44);anchor.sha256.fill(45);std::copy_n(origin.begin()+368,32,anchor.reservation_state_sha256.begin());pending.publication_plan=anchor;
   }
@@ -188,7 +188,7 @@ void ResolutionTests(){
    const auto encoded=db::EncodeNativePublicationWatermark(state);Check(encoded.ok()&&encoded.bytes==bytes,"independent exact profiled watermark bytes");const auto decoded=db::DecodeNativePublicationWatermark(bytes);
    Check(decoded.ok()&&decoded.state->intent==state.intent&&decoded.state->abandonment==state.abandonment&&decoded.state->publication_plan==state.publication_plan&&Oracle(*decoded.state)==bytes,"complete profiled state round trip");
    Check(db::ClassifyNativePublicationWatermarkPair(bytes,other).ok(),"equal canonical profiled pair");
-   for(const auto offset:{644u,646u,696u,767u}){auto wrong=bytes;wrong[offset]=offset==644?3:offset==646?2:1;Seal(wrong);Empty(db::DecodeNativePublicationWatermark(wrong));}
+   for(const auto offset:{644u,646u,696u,767u}){auto wrong=bytes;wrong[offset]=offset==644?3:offset==646?3-recovery_profile:1;Seal(wrong);Empty(db::DecodeNativePublicationWatermark(wrong));}
    if(!resolved){auto wrong=bytes;Put(wrong,648,Id(47));Seal(wrong);Empty(db::DecodeNativePublicationWatermark(wrong));}
    for(unsigned route=0;route<3;++route){const auto call=[&]{return route==0?db::EncodeNativePublicationWatermark(state):route==1?db::DecodeNativePublicationWatermark(bytes):db::ClassifyNativePublicationWatermarkPair(bytes,other);};
     bool completed=false;for(long at=0;at<20;++at){allocation_budget=at;const auto result=call();const auto left=allocation_budget;allocation_budget=-1;if(result.ok()){Check(left==0,"complete profiled allocation sweep");completed=true;break;}Empty(result);Check(left==-1&&result.error==E::resource_exhausted,"every profiled allocation fault consumed and preserved");}Check(completed,"profiled allocation sweep terminates");
@@ -198,7 +198,7 @@ void ResolutionTests(){
   Check(db::ClassifyNativePublicationWatermarkPair(Oracle(abandoned),Oracle(Other(pending))).error==E::repair_required,"pending-to-abandoned state link is explicit repair");
   auto next=Next(Other(abandoned));next.abandonment.reset();next.publication_plan.reset();Check(db::ClassifyNativePublicationWatermarkPair(Oracle(abandoned),Oracle(next)).error==E::repair_required,"abandoned request permits a new generation with unchanged selected base");
   auto unselected_next=Next(Other(pending));unselected_next.publication_plan.reset();const auto unselected_bytes=Oracle(unselected_next);Check(db::DecodeNativePublicationWatermark(unselected_bytes).ok(),"unselected successor negative is individually canonical");Check(db::ClassifyNativePublicationWatermarkPair(Oracle(pending),unselected_bytes).error==E::invalid_pair,"unresolved profile still cannot be displaced");
-  for(unsigned defect=0;defect<7;++defect){auto wrong=abandoned;if(defect==0)wrong.intent->recovery_profile=0;if(defect==1)wrong.intent->recovery_profile=2;if(defect==2)wrong.abandonment->resolution_uuid={};if(defect==3)wrong.abandonment->resolution_uuid=wrong.operation_uuid;if(defect==4)wrong.abandonment->pending_state_sha256={};if(defect==5)wrong.abandonment->pending_state_sha256[0]^=1;if(defect==6)wrong.intent->policy_snapshot_uuid=Id(47);Invalid(wrong);}
+  for(unsigned defect=0;defect<7;++defect){auto wrong=abandoned;if(defect==0)wrong.intent->recovery_profile=0;if(defect==1)wrong.intent->recovery_profile=3-recovery_profile;if(defect==2)wrong.abandonment->resolution_uuid={};if(defect==3)wrong.abandonment->resolution_uuid=wrong.operation_uuid;if(defect==4)wrong.abandonment->pending_state_sha256={};if(defect==5)wrong.abandonment->pending_state_sha256[0]^=1;if(defect==6)wrong.intent->policy_snapshot_uuid=Id(47);Invalid(wrong);}
   auto conflict=Other(abandoned);conflict.abandonment->resolution_uuid=Id(48);Check(db::EncodeNativePublicationWatermark(conflict).ok(),"distinct resolution individually canonical");Check(db::ClassifyNativePublicationWatermarkPair(Oracle(abandoned),Oracle(conflict)).error==E::invalid_pair,"conflicting valid resolutions refuse");
  }
 }
@@ -206,7 +206,7 @@ void InventoryIntentTests(){
  for(unsigned profile=0;profile<5;++profile)for(unsigned attached=0;attached<2;++attached){auto state=Next(Example(profile));state.intent=db::NativePublicationIntent{Id(40),Id(41),Id(42),{},4,2};state.intent->normalized_request_sha256.fill(43);
   if(attached){const auto origin=Oracle(state);db::NativePublicationWatermark::PlanAnchor anchor;anchor.page={Id(2),30,2,state.header.page_size_profile_uuid};anchor.object_uuid=Id(44);anchor.sha256.fill(45);std::copy_n(origin.begin()+368,32,anchor.reservation_state_sha256.begin());state.publication_plan=anchor;}
   const auto bytes=Oracle(state),other=Oracle(Other(state));const auto encoded=db::EncodeNativePublicationWatermark(state);Check(encoded.ok()&&encoded.bytes==bytes,"independent inventory intent bytes and exact origin");const auto decoded=db::DecodeNativePublicationWatermark(bytes);Check(decoded.ok()&&decoded.state->intent==state.intent&&decoded.state->publication_plan==state.publication_plan&&Oracle(*decoded.state)==bytes,"inventory intent exact round trip");Check(db::ClassifyNativePublicationWatermarkPair(bytes,other).ok(),"inventory intent equal pair");
-  auto wrong=state;wrong.intent->recovery_profile=3;Invalid(wrong);wrong=state;wrong.abandonment=db::NativePublicationWatermark::Abandonment{Id(46),{}};std::copy_n(bytes.begin()+368,32,wrong.abandonment->pending_state_sha256.begin());Invalid(wrong);
+  auto wrong=state;wrong.intent->recovery_profile=3;Invalid(wrong);wrong=state;wrong.abandonment=db::NativePublicationWatermark::Abandonment{Id(46),{}};std::copy_n(bytes.begin()+368,32,wrong.abandonment->pending_state_sha256.begin());const auto resolved=Oracle(wrong);Check(db::EncodeNativePublicationWatermark(wrong).bytes==resolved&&db::DecodeNativePublicationWatermark(resolved).ok(),"inventory resolution has its own canonical disposition");auto metadata_disposition=resolved;Num(metadata_disposition,646,2,1);Seal(metadata_disposition);Empty(db::DecodeNativePublicationWatermark(metadata_disposition));
   auto metadata=state;metadata.publication_plan.reset();metadata.intent->recovery_profile=1;Check(db::ClassifyNativePublicationWatermarkPair(bytes,Oracle(Other(metadata))).error==E::invalid_pair,"metadata intent cannot replace inventory intent at same generation");
   if(attached){auto forged=bytes;Num(forged,644,2,1);Seal(forged);Empty(db::DecodeNativePublicationWatermark(forged));}
   for(unsigned route=0;route<3;++route){const auto call=[&]{return route==0?db::EncodeNativePublicationWatermark(state):route==1?db::DecodeNativePublicationWatermark(bytes):db::ClassifyNativePublicationWatermarkPair(bytes,other);};bool complete=false;
