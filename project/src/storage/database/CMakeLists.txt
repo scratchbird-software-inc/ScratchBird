@@ -42,6 +42,7 @@ add_library(sb_storage_database
   native_management_control_bundle.cpp
   native_checkpoint_selection_binding.cpp
   native_inventory_successor_staging.cpp
+  native_inventory_publication_delta.cpp
   native_filespace_initialization.cpp
   native_creation_workspace.cpp
   native_creation_workspace_recovery.cpp

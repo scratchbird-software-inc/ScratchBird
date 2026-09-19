@@ -8312,6 +8312,15 @@ set_tests_properties(sbsql_sblr_alignment_allocation_map_evidence PROPERTIES
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_native_allocation_map native_allocation_map_test.cpp)
+  add_executable(sbsql_sblr_alignment_native_inventory_publication_delta native_inventory_publication_delta_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_inventory_publication_delta PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_inventory_publication_delta PRIVATE sb_storage_database)
+  target_link_options(sbsql_sblr_alignment_native_inventory_publication_delta PRIVATE
+    -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
+    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
+  add_test(NAME sbsql_sblr_alignment_native_inventory_publication_delta COMMAND sbsql_sblr_alignment_native_inventory_publication_delta)
+  set_tests_properties(sbsql_sblr_alignment_native_inventory_publication_delta PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_inventory_delta;image_only;not_SQL_E2E" TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_native_filespace_directory native_filespace_directory_test.cpp)
   add_executable(sbsql_sblr_alignment_native_horizon_root native_horizon_root_test.cpp)
   add_executable(sbsql_sblr_alignment_transaction_horizon_state transaction_horizon_state_test.cpp)
