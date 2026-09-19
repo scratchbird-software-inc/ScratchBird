@@ -19,7 +19,7 @@ struct NativePublicationIntent {
   Uuid initiator_uuid, request_context_uuid, policy_snapshot_uuid;
   std::array<byte,32> normalized_request_sha256{};
   core::platform::u16 initiator_kind=0;
-  // 0: unprofiled legacy intent; 1: management-record metadata only.
+  // 0: unprofiled legacy; 1: metadata only; 2: inventory/control publication.
   // A durable restriction, never authentication or user-effect authority.
   core::platform::u16 recovery_profile=0;
   bool operator==(const NativePublicationIntent&) const = default;

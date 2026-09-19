@@ -85,7 +85,7 @@ E Validate(const NativePublicationWatermark& state) {
        state.base_checkpoint.page_number == header.page_number)) return E::invalid_reference;
   if(state.intent){const auto& intent=*state.intent;
     if(!V7(intent.initiator_uuid)||!V7(intent.request_context_uuid)||!V7(intent.policy_snapshot_uuid))return E::invalid_identity;
-    if(state.watermark==1||intent.initiator_kind<1||intent.initiator_kind>8||intent.recovery_profile>1||
+    if(state.watermark==1||intent.initiator_kind<1||intent.initiator_kind>8||intent.recovery_profile>2||
        Zero(intent.normalized_request_sha256.data(),32))return E::invalid_family;
   }
   if(state.publication_plan){const auto& plan=*state.publication_plan;
@@ -206,7 +206,7 @@ NativePublicationWatermarkImage DecodeNativePublicationWatermark(
         LoadLittle16(family+10)!=(version>=3?640:intent?512:384)||LoadLittle32(family+12)!=used||
         !Zero(family+(version==4?568:version==3?516:intent?388:304),version==4?72:intent?124:80)||
         (intent&&LoadLittle16(family+386)!=1)||!Zero(bytes.data()+used,bytes.size()-used))return Fail(E::invalid_family);
-    if(version==4&&(LoadLittle16(family+516)!=1||LoadLittle16(family+518)>1||
+    if(version==4&&((LoadLittle16(family+516)!=1&&LoadLittle16(family+516)!=2)||LoadLittle16(family+518)>1||
        (!LoadLittle16(family+518)&&!Zero(family+520,48))))return Fail(E::invalid_family);
     const bool anchor=version==3||(version==4&&!Zero(family+388,128));
     if(anchor){const auto origin=OriginDigest(family,version);if(!origin.ok())return Fail(E::hash_failure);

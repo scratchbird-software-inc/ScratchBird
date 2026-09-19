@@ -23,8 +23,8 @@ struct NativePublicationPlan {
   // Version4 binds the actual selector sequence, not the reserved checkpoint
   // watermark. Absence preserves the earlier plan image definitions.
   std::optional<u64> base_selection_generation;
-  // A nonzero intent.recovery_profile selects version5 and requires the
-  // complete metadata-only extent/bundle/sequence contract.
+  // Profile1 selects version5 (metadata only); profile2 selects version6
+  // with the complete inventory-bearing bundle. Both require the sequence.
 };
 enum class NativePublicationPlanError {
   none, invalid_header, invalid_identity, invalid_family, invalid_reference,

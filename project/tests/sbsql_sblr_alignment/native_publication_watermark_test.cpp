@@ -188,7 +188,7 @@ void ResolutionTests(){
    const auto encoded=db::EncodeNativePublicationWatermark(state);Check(encoded.ok()&&encoded.bytes==bytes,"independent exact profiled watermark bytes");const auto decoded=db::DecodeNativePublicationWatermark(bytes);
    Check(decoded.ok()&&decoded.state->intent==state.intent&&decoded.state->abandonment==state.abandonment&&decoded.state->publication_plan==state.publication_plan&&Oracle(*decoded.state)==bytes,"complete profiled state round trip");
    Check(db::ClassifyNativePublicationWatermarkPair(bytes,other).ok(),"equal canonical profiled pair");
-   for(const auto offset:{644u,646u,696u,767u}){auto wrong=bytes;wrong[offset]=offset==644||offset==646?2:1;Seal(wrong);Empty(db::DecodeNativePublicationWatermark(wrong));}
+   for(const auto offset:{644u,646u,696u,767u}){auto wrong=bytes;wrong[offset]=offset==644?3:offset==646?2:1;Seal(wrong);Empty(db::DecodeNativePublicationWatermark(wrong));}
    if(!resolved){auto wrong=bytes;Put(wrong,648,Id(47));Seal(wrong);Empty(db::DecodeNativePublicationWatermark(wrong));}
    for(unsigned route=0;route<3;++route){const auto call=[&]{return route==0?db::EncodeNativePublicationWatermark(state):route==1?db::DecodeNativePublicationWatermark(bytes):db::ClassifyNativePublicationWatermarkPair(bytes,other);};
     bool completed=false;for(long at=0;at<20;++at){allocation_budget=at;const auto result=call();const auto left=allocation_budget;allocation_budget=-1;if(result.ok()){Check(left==0,"complete profiled allocation sweep");completed=true;break;}Empty(result);Check(left==-1&&result.error==E::resource_exhausted,"every profiled allocation fault consumed and preserved");}Check(completed,"profiled allocation sweep terminates");
@@ -202,7 +202,21 @@ void ResolutionTests(){
   auto conflict=Other(abandoned);conflict.abandonment->resolution_uuid=Id(48);Check(db::EncodeNativePublicationWatermark(conflict).ok(),"distinct resolution individually canonical");Check(db::ClassifyNativePublicationWatermarkPair(Oracle(abandoned),Oracle(conflict)).error==E::invalid_pair,"conflicting valid resolutions refuse");
  }
 }
+void InventoryIntentTests(){
+ for(unsigned profile=0;profile<5;++profile)for(unsigned attached=0;attached<2;++attached){auto state=Next(Example(profile));state.intent=db::NativePublicationIntent{Id(40),Id(41),Id(42),{},4,2};state.intent->normalized_request_sha256.fill(43);
+  if(attached){const auto origin=Oracle(state);db::NativePublicationWatermark::PlanAnchor anchor;anchor.page={Id(2),30,2,state.header.page_size_profile_uuid};anchor.object_uuid=Id(44);anchor.sha256.fill(45);std::copy_n(origin.begin()+368,32,anchor.reservation_state_sha256.begin());state.publication_plan=anchor;}
+  const auto bytes=Oracle(state),other=Oracle(Other(state));const auto encoded=db::EncodeNativePublicationWatermark(state);Check(encoded.ok()&&encoded.bytes==bytes,"independent inventory intent bytes and exact origin");const auto decoded=db::DecodeNativePublicationWatermark(bytes);Check(decoded.ok()&&decoded.state->intent==state.intent&&decoded.state->publication_plan==state.publication_plan&&Oracle(*decoded.state)==bytes,"inventory intent exact round trip");Check(db::ClassifyNativePublicationWatermarkPair(bytes,other).ok(),"inventory intent equal pair");
+  auto wrong=state;wrong.intent->recovery_profile=3;Invalid(wrong);wrong=state;wrong.abandonment=db::NativePublicationWatermark::Abandonment{Id(46),{}};std::copy_n(bytes.begin()+368,32,wrong.abandonment->pending_state_sha256.begin());Invalid(wrong);
+  auto metadata=state;metadata.publication_plan.reset();metadata.intent->recovery_profile=1;Check(db::ClassifyNativePublicationWatermarkPair(bytes,Oracle(Other(metadata))).error==E::invalid_pair,"metadata intent cannot replace inventory intent at same generation");
+  if(attached){auto forged=bytes;Num(forged,644,2,1);Seal(forged);Empty(db::DecodeNativePublicationWatermark(forged));}
+  for(unsigned route=0;route<3;++route){const auto call=[&]{return route==0?db::EncodeNativePublicationWatermark(state):route==1?db::DecodeNativePublicationWatermark(bytes):db::ClassifyNativePublicationWatermarkPair(bytes,other);};bool complete=false;
+   for(long at=0;at<20;++at){allocation_budget=at;const auto r=call();const auto left=allocation_budget;allocation_budget=-1;if(r.ok()){Check(left==0,"inventory intent complete allocation sweep");complete=true;break;}Check(left==-1&&r.error==E::resource_exhausted,"inventory intent consumes allocation failures");Empty(r);}Check(complete,"inventory intent allocation sweep terminates");
+   const unsigned hashes=(2+attached)*(route==2?2:1);for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hashes;++at){hash_fault=mode;hash_target=at;hash_seen=0;hash_active=false;const auto r=call();Check(!hash_fault&&r.error==E::hash_failure,"inventory intent exact origin and image hash failures");Empty(r);}
+  }
+ }
+}
 void Test() {
+  InventoryIntentTests();
   ResolutionTests();
   AnchorTests();
   IntentTests();
