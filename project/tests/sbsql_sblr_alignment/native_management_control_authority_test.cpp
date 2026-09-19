@@ -19,6 +19,7 @@
 #include <stdexcept>
 #include <cerrno>
 #include <sys/wait.h>
+#include <type_traits>
 namespace {long allocation_budget=-1;bool counting=false;unsigned long allocations=0;unsigned hash_fault=0,hash_target=1,hash_seen=0;bool hash_active=false,hash_counting=false;
 bool io_counting=false;unsigned reads=0,writes=0,syncs=0,read_fault=0,write_fault=0,sync_fault=0,kill_write=0,corrupt_read=0;std::size_t torn_bytes=0;int allocation_shard=-1;}
 void* operator new(std::size_t n){if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
@@ -263,7 +264,9 @@ Bytes SelectorOracle(const db::NativeCheckpointSelection& s){const auto& h=s.hea
 
 
 using AE=db::NativeManagementControlAuthorityError;
-void Empty(const db::NativeManagementControlAuthority& r){Check(!r.ok()&&!r.selection&&r.publications.empty()&&r.allocations.empty()&&!r.verified_image_bytes,"no failed creator proof prefix");}
+void Empty(const db::NativeManagementControlGraph& r){Check(!r.ok()&&!r.anchor&&r.publications.empty()&&r.allocations.empty()&&!r.verified_image_bytes,"no failed graph proof prefix");}
+void Empty(const db::NativeManagementControlAuthority& r){Empty(static_cast<const db::NativeManagementControlGraph&>(r));Check(!r.selection,"no failed selected creator prefix");}
+void Empty(const db::NativeManagementGraphHistory& r){Check(!r.ok()&&!r.anchor&&r.entries.empty()&&r.latest.empty()&&r.idempotency.empty()&&!r.verified_image_bytes,"no failed graph history prefix");}
 void Reset(){reads=writes=syncs=read_fault=write_fault=sync_fault=corrupt_read=kill_write=0;torn_bytes=0;hash_fault=0;hash_active=false;}
 void Write(Fixture& f,u64 n,const Bytes& b){const auto r=f.device.WriteAt(n*f.size,b.data(),b.size());Check(r.ok()&&r.bytes_transferred==b.size(),"isolated fixture write");}
 void SelectFixture(Fixture& f,const Graph& g){
@@ -283,6 +286,10 @@ void Install(Fixture& f,Graph& g,const Bundle& b){
 void RawGraph(Fixture& f,const Graph& g,Bundle& b){Write(f,g.base.header.page_number,g.base_bytes);for(unsigned i=0;i<g.before_bytes.size();++i)Write(f,g.before[i].header.page_number,g.before_bytes[i]);
  Write(f,g.plan.header.page_number,g.plan_bytes);Write(f,g.plan.target_checkpoint.page_number,g.target_bytes);for(unsigned i=0;i<g.extent.size();++i)Write(f,g.plan.management_extent->first.page_number+i,g.extent[i]);for(unsigned i=0;i<g.after_bytes.size();++i)Write(f,g.after[i].header.page_number,g.after_bytes[i]);b.Install();SelectFixture(f,g);}
 auto Read(Fixture& f,u64 budget=0){return db::ReadNativeManagementControlAuthorityFromOpenDevices(Id(1),f.devices,Id(2),budget?budget:f.budget);}
+auto Anchor(const db::NativeCheckpointRoot& cp,const Bytes& bytes){return db::NativeManagementCheckpointAnchor{Self(cp.header),cp.object_uuid,Sha(bytes),cp.checkpoint_generation,cp.root_set_generation,cp.timeline_uuid};}
+auto Anchor(const Graph& g){return Anchor(*db::DecodeNativeCheckpointRoot(g.target_bytes).root,g.target_bytes);}
+auto GraphRead(Fixture& f,const db::NativeManagementCheckpointAnchor& anchor,u64 budget=0){return db::ReadNativeManagementControlGraphFromOpenDevices(Id(1),f.devices,Id(2),anchor,budget?budget:f.budget);}
+auto GraphHistory(Fixture& f,const db::NativeManagementCheckpointAnchor& anchor,u64 budget=0){return db::ReadNativeManagementGraphHistoryFromOpenDevices(Id(1),f.devices,Id(2),anchor,budget?budget:f.budget);}
 auto Inventory(Fixture& f,const Graph& g){const auto& p=g.plan;return db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),f.devices,{9,0x300,p.target_checkpoint.filespace_uuid,p.target_checkpoint.page_number,p.target_checkpoint.page_generation,p.target_checkpoint.page_size_profile_uuid,p.target_checkpoint_object_uuid},f.budget);}
 auto Bound(Fixture& f){return db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.devices,Id(2),f.budget);}
 void Good(Fixture& f,const Graph& g,std::size_t count){
@@ -346,28 +353,31 @@ void Retained(){
  Empty(rejected);Check(!rejected_bound.ok()&&!writes&&!syncs&&f.Read(0,256)==tampered,"retained historical target maps must be read and bound even with intact current maps");
  Write(f,0,actual);Check(Read(f).ok()&&Bound(f).ok(),"restored historical and current map authority");
 }
-int Call(Fixture& f,const Graph& g,unsigned route){
+int Call(Fixture& f,const Graph& g,unsigned route,const db::NativeManagementCheckpointAnchor& anchor){
+ if(route==3){const auto r=GraphHistory(f,anchor);if(!r.ok())Empty(r);return int(r.error);}
+ if(route==4){const auto r=GraphRead(f,anchor);if(!r.ok())Empty(r);return int(r.error);}
  if(route==0){const auto r=Read(f);if(!r.ok())Empty(r);return int(r.error);}
  if(route==1){const auto r=Inventory(f,g);if(!r.ok())Check(!r.checkpoint&&r.inventory_pages.empty()&&!r.retained_image_bytes,"no failed inventory authority prefix");return int(r.error);}
  const auto r=Bound(f);if(!r.ok())Check(!r.selection&&!r.checkpoint_inventory.checkpoint&&!r.predecessor.checkpoint&&r.allocation.pages.empty()&&!r.retained_image_bytes,"no failed selected authority prefix");return int(r.error);
 }
 void Faults(unsigned route,int shard=-1){
- Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.Refresh();Install(f,g,b);SelectFixture(f,g);const auto original=f.Read(0,256);
+ Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.Refresh();Install(f,g,b);if(route<3)SelectFixture(f,g);const auto anchor=Anchor(g);const auto original=f.Read(0,256);
  byte scratch=0;for(unsigned i=0;i<4097;++i){const auto read=f.device.ReadAt(0,&scratch,1);Check(read.ok()&&read.bytes_transferred==1,"stabilize optional metric-history capacity");}
- const int resource=route==0?int(AE::resource_exhausted):route==1?int(db::NativeCheckpointError::resource_exhausted):int(db::NativeCheckpointSelectionError::resource_exhausted);
- const int hash=route==0?int(AE::hash_failure):route==1?int(db::NativeCheckpointError::hash_failure):int(db::NativeCheckpointSelectionError::hash_failure);
- const int io=route==0?int(AE::io_failure):route==1?int(db::NativeCheckpointError::io_failure):int(db::NativeCheckpointSelectionError::io_failure);
- if(shard>=0){counting=true;allocations=0;const auto baseline=Call(f,g,route);counting=false;const auto sites=allocations;Check(!baseline,"allocation baseline");
-  for(unsigned long at=shard;at<sites;at+=4){const auto lost=f.device.failed_io_latency_observations();Reset();io_counting=true;allocation_budget=at;const int result=Call(f,g,route);const auto remaining=allocation_budget;allocation_budget=-1;io_counting=false;
+ using HE=db::NativeManagementHistoryError;
+ const int resource=route==0||route==4?int(AE::resource_exhausted):route==3?int(HE::resource_exhausted):route==1?int(db::NativeCheckpointError::resource_exhausted):int(db::NativeCheckpointSelectionError::resource_exhausted);
+ const int hash=route==0||route==4?int(AE::hash_failure):route==3?int(HE::hash_failure):route==1?int(db::NativeCheckpointError::hash_failure):int(db::NativeCheckpointSelectionError::hash_failure);
+ const int io=route==0||route==4?int(AE::io_failure):route==3?int(HE::io_failure):route==1?int(db::NativeCheckpointError::io_failure):int(db::NativeCheckpointSelectionError::io_failure);
+ if(shard>=0){counting=true;allocations=0;const auto baseline=Call(f,g,route,anchor);counting=false;const auto sites=allocations;Check(!baseline,"allocation baseline");
+  for(unsigned long at=shard;at<sites;at+=4){const auto lost=f.device.failed_io_latency_observations();Reset();io_counting=true;allocation_budget=at;const int result=Call(f,g,route,anchor);const auto remaining=allocation_budget;allocation_budget=-1;io_counting=false;
    if(!result)Check(remaining==-1&&f.device.failed_io_latency_observations()==lost+1,"only consumed optional observation failure may succeed");
    else{if(result!=resource)std::cerr<<"route="<<route<<" allocation="<<at<<" result="<<result<<" expected="<<resource<<"\n";Check(result==resource,"required allocation errors retained through consumer");}
    Check(!writes&&!syncs,"allocation failure cannot mutate node");
   }
   Check(f.Read(0,256)==original,"allocation sweep leaves entire file intact");std::cout<<"route="<<route<<" allocation sites="<<sites<<" shard="<<shard<<"\n";return;
  }
- Reset();io_counting=true;hash_counting=true;hash_seen=0;const int baseline=Call(f,g,route);io_counting=false;hash_counting=false;const auto nr=reads,nh=hash_seen;Check(!baseline&&!writes&&!syncs,"measured actual creator reader");
- for(unsigned mode=0;mode<2;++mode)for(unsigned at=1;at<=nr;++at){Reset();if(mode)corrupt_read=at;else read_fault=at;io_counting=true;const int result=Call(f,g,route);io_counting=false;Check(result&&(mode||result==io)&&!writes&&!syncs,"every read failure/corruption refuses without writes");}
- for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=nh;++at){Reset();hash_fault=mode;hash_target=at;hash_seen=0;io_counting=true;const int result=Call(f,g,route);io_counting=false;const bool consumed=!hash_fault;hash_fault=0;
+ Reset();io_counting=true;hash_counting=true;hash_seen=0;const int baseline=Call(f,g,route,anchor);io_counting=false;hash_counting=false;const auto nr=reads,nh=hash_seen;Check(!baseline&&!writes&&!syncs,"measured actual creator reader");
+ for(unsigned mode=0;mode<2;++mode)for(unsigned at=1;at<=nr;++at){Reset();if(mode)corrupt_read=at;else read_fault=at;io_counting=true;const int result=Call(f,g,route,anchor);io_counting=false;Check(result&&(mode||result==io)&&!writes&&!syncs,"every read failure/corruption refuses without writes");}
+ for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=nh;++at){Reset();hash_fault=mode;hash_target=at;hash_seen=0;io_counting=true;const int result=Call(f,g,route,anchor);io_counting=false;const bool consumed=!hash_fault;hash_fault=0;
   if(result!=hash)std::cerr<<"route="<<route<<" hash="<<at<<" mode="<<mode<<" result="<<result<<" expected="<<hash<<"\n";
   Check(consumed&&result==hash&&!writes&&!syncs,"every hash provider failure retained through consumer");}
  Reset();Check(f.Read(0,256)==original,"entire operational failure sweep leaves node unchanged");std::cout<<"route="<<route<<" reads="<<nr<<" hashes="<<nh<<"\n";
@@ -378,6 +388,63 @@ void Profiles(){
   SelectFixture(f,g);Good(f,g,1);Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"actual reopened node");Good(f,g,1);
   if(profile==0){Graph next(f,false,1,&g);Bundle next_bundle(next);next.plan.control_bundle=next_bundle.root;next.Refresh();Install(f,next,next_bundle);SelectFixture(f,next);Good(f,next,2);}
   Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only reopen");const auto read=Read(f);Check(read.ok(),"read-only selected creator proof");
+ }
+}
+void Graphs(){
+ static_assert(!std::is_convertible_v<db::NativeManagementGraphHistory,db::NativeManagementHistory>);
+ static_assert(!std::is_convertible_v<db::NativeManagementControlGraph,db::NativeManagementControlAuthority>);
+ for(unsigned profile=0;profile<5;++profile){
+  Fixture f(profile);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.Refresh();Install(f,g,b);
+  const auto anchor=Anchor(g);const auto original=f.Read(0,256);
+  Reset();io_counting=true;const auto graph=GraphRead(f,anchor);const auto history=GraphHistory(f,anchor);io_counting=false;
+  Check(graph.ok()&&graph.anchor==anchor&&graph.publications.size()==1&&history.ok()&&history.anchor==anchor&&history.entries.size()==1,"actual installed unselected immutable graph inspection");
+  Check(!writes&&!syncs&&f.Read(0,256)==original,"unselected graph inspection cannot mutate selectors or any node byte");
+  Check(Read(f).ok()&&Read(f).publications.empty()&&!Inventory(f,g).ok(),"graph inspection never promotes unselected publication");
+  Check(GraphRead(f,anchor,graph.verified_image_bytes).ok()&&GraphHistory(f,anchor,history.verified_image_bytes).ok(),"exact anchored verification budgets");
+  Empty(GraphRead(f,anchor,graph.verified_image_bytes-1));Empty(GraphHistory(f,anchor,history.verified_image_bytes-1));
+  for(unsigned field=0;field<12;++field){auto bad=anchor;
+   if(field==0)bad.checkpoint.filespace_uuid=Id(3000);
+   if(field==1)bad.checkpoint.page_number++;
+   if(field==2)bad.checkpoint.page_generation++;
+   if(field==3)bad.checkpoint.page_size_profile_uuid=d::kCanonicalFilespacePageProfiles[(profile+1)%5].uuid;
+   if(field==4)bad.checkpoint_object_uuid=Id(3000);
+   if(field==5)bad.checkpoint_sha256.front()^=1;
+   if(field==6)bad.checkpoint_generation++;
+   if(field==7)bad.root_set_generation++;
+   if(field==8)bad.timeline_uuid=Id(3000);
+   if(field==9)bad.checkpoint_sha256={};
+   if(field==10)bad.checkpoint_generation=0;
+   if(field==11)bad.checkpoint_object_uuid={};
+   Reset();io_counting=true;const auto failed_graph=GraphRead(f,bad);const auto failed_history=GraphHistory(f,bad);io_counting=false;Empty(failed_graph);Empty(failed_history);
+   Check(!writes&&!syncs&&f.Read(0,256)==original,"bad caller inspection anchor has no mutation or proof prefix");
+  }
+  for(unsigned damaged=1;damaged<=3;++damaged){Write(f,0,original);
+   for(unsigned slot=0;slot<2;++slot)if(damaged&(1u<<slot)){const auto ref=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[&](const auto& r){return r.kind==18+slot;});auto bytes=f.Read(ref->page_number);bytes.back()^=1;Write(f,ref->page_number,bytes);}
+   const auto before=f.Read(0,256);Reset();io_counting=true;const auto inspected=GraphRead(f,anchor);const auto inspected_history=GraphHistory(f,anchor);const auto selected=Read(f);const auto bound=Bound(f);io_counting=false;
+   Check(inspected.ok()&&inspected_history.ok()&&!bound.ok(),"immutable graph inspection ignores damaged selectors without bypassing selected admission");Empty(selected);
+   Check(!writes&&!syncs&&f.Read(0,256)==before,"damaged selectors are never repaired or overlaid by inspection");
+  }
+  Write(f,0,original);SelectFixture(f,g);const auto selected=Read(f);const auto selected_history=db::ReadNativeManagementHistoryFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
+  Check(selected.ok()&&selected.anchor==anchor&&selected.allocations==graph.allocations&&selected.verified_image_bytes==graph.verified_image_bytes+4*f.size,"selected proof adds exactly actual pair verification work");
+  Check(selected_history.ok()&&selected_history.anchor==anchor&&selected_history.latest==history.latest&&selected_history.idempotency==history.idempotency&&selected_history.verified_image_bytes==history.verified_image_bytes+4*f.size,"selected and anchored histories share exact physical ancestry");
+  const auto peer=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[](const auto& r){return r.kind==19;});
+  const auto stable_peer=f.Read(peer->page_number);Bytes old_peer(original.begin()+peer->page_number*f.size,original.begin()+(peer->page_number+1)*f.size);Write(f,peer->page_number,old_peer);
+  const auto interrupted=f.Read(0,256);Reset();io_counting=true;const auto pending_graph=GraphRead(f,anchor);const auto pending_history=GraphHistory(f,anchor);const auto pending_selection=Read(f);io_counting=false;
+  Check(pending_graph.ok()&&pending_history.ok(),"actual first-new second-old selector interruption permits only anchored inspection");Empty(pending_selection);
+  Check(!writes&&!syncs&&f.Read(0,256)==interrupted,"graph inspection never completes interrupted selector publication");Write(f,peer->page_number,stable_peer);
+  const auto historical=GraphRead(f,Anchor(g.base,g.base_bytes));Check(historical.ok()&&historical.publications.empty(),"historical genesis inspection is not current-root selection");
+  if(profile==0){TransactionTail tail(f,g);tail.Install();const auto root=Anchor(tail.cp,tail.bytes);const auto tail_graph=GraphRead(f,root);Check(tail_graph.ok()&&tail_graph.publications.size()==1&&GraphHistory(f,root).ok(),"anchored transaction tail retains operation graph");
+   auto& map=Cover(tail.maps,g.plan.header.page_number);map.states[g.plan.header.page_number-map.first_page]=State::free;map.records.erase(std::remove_if(map.records.begin(),map.records.end(),[&](const auto& r){return r.page_number==g.plan.header.page_number;}),map.records.end());tail.Refresh();tail.Install();
+   const auto bad=Anchor(tail.cp,tail.bytes);Check(GraphHistory(f,bad).ok(),"retained physical history alone cannot authorize freed controls");Empty(GraphRead(f,bad));Write(f,0,original);
+  }
+  if(profile==0){SelectFixture(f,g);Graph next(f,false,1,&g);Bundle next_bundle(next);next.plan.control_bundle=next_bundle.root;next.Refresh();Install(f,next,next_bundle);
+   const auto next_anchor=Anchor(next);const auto pending=GraphRead(f,next_anchor);const auto pending_history=GraphHistory(f,next_anchor);
+   Check(pending.ok()&&pending.publications.size()==2&&pending_history.ok()&&pending_history.entries.size()==2,"actual pending second operation graph includes the selected first publication");
+   Check(Read(f).publications.size()==1&&!Inventory(f,next).ok(),"pending graph inspection does not select the second operation");Write(f,0,original);
+  }
+  auto bad_map=*page::DecodeNativeAllocationMap(g.after_bytes.front()).map;bad_map.records.front().allocation_uuid=Id(3000);const auto encoded=page::EncodeNativeAllocationMap(bad_map);Check(encoded.ok(),"altered stored map remains canonical");Write(f,bad_map.header.page_number,encoded.bytes);
+  Check(GraphHistory(f,anchor).ok(),"bundle-only anchored history is not actual stored-map proof");Empty(GraphRead(f,anchor));Write(f,0,original);
+  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"anchored actual read-only reopen");Check(GraphRead(f,anchor).ok()&&GraphHistory(f,anchor).ok(),"unselected graph persists across read-only reopen");
  }
 }
 void Invalid(){
@@ -400,4 +467,4 @@ void Invalid(){
  const auto slot=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[](const auto& r){return r.kind==19;});auto torn=f.Read(slot->page_number);torn.back()^=1;Write(f,slot->page_number,torn);reject();Write(f,0,original);Good(f,g,1);
 }
 }
-int main(int argc,char** argv){try{const std::string mode=argc>1?argv[1]:"all";Check(mode=="all"||mode=="profiles"||mode=="invalid"||mode=="retained"||mode=="faults"||mode=="allocations","known test mode");if(mode=="faults"||mode=="allocations"){Check(argc==(mode=="faults"?3:4),"fault route and shard arguments");const auto route=std::stoul(argv[2]);Check(route<3,"fault route range");int shard=-1;if(mode=="allocations"){shard=std::stoi(argv[3]);Check(shard>=0&&shard<4,"allocation shard range");}Faults(route,shard);}if(mode=="all"||mode=="profiles")Profiles();if(mode=="all"||mode=="invalid")Invalid();if(mode=="all"||mode=="retained")Retained();std::cout<<"native management control authority checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;io_counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}
+int main(int argc,char** argv){try{const std::string mode=argc>1?argv[1]:"all";Check(mode=="all"||mode=="profiles"||mode=="invalid"||mode=="retained"||mode=="graphs"||mode=="faults"||mode=="allocations","known test mode");if(mode=="faults"||mode=="allocations"){Check(argc==(mode=="faults"?3:4),"fault route and shard arguments");const auto route=std::stoul(argv[2]);Check(route<5,"fault route range");int shard=-1;if(mode=="allocations"){shard=std::stoi(argv[3]);Check(shard>=0&&shard<4,"allocation shard range");}Faults(route,shard);}if(mode=="all"||mode=="profiles")Profiles();if(mode=="all"||mode=="invalid")Invalid();if(mode=="all"||mode=="retained")Retained();if(mode=="all"||mode=="graphs")Graphs();std::cout<<"native management control authority checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;io_counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}

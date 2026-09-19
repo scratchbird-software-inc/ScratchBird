@@ -19,16 +19,33 @@ struct NativeManagementHistoryEntry {
   std::vector<disk::NativeCommonPageHeader> bundle_pages;
   std::vector<std::vector<byte>> control_allocation_images;
 };
-struct NativeManagementHistory {
+struct NativeManagementCheckpointAnchor {
+  disk::NativePageReference checkpoint;
+  Uuid checkpoint_object_uuid;
+  std::array<byte,32> checkpoint_sha256{};
+  u64 checkpoint_generation=0,root_set_generation=0;
+  Uuid timeline_uuid;
+  bool operator==(const NativeManagementCheckpointAnchor&) const = default;
+};
+struct NativeManagementGraphHistory {
   NativeManagementHistoryError error=NativeManagementHistoryError::invalid_request;
-  std::optional<NativeCheckpointSelection> selection;
+  std::optional<NativeManagementCheckpointAnchor> anchor;
   // Oldest first. Index values address this immutable successful sequence.
   std::vector<NativeManagementHistoryEntry> entries;
   std::map<Uuid,std::size_t> latest;
   std::map<std::pair<core::platform::u16,std::string>,Uuid> idempotency;
   u64 verified_image_bytes=0;
-  bool ok() const noexcept{return error==NativeManagementHistoryError::none&&selection.has_value();}
+  bool ok() const noexcept{return error==NativeManagementHistoryError::none&&anchor.has_value();}
 };
+struct NativeManagementHistory : NativeManagementGraphHistory {
+  std::optional<NativeCheckpointSelection> selection;
+  bool ok() const noexcept{return NativeManagementGraphHistory::ok()&&selection.has_value();}
+};
+// Actual immutable graph only. The caller's anchor is not selection, a retained
+// publication lease, recovery ownership, authentication or operation completion.
+NativeManagementGraphHistory ReadNativeManagementGraphHistoryFromOpenDevices(
+  const Uuid& database,const std::vector<disk::NativeFilespaceDevice>&,
+  const Uuid& primary,const NativeManagementCheckpointAnchor&,u64 maximum_verification_image_bytes) noexcept;
 // Actual selected physical history and common evolution/uniqueness only.
 // NOT allocation/creator outcome, kernel authentication, effects or serving.
 NativeManagementHistory ReadNativeManagementHistoryFromOpenDevices(const Uuid& database,

@@ -90,24 +90,27 @@ void Controls(Context& c,const Checkpoint& cp,const page::NativeAllocationChainR
 }
 Pages Images(const page::NativeAllocationChainResult& maps){Pages out;out.reserve(maps.pages.size());for(const auto& p:maps.pages)out.push_back(p.bytes);return out;}
 }
-bool MatchesNativeManagementPublishedCheckpoint(const NativeManagementControlAuthority& proof,const NativeCheckpointRoot& cp,const std::array<byte,32>& sha) noexcept {
+bool MatchesNativeManagementPublishedCheckpoint(const NativeManagementControlGraph& proof,const NativeCheckpointRoot& cp,const std::array<byte,32>& sha) noexcept {
   const auto p=proof.publications.find(cp.creator_operation_uuid);return p!=proof.publications.end()&&p->second.page==Self(cp.header)&&p->second.object_uuid==cp.object_uuid&&p->second.sha256==sha&&cp.creator_transaction_uuid.is_nil()&&!cp.creator_local_transaction_id;
 }
-bool MatchesNativeManagementControlAllocation(const NativeManagementControlAuthority& proof,const Uuid& fs,const page::NativeAllocationRecord& r,State state) noexcept {
+bool MatchesNativeManagementControlAllocation(const NativeManagementControlGraph& proof,const Uuid& fs,const page::NativeAllocationRecord& r,State state) noexcept {
   const auto p=proof.allocations.find({fs,r.page_number});return state==State::allocated&&p!=proof.allocations.end()&&p->second==r&&!r.creator_operation_uuid.is_nil();
 }
-bool MatchesNativeManagementControlMap(const NativeManagementControlAuthority& proof,const page::NativeAllocationMap& map) noexcept {
+bool MatchesNativeManagementControlMap(const NativeManagementControlGraph& proof,const page::NativeAllocationMap& map) noexcept {
   const auto p=proof.allocations.find({map.header.filespace_uuid,map.header.page_number});if(p==proof.allocations.end())return false;const auto& r=p->second;
   return !map.creator_operation_uuid.is_nil()&&map.creator_transaction_uuid.is_nil()&&!map.creator_local_transaction_id&&r.creator_operation_uuid==map.creator_operation_uuid&&r.page_uuid==map.header.page_uuid&&r.page_generation==map.header.page_generation&&r.page_type==map.header.page_type&&r.owner_uuid==map.object_uuid;
 }
-NativeManagementControlAuthority ReadNativeManagementControlAuthorityFromOpenDevices(const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& supplied,const Uuid& primary,u64 budget) noexcept {
+namespace {
+NativeManagementControlAuthority ReadControlGraph(const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& supplied,const Uuid& primary,u64 budget,const NativeManagementCheckpointAnchor* requested) noexcept {
   try{
     Require(core::uuid::IsEngineIdentityUuid(database)&&core::uuid::IsEngineIdentityUuid(primary)&&!supplied.empty(),E::invalid_request);Context c;c.database=database;c.primary=primary;c.budget=budget;c.files=supplied;
     std::sort(c.files.begin(),c.files.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});std::set<disk::FileDevice*> devices;c.guards.reserve(c.files.size());
     for(std::size_t i=0;i<c.files.size();++i){const auto& f=c.files[i];Require(core::uuid::IsEngineIdentityUuid(f.filespace_uuid)&&disk::FindCanonicalFilespacePageProfile(f.page_size_profile_uuid)&&f.device&&devices.insert(f.device).second&&(!i||c.files[i-1].filespace_uuid!=f.filespace_uuid),E::invalid_request);c.guards.push_back(f.device->AcquireOperationGuard());}
-    auto history=ReadNativeManagementHistoryFromOpenDevices(database,c.files,primary,budget);
+    NativeManagementGraphHistory history;std::optional<NativeCheckpointSelection> selected;
+    if(requested)history=ReadNativeManagementGraphHistoryFromOpenDevices(database,c.files,primary,*requested,budget);
+    else{auto actual=ReadNativeManagementHistoryFromOpenDevices(database,c.files,primary,budget);selected=actual.selection;history=std::move(static_cast<NativeManagementGraphHistory&>(actual));}
     if(!history.ok())throw history.error==NativeManagementHistoryError::hash_failure?E::hash_failure:history.error==NativeManagementHistoryError::resource_exhausted?E::resource_exhausted:history.error==NativeManagementHistoryError::io_failure?E::io_failure:history.error==NativeManagementHistoryError::encrypted_requires_authority?E::encrypted_requires_authority:history.error==NativeManagementHistoryError::cluster_requires_authority?E::cluster_requires_authority:E::history_failure;
-    c.Charge(history.verified_image_bytes);NativeManagementControlAuthority result;const u64 size=history.selection->header.page_size_bytes;
+    c.Charge(history.verified_image_bytes);NativeManagementControlAuthority result;const u64 size=disk::FindCanonicalFilespacePageProfile(c.File(primary).page_size_profile_uuid)->page_size_bytes;
     for(const auto& entry:history.entries){const auto& p=entry.plan;Require(p.control_bundle&&p.management_extent,E::binding_mismatch);
       auto base=c.Read(p.base_checkpoint,p.base_checkpoint_object_uuid,p.base_checkpoint_sha256);auto target=c.Read(p.target_checkpoint,p.target_checkpoint_object_uuid,entry.checkpoint_sha256);
       auto before=c.Maps(primary,&Root(base.root,4));Controls(c,base,before,result);auto after=c.Maps(primary,&Root(target.root,4));
@@ -128,8 +131,16 @@ NativeManagementControlAuthority ReadNativeManagementControlAuthorityFromOpenDev
       for(const auto& image:after.pages)for(const auto& record:image.map->records)if(record.creator_operation_uuid==p.operation_uuid)Require(result.allocations.emplace(std::make_pair(primary,record.page_number),record).second,E::binding_mismatch);
       Controls(c,target,after,result);
     }
-    const auto& selected=*history.selection;auto current=c.Read(selected.checkpoint,selected.checkpoint_object_uuid,selected.checkpoint_sha256);auto maps=c.Maps(primary,&Root(current.root,4));Controls(c,current,maps,result);
-    result.selection=selected;result.verified_image_bytes=c.used;result.error=E::none;return result;
+    const auto& anchor=*history.anchor;auto current=c.Read(anchor.checkpoint,anchor.checkpoint_object_uuid,anchor.checkpoint_sha256);auto maps=c.Maps(primary,&Root(current.root,4));Controls(c,current,maps,result);
+    result.anchor=anchor;result.selection=selected;result.verified_image_bytes=c.used;result.error=E::none;return result;
   }catch(E e){return Fail(e);}catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::binding_mismatch);}
+}
+} // namespace
+NativeManagementControlAuthority ReadNativeManagementControlAuthorityFromOpenDevices(const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,u64 budget) noexcept {
+  return ReadControlGraph(database,devices,primary,budget,nullptr);
+}
+NativeManagementControlGraph ReadNativeManagementControlGraphFromOpenDevices(const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,const NativeManagementCheckpointAnchor& anchor,u64 budget) noexcept {
+  auto result=ReadControlGraph(database,devices,primary,budget,&anchor);
+  return std::move(static_cast<NativeManagementControlGraph&>(result));
 }
 } // namespace scratchbird::storage::database

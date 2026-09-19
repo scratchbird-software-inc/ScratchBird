@@ -8355,7 +8355,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME sbsql_sblr_alignment_native_management_control_authority COMMAND sbsql_sblr_alignment_native_management_control_authority)
   set_tests_properties(sbsql_sblr_alignment_native_management_control_authority PROPERTIES
     LABELS "sbsql_sblr_alignment;native_management_control_authority;binary_UUID;actual_read;not_SQL_E2E" TIMEOUT 300)
-  foreach(route RANGE 0 2)
+  foreach(route RANGE 0 4)
     set(test_name "sbsql_sblr_alignment_native_management_control_authority_faults_${route}")
     add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority faults ${route})
     set_tests_properties(${test_name} PROPERTIES

@@ -68,9 +68,13 @@ void Index(NativeManagementHistory& history){
   }
   for(const auto& [step,owner]:steps){(void)owner;Require(!history.latest.contains(step),E::history_mismatch);}
 }
-} // namespace
-NativeManagementHistory ReadNativeManagementHistoryFromOpenDevices(const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& supplied,const Uuid& primary,u64 budget) noexcept {
+NativeManagementHistory ReadHistory(const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& supplied,const Uuid& primary,u64 budget,const NativeManagementCheckpointAnchor* requested) noexcept {
   try{
+    std::optional<NativeManagementCheckpointAnchor> explicit_anchor;
+    if(requested){explicit_anchor=*requested;const auto& a=*explicit_anchor;
+      Require(V7(a.checkpoint.filespace_uuid)&&a.checkpoint.page_number&&a.checkpoint.page_generation&&disk::FindCanonicalFilespacePageProfile(a.checkpoint.page_size_profile_uuid)&&
+        V7(a.checkpoint_object_uuid)&&V7(a.timeline_uuid)&&a.checkpoint_generation&&a.root_set_generation&&
+        std::any_of(a.checkpoint_sha256.begin(),a.checkpoint_sha256.end(),[](byte v){return v!=0;}),E::invalid_request);}
     Require(V7(database)&&V7(primary)&&!supplied.empty(),E::invalid_request);Context c;c.database=database;c.primary=primary;c.budget=budget;c.devices=supplied;
     std::sort(c.devices.begin(),c.devices.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});std::set<disk::FileDevice*> handles;c.guards.reserve(c.devices.size());
     for(std::size_t i=0;i<c.devices.size();++i){const auto& f=c.devices[i];const auto* profile=disk::FindCanonicalFilespacePageProfile(f.page_size_profile_uuid);
@@ -81,17 +85,24 @@ NativeManagementHistory ReadNativeManagementHistoryFromOpenDevices(const Uuid& d
       Require(!(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::payload_encrypted),E::encrypted_requires_authority);Require(!(zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::cluster_authority_required),E::cluster_requires_authority);
       c.zeros.emplace(f.filespace_uuid,std::move(*zero.record));}
     const auto zi=c.zeros.find(primary);Require(zi!=c.zeros.end(),E::invalid_request);const auto& z=zi->second;const auto& file=c.File(primary,z.bootstrap.page_size_profile_uuid);const u64 size=z.bootstrap.page_size_bytes;
+    NativeManagementCheckpointAnchor anchor;std::optional<NativeCheckpointSelection> actual_selection;
+    if(explicit_anchor)anchor=*explicit_anchor;
+    else{
     c.Charge(4*size);std::array<std::vector<byte>,2> slots;std::array<disk::FilespaceRootReference,2> roots;
     for(unsigned i=0;i<2;++i){const auto root=std::find_if(z.roots.begin(),z.roots.end(),[&](const auto& r){return r.kind==18+i;});Require(root!=z.roots.end(),E::selection_failure);roots[i]=*root;auto& b=slots[i];b.resize(size);
       const auto io=file.device->ReadAt(root->page_number*size,b.data(),b.size());Require(io.ok()&&io.bytes_transferred==b.size(),E::io_failure);
       const disk::NativeCommonPageHeaderBinding binding{{database,primary,z.bootstrap.page_size_profile_uuid},root->page_number,root->page_generation,0x30e,{}};Require(disk::DecodeNativeCommonPageHeader(b.data(),128,&binding).ok(),E::selection_failure);}
     const auto pair=ClassifyNativeCheckpointSelectionPair(slots[0],slots[1]);if(!pair.ok())throw pair.error==NativeCheckpointSelectionError::hash_failure?E::hash_failure:pair.error==NativeCheckpointSelectionError::resource_exhausted?E::resource_exhausted:E::selection_failure;
-    const auto selection=*pair.selection;Require(selection.bootstrap_uuid==z.page_uuid&&selection.object_uuid==roots[0].object_uuid&&selection.object_uuid==roots[1].object_uuid,E::selection_failure);c.timeline=selection.timeline_uuid;
-    auto current=c.Read(selection.checkpoint,selection.checkpoint_object_uuid,selection.checkpoint_sha256);
-    Require(current.root.checkpoint_generation==selection.checkpoint_generation&&current.root.root_set_generation==selection.root_set_generation,E::history_mismatch);
-    if(selection.selection_generation==1)Require(!current.root.predecessor,E::history_mismatch);
-    else Require(current.root.predecessor==selection.previous_checkpoint&&current.root.predecessor_sha256==selection.previous_checkpoint_sha256&&current.root.object_uuid==selection.previous_checkpoint_object_uuid,E::history_mismatch);
-    if(!current.root.creator_operation_uuid.is_nil())Require(current.root.creator_operation_uuid==selection.publication_uuid,E::history_mismatch);
+    const auto& selection=*pair.selection;Require(selection.bootstrap_uuid==z.page_uuid&&selection.object_uuid==roots[0].object_uuid&&selection.object_uuid==roots[1].object_uuid,E::selection_failure);
+    anchor={selection.checkpoint,selection.checkpoint_object_uuid,selection.checkpoint_sha256,selection.checkpoint_generation,selection.root_set_generation,selection.timeline_uuid};actual_selection=selection;
+    }
+    c.timeline=anchor.timeline_uuid;auto current=c.Read(anchor.checkpoint,anchor.checkpoint_object_uuid,anchor.checkpoint_sha256);
+    Require(current.root.checkpoint_generation==anchor.checkpoint_generation&&current.root.root_set_generation==anchor.root_set_generation,E::history_mismatch);
+    if(actual_selection){const auto& selection=*actual_selection;
+      if(selection.selection_generation==1)Require(!current.root.predecessor,E::history_mismatch);
+      else Require(current.root.predecessor==selection.previous_checkpoint&&current.root.predecessor_sha256==selection.previous_checkpoint_sha256&&current.root.object_uuid==selection.previous_checkpoint_object_uuid,E::history_mismatch);
+      if(!current.root.creator_operation_uuid.is_nil())Require(current.root.creator_operation_uuid==selection.publication_uuid,E::history_mismatch);
+    }
     NativeManagementHistory result;std::set<Uuid> attempts;
     while(true){
       const auto head=Head(current.root);
@@ -126,7 +137,15 @@ NativeManagementHistory ReadNativeManagementHistoryFromOpenDevices(const Uuid& d
       }
       result.entries.push_back({std::move(p),std::move(*extent.record),std::move(extent.page_headers),image.sha256,current.sha,std::move(bundle_headers),std::move(allocation_images)});current=std::move(base);
     }
-    std::reverse(result.entries.begin(),result.entries.end());Index(result);result.selection=selection;result.verified_image_bytes=c.used;result.error=E::none;return result;
+    std::reverse(result.entries.begin(),result.entries.end());Index(result);result.anchor=anchor;result.selection=actual_selection;result.verified_image_bytes=c.used;result.error=E::none;return result;
   }catch(E e){return Fail(e);}catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::io_failure);}
+}
+} // namespace
+NativeManagementHistory ReadNativeManagementHistoryFromOpenDevices(const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,u64 budget) noexcept {
+  return ReadHistory(database,devices,primary,budget,nullptr);
+}
+NativeManagementGraphHistory ReadNativeManagementGraphHistoryFromOpenDevices(const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,const NativeManagementCheckpointAnchor& anchor,u64 budget) noexcept {
+  auto result=ReadHistory(database,devices,primary,budget,&anchor);
+  return std::move(static_cast<NativeManagementGraphHistory&>(result));
 }
 } // namespace scratchbird::storage::database
