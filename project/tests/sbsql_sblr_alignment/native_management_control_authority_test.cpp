@@ -20,8 +20,13 @@
 #include <cerrno>
 #include <sys/wait.h>
 #include <type_traits>
+#include <future>
+#include <chrono>
 namespace {long allocation_budget=-1;bool counting=false;unsigned long allocations=0;unsigned hash_fault=0,hash_target=1,hash_seen=0;bool hash_active=false,hash_counting=false;
-bool io_counting=false;unsigned reads=0,writes=0,syncs=0,read_fault=0,write_fault=0,sync_fault=0,kill_write=0,corrupt_read=0;std::size_t torn_bytes=0;int allocation_shard=-1;}
+bool io_counting=false;unsigned reads=0,writes=0,syncs=0,read_fault=0,write_fault=0,sync_fault=0,kill_write=0,corrupt_read=0;std::size_t torn_bytes=0;int allocation_shard=-1;
+struct IoEvent {char kind;off_t offset;std::size_t length;};IoEvent io_events[8192];unsigned io_event_count=0;bool trace_io=false;
+void Trace(char kind,off_t offset=0,std::size_t length=0){if(trace_io&&io_event_count<8192)io_events[io_event_count++]={kind,offset,length};}
+}
 void* operator new(std::size_t n){if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
@@ -46,18 +51,19 @@ extern "C" int __wrap_EVP_Digest(const void* data,size_t bytes,unsigned char* ou
 }
 extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
 extern "C" ssize_t __wrap_pread(int fd,void* data,size_t n,off_t at){
+ if(io_counting)Trace('r',at,n);
  if(io_counting&&++reads==read_fault){errno=EIO;return -1;}const auto result=__real_pread(fd,data,n,at);
  if(io_counting&&reads==corrupt_read&&result>0)static_cast<unsigned char*>(data)[result-1]^=1;return result;
 }
 extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
 extern "C" ssize_t __wrap_pwrite(int fd,const void* data,size_t n,off_t at){
- if(io_counting){++writes;if(writes==kill_write)_exit(86);
+ if(io_counting){Trace('w',at,n);++writes;if(writes==kill_write)_exit(86);
    if(writes==write_fault){if(torn_bytes){const auto result=__real_pwrite(fd,data,std::min(n,torn_bytes),at);if(result<0)return result;}
      errno=EIO;return -1;}}
  return __real_pwrite(fd,data,n,at);
 }
 extern "C" int __real_fsync(int);
-extern "C" int __wrap_fsync(int fd){if(io_counting&&++syncs==sync_fault){errno=EIO;return -1;}return __real_fsync(fd);}
+extern "C" int __wrap_fsync(int fd){if(io_counting){Trace('s');if(++syncs==sync_fault){errno=EIO;return -1;}}return __real_fsync(fd);}
 
 
 namespace {
@@ -267,7 +273,7 @@ using AE=db::NativeManagementControlAuthorityError;
 void Empty(const db::NativeManagementControlGraph& r){Check(!r.ok()&&!r.anchor&&r.publications.empty()&&r.allocations.empty()&&!r.verified_image_bytes,"no failed graph proof prefix");}
 void Empty(const db::NativeManagementControlAuthority& r){Empty(static_cast<const db::NativeManagementControlGraph&>(r));Check(!r.selection,"no failed selected creator prefix");}
 void Empty(const db::NativeManagementGraphHistory& r){Check(!r.ok()&&!r.anchor&&r.entries.empty()&&r.latest.empty()&&r.idempotency.empty()&&!r.verified_image_bytes,"no failed graph history prefix");}
-void Reset(){reads=writes=syncs=read_fault=write_fault=sync_fault=corrupt_read=kill_write=0;torn_bytes=0;hash_fault=0;hash_active=false;}
+void Reset(){reads=writes=syncs=read_fault=write_fault=sync_fault=corrupt_read=kill_write=0;torn_bytes=0;hash_fault=0;hash_active=false;trace_io=false;io_event_count=0;}
 void Write(Fixture& f,u64 n,const Bytes& b){const auto r=f.device.WriteAt(n*f.size,b.data(),b.size());Check(r.ok()&&r.bytes_transferred==b.size(),"isolated fixture write");}
 void SelectFixture(Fixture& f,const Graph& g){
  // Independent test-only selector fixture, not a production publisher.
@@ -277,12 +283,14 @@ void SelectFixture(Fixture& f,const Graph& g){
   const auto encoded=db::EncodeNativeCheckpointSelection(s);const auto raw=SelectorOracle(s);Check(encoded.ok()&&encoded.bytes==raw,"independent selector oracle");Write(f,ref->page_number,raw);}
  Check(f.device.Sync().ok(),"isolated selector fixture barrier");
 }
-void Install(Fixture& f,Graph& g,const Bundle& b){
+auto InstallLease(Fixture& f,Graph& g,const Bundle& b){
  const auto inspect=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(inspect.ok(),"actual bound coordinator");
  auto lease=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*inspect.snapshot,g.plan.operation_uuid,f.budget,&g.plan.intent);Check(lease.ok(),"actual next generation lease");
  g.plan.reservation_state_sha256=lease.lease->snapshot().state_sha256;g.Refresh();
  const auto installed=db::InstallNativeManagementControlGraphOnLease(*lease.lease,g.plan,g.target_bytes,g.extent,b.pages,f.budget);if(!installed.ok())std::cerr<<"install error="<<unsigned(installed.error)<<"\n";Check(installed.ok(),"actual complete unselected graph");
+ return lease;
 }
+void Install(Fixture& f,Graph& g,const Bundle& b){(void)InstallLease(f,g,b);}
 void RawGraph(Fixture& f,const Graph& g,Bundle& b){Write(f,g.base.header.page_number,g.base_bytes);for(unsigned i=0;i<g.before_bytes.size();++i)Write(f,g.before[i].header.page_number,g.before_bytes[i]);
  Write(f,g.plan.header.page_number,g.plan_bytes);Write(f,g.plan.target_checkpoint.page_number,g.target_bytes);for(unsigned i=0;i<g.extent.size();++i)Write(f,g.plan.management_extent->first.page_number+i,g.extent[i]);for(unsigned i=0;i<g.after_bytes.size();++i)Write(f,g.after[i].header.page_number,g.after_bytes[i]);b.Install();SelectFixture(f,g);}
 auto Read(Fixture& f,u64 budget=0){return db::ReadNativeManagementControlAuthorityFromOpenDevices(Id(1),f.devices,Id(2),budget?budget:f.budget);}
@@ -381,6 +389,92 @@ void Faults(unsigned route,int shard=-1){
   if(result!=hash)std::cerr<<"route="<<route<<" hash="<<at<<" mode="<<mode<<" result="<<result<<" expected="<<hash<<"\n";
   Check(consumed&&result==hash&&!writes&&!syncs,"every hash provider failure retained through consumer");}
  Reset();Check(f.Read(0,256)==original,"entire operational failure sweep leaves node unchanged");std::cout<<"route="<<route<<" reads="<<nr<<" hashes="<<nh<<"\n";
+}
+void Published(Fixture& f,const Graph& g,db::NativePublicationLease& lease){
+ auto expected=f.Read(0,256);
+ for(unsigned i=0;i<2;++i){const auto ref=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[&](const auto& r){return r.kind==18+i;});auto s=*db::DecodeNativeCheckpointSelection(f.Read(ref->page_number)).selection;
+  s.selection_generation=*g.plan.base_selection_generation+1;s.previous_selection_generation=*g.plan.base_selection_generation;s.previous_checkpoint=g.plan.base_checkpoint;s.previous_checkpoint_object_uuid=g.plan.base_checkpoint_object_uuid;s.previous_checkpoint_sha256=g.plan.base_checkpoint_sha256;
+  s.publication_uuid=g.plan.operation_uuid;s.checkpoint=g.plan.target_checkpoint;s.checkpoint_object_uuid=g.plan.target_checkpoint_object_uuid;s.checkpoint_sha256=Sha(g.target_bytes);s.checkpoint_generation=g.plan.reserved_generation;s.root_set_generation=g.plan.target_root_set_generation;
+  const auto bytes=SelectorOracle(s);std::copy(bytes.begin(),bytes.end(),expected.begin()+ref->page_number*f.size);
+ }
+ Reset();io_counting=trace_io=true;const auto result=db::PublishNativeManagementControlGraphOnLease(lease,f.budget);io_counting=trace_io=false;
+ if(!result.ok())std::cerr<<"publish error="<<unsigned(result.error)<<"\n";
+ Check(result.ok()&&result.snapshot->selection.selection_generation==*g.plan.base_selection_generation+1&&result.snapshot->selection.checkpoint_generation==g.plan.reserved_generation,"real publisher selects exact independent sequence and checkpoint generation");
+ Check(writes==2&&syncs==3&&expected==f.Read(0,256),"exact independent selector bytes and no mutation outside the two selector slots");
+ unsigned first_write=0;while(first_write<io_event_count&&io_events[first_write].kind!='w')++first_write;
+ Check(first_write>0&&first_write+6<io_event_count&&io_event_count<8192&&io_events[first_write-1].kind=='s',"dependency sync precedes the first actual selector write");
+ const auto& first=*std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[](const auto& r){return r.kind==18;});const auto& second=*std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[](const auto& r){return r.kind==19;});
+ for(unsigned i=0;i<6;++i){const char expected_kind="wsrwsr"[i];const auto& event=io_events[first_write+i];Check(event.kind==expected_kind,"strict per-slot write-sync-readback order");if(expected_kind!='s')Check(event.offset==off_t((i<3?first.page_number:second.page_number)*f.size)&&event.length==f.size,"ordered full-image I/O addresses the exact bootstrap slot");}
+ Check(io_events[first_write+6].kind=='r',"ordinary selected revalidation follows completed slot barriers");
+ Check(lease.snapshot().selection.checkpoint==g.plan.target_checkpoint&&lease.snapshot().selection.selection_generation==*g.plan.base_selection_generation+1,"successful lease snapshot advances only after selected admission");
+ Reset();io_counting=true;const auto repeated=db::PublishNativeManagementControlGraphOnLease(lease,f.budget);io_counting=false;
+ Check(!repeated.ok()&&!repeated.snapshot&&!writes&&!syncs,"already selected lease cannot republish or mint a sequence");
+}
+void Publication(){
+ for(unsigned profile=0;profile<5;++profile){Fixture f(profile);f.budget*=4;
+  for(unsigned n=0;n<3;++n){const auto before=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(before.ok(),"publication burn base");auto burn=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*before.snapshot,Id(31000+n),f.budget);Check(burn.ok(),"publication actual generation burn");}
+  Graph g(f,false,1,nullptr,5);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();auto owned=InstallLease(f,g,b);
+  const auto original=f.Read(0,256);Reset();io_counting=true;const auto exhausted=db::PublishNativeManagementControlGraphOnLease(*owned.lease,0);io_counting=false;
+  Check(exhausted.error==db::NativePublicationError::resource_exhausted&&!exhausted.snapshot&&!writes&&!syncs&&f.Read(0,256)==original,"zero publication allowance cannot mutate actual files");
+  if(profile==0){auto wrong=g.plan_bytes;wrong[1040]^=1;Write(f,g.plan.header.page_number,wrong);const auto damaged=f.Read(0,256);Reset();io_counting=true;const auto refused=db::PublishNativeManagementControlGraphOnLease(*owned.lease,f.budget);io_counting=false;Check(!refused.ok()&&!refused.snapshot&&!writes&&!syncs&&f.Read(0,256)==damaged,"publisher reads actual anchored plan instead of trusting installed lease history");Write(f,0,original);
+   auto altered=*page::DecodeNativeAllocationMap(g.after_bytes.front()).map;altered.records.front().allocation_uuid=Id(32000);const auto encoded=page::EncodeNativeAllocationMap(altered);Check(encoded.ok(),"canonical changed actual map");Write(f,altered.header.page_number,encoded.bytes);const auto tampered=f.Read(0,256);Reset();io_counting=true;const auto rejected=db::PublishNativeManagementControlGraphOnLease(*owned.lease,f.budget);io_counting=false;Check(!rejected.ok()&&!rejected.snapshot&&!writes&&!syncs&&f.Read(0,256)==tampered,"publisher requires separately stored maps to match full anchored graph");Write(f,0,original);
+  }
+  Published(f,g,*owned.lease);owned.lease.reset();Good(f,g,1);
+  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"actual published checkpoint survives writable reopen");Good(f,g,1);
+  Graph next(f,false,1,&g);Bundle next_bundle(next);next.plan.control_bundle=next_bundle.root;next.plan.base_selection_generation=2;next.Refresh();auto successor=InstallLease(f,next,next_bundle);Published(f,next,*successor.lease);successor.lease.reset();Good(f,next,2);
+  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"actual published successor survives read-only reopen");const auto read=Read(f);Check(read.ok()&&read.selection->selection_generation==3&&read.selection->checkpoint_generation==6,"successive actual publications advance counters independently");
+ }
+ {Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.Refresh();auto old=InstallLease(f,g,b);const auto bytes=f.Read(0,256);Reset();io_counting=true;const auto result=db::PublishNativeManagementControlGraphOnLease(*old.lease,f.budget);io_counting=false;Check(!result.ok()&&!result.snapshot&&!writes&&!syncs&&f.Read(0,256)==bytes,"old V3 plan is not silently upgraded for publication");}
+ {Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();
+  // Declare the future before the lease so exceptional unwinding releases the
+  // held guards before the future's destructor waits for its reader.
+  std::promise<void> entered;auto started=entered.get_future();std::future<db::NativeBoundCheckpointSelection> observation;auto owned=InstallLease(f,g,b);
+  observation=std::async(std::launch::async,[&]{entered.set_value();return Bound(f);});started.wait();
+  const bool before=observation.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout;
+  Published(f,g,*owned.lease);const bool after=observation.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout;
+  owned.lease.reset();const auto selected=observation.get();Check(before&&after&&selected.ok()&&selected.selection->selection_generation==2,"concurrent ordinary reader waits for retained lease release then sees the complete publication");
+ }
+ {Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();auto owned=InstallLease(f,g,b);
+  const auto before=Bound(f);const auto graph=GraphRead(f,Anchor(g));Check(before.ok()&&graph.ok(),"actual prepublication work accounting");
+  std::array<u64,2> slots{};std::array<Bytes,2> preimages;for(unsigned i=0;i<2;++i){slots[i]=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[&](const auto& r){return r.kind==18+i;})->page_number;preimages[i]=f.Read(slots[i]);}
+  Published(f,g,*owned.lease);owned.lease.reset();const auto after=Bound(f);Check(after.ok(),"actual final admission work accounting");const auto published=f.Read(0,256);
+  const u64 exact=28*f.size+before.retained_image_bytes+graph.verified_image_bytes+after.retained_image_bytes;Check(exact<f.budget,"independent exact cumulative publication image allowance");
+  for(unsigned deficit=0;deficit<2;++deficit){for(unsigned i=0;i<2;++i)Write(f,slots[i],preimages[i]);Check(f.device.Sync().ok(),"isolated budget fixture selector reset");const auto base=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(base.ok(),"actual pending budget fixture");auto lease=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*base.snapshot,g.plan.operation_uuid,g.plan.intent,f.budget);Check(lease.ok(),"exact pending budget lease");
+   Reset();io_counting=true;const auto result=db::PublishNativeManagementControlGraphOnLease(*lease.lease,exact-deficit);io_counting=false;
+   Check(writes==2&&syncs==3&&f.Read(0,256)==published,"final admission budget does not alter ordered durable selector bytes");
+   if(!deficit)Check(result.ok(),"exact independently charged image allowance succeeds");
+   else{Check(result.error==db::NativePublicationError::resource_exhausted&&!result.snapshot,"one-byte final admission shortage returns no success after writes");Reset();io_counting=true;const auto retry=db::PublishNativeManagementControlGraphOnLease(*lease.lease,f.budget);io_counting=false;Check(retry.error==db::NativePublicationError::stale_base&&!retry.snapshot&&!reads&&!writes&&!syncs,"final resource failure retains lease poisoning");}
+  }
+  std::cout<<"publication exact image allowance="<<exact<<"\n";
+ }
+}
+void PublicationFaults(unsigned route,int shard=-1){
+ using P=db::NativePublicationError;Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();auto owned=InstallLease(f,g,b);const auto original=f.Read(0,256);
+ std::array<u64,2> slots{};std::array<Bytes,2> preimages;for(unsigned i=0;i<2;++i){slots[i]=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[&](const auto& r){return r.kind==18+i;})->page_number;preimages[i]=f.Read(slots[i]);}
+ byte scratch=0;for(unsigned n=0;n<4097;++n){const auto io=f.device.ReadAt(0,&scratch,1);Check(io.ok()&&io.bytes_transferred==1,"publication optional metric capacity stabilized");}
+ Reset();hash_seen=0;hash_counting=counting=io_counting=true;allocations=0;const auto baseline=db::PublishNativeManagementControlGraphOnLease(*owned.lease,f.budget);io_counting=counting=hash_counting=false;
+ const auto nr=reads,nw=writes,ns=syncs,nh=hash_seen;const auto sites=allocations;Check(baseline.ok()&&nw==2&&ns==3,"measured complete actual publisher");const auto published=f.Read(0,256);owned.lease.reset();
+ const auto resume=[&]{for(unsigned i=0;i<2;++i)Write(f,slots[i],preimages[i]);Check(f.device.Sync().ok(),"restore only isolated selector fixture preimages, not production recovery");const auto inspected=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(inspected.ok(),"actual pending fixture inspected");auto r=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*inspected.snapshot,g.plan.operation_uuid,g.plan.intent,f.budget);Check(r.ok(),"actual exact intent reacquired");return r;};
+ const auto unchanged_controls=[&]{auto bytes=f.Read(0,256);for(const auto& root:g.zero.roots)if(root.kind==18||root.kind==19){const auto at=root.page_number*f.size;std::copy_n(original.begin()+at,f.size,bytes.begin()+at);}Check(bytes==original,"publisher fault never mutates nonselector bytes");};
+ const auto failed=[&](const db::NativePublicationInspection& result,db::NativePublicationLease& lease,unsigned written,unsigned synchronized){Check(!result.ok()&&!result.snapshot,"failed publication exposes no selected snapshot");
+  if(written||synchronized){Reset();io_counting=true;const auto poisoned=db::PublishNativeManagementControlGraphOnLease(lease,f.budget);io_counting=false;Check(poisoned.error==P::stale_base&&!poisoned.snapshot&&!reads&&!writes&&!syncs,"mutation-phase failure poisons the lease before retry");}
+  else Check(f.Read(0,256)==original,"preflight failure leaves entire file unchanged");unchanged_controls();
+ };
+ if(route==0){for(unsigned mode=0;mode<5;++mode){const auto count=mode<2?nr:mode<4?nw:ns;
+   for(unsigned at=1;at<=count;++at){auto lease=resume();Reset();if(mode==0)read_fault=at;if(mode==1)corrupt_read=at;if(mode==2||mode==3){write_fault=at;if(mode==3)torn_bytes=201;}if(mode==4)sync_fault=at;
+    io_counting=true;const auto result=db::PublishNativeManagementControlGraphOnLease(*lease.lease,f.budget);io_counting=false;const auto written=writes,synchronized=syncs;Reset();
+    Check(mode==1||result.error==P::io_failure,"actual publisher I/O failure cause retained");failed(result,*lease.lease,written,synchronized);
+   }
+  }
+ }else if(route==1){for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=nh;++at){auto lease=resume();Reset();hash_fault=mode;hash_target=at;hash_seen=0;io_counting=true;const auto result=db::PublishNativeManagementControlGraphOnLease(*lease.lease,f.budget);io_counting=false;const bool consumed=!hash_fault;const auto written=writes,synchronized=syncs;Reset();Check(consumed&&result.error==P::hash_failure,"every actual publisher hash failure consumed and preserved");failed(result,*lease.lease,written,synchronized);}
+ }else{
+  Check(shard>=0&&shard<8,"publisher allocation shard");
+  for(unsigned long at=shard;at<sites;at+=8){auto lease=resume();Reset();const auto lost=f.device.failed_io_latency_observations();allocation_budget=at;io_counting=true;const auto result=db::PublishNativeManagementControlGraphOnLease(*lease.lease,f.budget);io_counting=false;const auto remaining=allocation_budget;allocation_budget=-1;const auto written=writes,synchronized=syncs;Reset();
+   if(result.ok())Check(remaining==-1&&f.device.failed_io_latency_observations()==lost+1&&f.Read(0,256)==published,"only consumed optional telemetry allocation loss permits complete publication");
+   else{Check(result.error==P::resource_exhausted&&remaining==-1,"required publisher allocation failure consumed and preserved");failed(result,*lease.lease,written,synchronized);}
+  }
+ }
+ Reset();std::cout<<"publication reads="<<nr<<" writes="<<nw<<" syncs="<<ns<<" hashes="<<nh<<" allocation sites="<<sites<<" route="<<route<<" shard="<<shard<<"\n";
 }
 void SequenceCodecFaults(const Graph& g,const db::NativePublicationLease& lease){
  const auto call=[&](unsigned route){
@@ -544,4 +638,4 @@ void Invalid(){
  const auto slot=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[](const auto& r){return r.kind==19;});auto torn=f.Read(slot->page_number);torn.back()^=1;Write(f,slot->page_number,torn);reject();Write(f,0,original);Good(f,g,1);
 }
 }
-int main(int argc,char** argv){try{const std::string mode=argc>1?argv[1]:"all";Check(mode=="all"||mode=="profiles"||mode=="invalid"||mode=="retained"||mode=="graphs"||mode=="sequences"||mode=="faults"||mode=="allocations","known test mode");if(mode=="faults"||mode=="allocations"){Check(argc==(mode=="faults"?3:4),"fault route and shard arguments");const auto route=std::stoul(argv[2]);Check(route<5,"fault route range");int shard=-1;if(mode=="allocations"){shard=std::stoi(argv[3]);Check(shard>=0&&shard<4,"allocation shard range");}Faults(route,shard);}if(mode=="all"||mode=="profiles")Profiles();if(mode=="all"||mode=="invalid")Invalid();if(mode=="all"||mode=="retained")Retained();if(mode=="all"||mode=="graphs")Graphs();if(mode=="all"||mode=="sequences")Sequences();std::cout<<"native management control authority checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;io_counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}
+int main(int argc,char** argv){try{const std::string mode=argc>1?argv[1]:"all";Check(mode=="all"||mode=="profiles"||mode=="invalid"||mode=="retained"||mode=="graphs"||mode=="sequences"||mode=="publication"||mode=="publication-faults"||mode=="faults"||mode=="allocations","known test mode");if(mode=="faults"||mode=="allocations"){Check(argc==(mode=="faults"?3:4),"fault route and shard arguments");const auto route=std::stoul(argv[2]);Check(route<5,"fault route range");int shard=-1;if(mode=="allocations"){shard=std::stoi(argv[3]);Check(shard>=0&&shard<4,"allocation shard range");}Faults(route,shard);}if(mode=="publication-faults"){Check(argc==3||argc==4,"publisher fault arguments");const auto route=std::stoul(argv[2]);Check(route<3,"publisher fault route");PublicationFaults(route,argc==4?std::stoi(argv[3]):-1);}if(mode=="all"||mode=="profiles")Profiles();if(mode=="all"||mode=="invalid")Invalid();if(mode=="all"||mode=="retained")Retained();if(mode=="all"||mode=="graphs")Graphs();if(mode=="all"||mode=="sequences")Sequences();if(mode=="all"||mode=="publication")Publication();std::cout<<"native management control authority checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;io_counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}

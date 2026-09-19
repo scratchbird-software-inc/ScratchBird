@@ -51,6 +51,8 @@ class NativePublicationLease {
     const std::vector<std::vector<byte>>&,const std::vector<std::vector<byte>>&,u64) noexcept;
   friend NativePublicationInspection ResumeNativeManagementControlGraphOnLease(
     NativePublicationLease&,u64) noexcept;
+  friend NativePublicationInspection PublishNativeManagementControlGraphOnLease(
+    NativePublicationLease&,u64) noexcept;
 };
 struct NativePublicationReservation {
   NativePublicationError error=NativePublicationError::invalid_request;
@@ -100,4 +102,10 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(
 // Missing input leaves the pending intent intact; no guessed UUIDs or success.
 NativePublicationInspection ResumeNativeManagementControlGraphOnLease(
   NativePublicationLease&,u64 maximum_retained_image_bytes) noexcept;
+// Publishes the actual installed V4 graph, first selector then second, with
+// sync/full readback and final ordinary selected admission. No caller images,
+// authentication, operation-effect completion or SQL receipt. Ambiguous I/O
+// poisons the lease and requires explicit owning recovery.
+NativePublicationInspection PublishNativeManagementControlGraphOnLease(
+  NativePublicationLease&,u64 maximum_verification_image_bytes) noexcept;
 } // namespace scratchbird::storage::database

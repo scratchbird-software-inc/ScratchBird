@@ -8353,6 +8353,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
     -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
   add_test(NAME sbsql_sblr_alignment_native_management_control_authority COMMAND sbsql_sblr_alignment_native_management_control_authority)
+  foreach(route RANGE 0 1)
+    set(test_name "sbsql_sblr_alignment_native_management_publication_faults_${route}")
+    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority publication-faults ${route})
+    set_tests_properties(${test_name} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_management_publication;actual_write;operational_fault;not_SQL_E2E" TIMEOUT 1800)
+  endforeach()
+  foreach(shard RANGE 0 7)
+    set(test_name "sbsql_sblr_alignment_native_management_publication_allocations_${shard}")
+    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority publication-faults 2 ${shard})
+    set_tests_properties(${test_name} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_management_publication;actual_write;allocation_fault;not_SQL_E2E" TIMEOUT 1800)
+  endforeach()
   set_tests_properties(sbsql_sblr_alignment_native_management_control_authority PROPERTIES
     LABELS "sbsql_sblr_alignment;native_management_control_authority;binary_UUID;actual_read;not_SQL_E2E" TIMEOUT 300)
   foreach(route RANGE 0 4)
