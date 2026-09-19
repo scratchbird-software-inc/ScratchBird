@@ -59,6 +59,14 @@ struct NativePublicationReservation {
   std::unique_ptr<NativePublicationLease> lease;
   bool ok() const noexcept {return error==NativePublicationError::none&&lease!=nullptr;}
 };
+// Resolves only an explicitly profiled, unselected metadata publication.
+// Keeps the consumed generation, original intent/anchor and every non-watermark
+// byte. No management cancellation, page reclamation or user-effect authority.
+NativePublicationInspection AbandonNativeMetadataPublicationOnOpenDevices(
+  const Uuid& database,const std::vector<disk::NativeFilespaceDevice>&,
+  const Uuid& primary,const NativePublicationSnapshot& expected_pending,
+  const Uuid& original_attempt,const NativePublicationIntent& expected_intent,
+  const Uuid& resolution_uuid,u64 maximum_verification_image_bytes) noexcept;
 // Actual bootstrap, allocation, inventory and checkpoint binding; no mutation.
 NativePublicationInspection InspectNativePublicationGenerationOnOpenDevices(
   const Uuid&,const std::vector<disk::NativeFilespaceDevice>&,const Uuid&,u64) noexcept;

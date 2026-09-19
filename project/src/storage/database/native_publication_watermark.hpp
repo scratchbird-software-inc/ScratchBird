@@ -19,6 +19,9 @@ struct NativePublicationIntent {
   Uuid initiator_uuid, request_context_uuid, policy_snapshot_uuid;
   std::array<byte,32> normalized_request_sha256{};
   core::platform::u16 initiator_kind=0;
+  // 0: unprofiled legacy intent; 1: management-record metadata only.
+  // A durable restriction, never authentication or user-effect authority.
+  core::platform::u16 recovery_profile=0;
   bool operator==(const NativePublicationIntent&) const = default;
 };
 struct NativePublicationWatermark {
@@ -37,6 +40,12 @@ struct NativePublicationWatermark {
     bool operator==(const PlanAnchor&) const = default;
   };
   std::optional<PlanAnchor> publication_plan;
+  struct Abandonment {
+    Uuid resolution_uuid;
+    std::array<byte,32> pending_state_sha256{};
+    bool operator==(const Abandonment&) const = default;
+  };
+  std::optional<Abandonment> abandonment;
 };
 enum class NativePublicationWatermarkError {
   none, invalid_header, invalid_family, invalid_identity, invalid_reference,

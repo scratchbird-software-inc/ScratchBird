@@ -108,6 +108,7 @@ NativePublicationInspection RecoverNativeManagementCheckpointPublicationOnOpenDe
     auto watermark=ClassifyNativePublicationWatermarkPair(original[2],original[3]);WatermarkError(watermark.error);const auto& w=*watermark.state;
     Require(w.header.database_uuid==database&&w.header.filespace_uuid==primary&&w.header.page_size_profile_uuid==c.zero.bootstrap.page_size_profile_uuid&&w.bootstrap_uuid==c.zero.page_uuid&&w.object_uuid==roots[2].object_uuid&&w.object_uuid==roots[3].object_uuid,E::binding_mismatch);
     Require(w.intent&&*w.intent==intent&&w.operation_uuid==attempt,E::request_mismatch);Require(w.publication_plan.has_value(),E::invalid_request);const auto& anchor=*w.publication_plan;
+    Require(!w.abandonment,E::invalid_request);
     Require(anchor.page.filespace_uuid==primary&&anchor.page.page_size_profile_uuid==c.zero.bootstrap.page_size_profile_uuid,E::binding_mismatch);
     auto plan_image=DecodeNativePublicationPlan(c.Read(anchor.page.page_number));
     if(!plan_image.ok())throw plan_image.error==NativePublicationPlanError::hash_failure?E::hash_failure:plan_image.error==NativePublicationPlanError::resource_exhausted?E::resource_exhausted:E::binding_mismatch;

@@ -51,6 +51,7 @@ bool SameBase(const NativePublicationSnapshot& a,const NativePublicationSnapshot
 }
 void BindState(const Context& c,const NativePublicationWatermark& w){
   const auto& cp=*c.bound.checkpoint_inventory.checkpoint;
+  Require(!w.abandonment||w.watermark>cp.checkpoint_generation,E::binding_mismatch);
   Require(w.object_uuid==c.watermark_object&&
     w.bootstrap_uuid==c.zero.page_uuid&&w.timeline_uuid==cp.timeline_uuid&&
     w.watermark>=cp.checkpoint_generation,E::binding_mismatch);
@@ -129,6 +130,17 @@ std::unique_ptr<Context> Prepare(const Uuid& database,const std::vector<disk::Na
     auto& bytes=c->bytes[i];bytes.resize(size);
     const auto read=c->primary->ReadAt(root->page_number*size,bytes.data(),bytes.size());
     Require(read.ok()&&read.bytes_transferred==bytes.size(),E::io_failure);
+    // Independently intact headers retain their allocated identity even when
+    // the watermark family is corrupt. Never overwrite a contradictory valid
+    // header under the single-damaged-replica recovery rule.
+    const auto common=disk::DecodeNativeCommonPageHeader(bytes.data(),128);
+    if(common.error==disk::NativeCommonPageHeaderError::resource_exhausted)throw E::resource_exhausted;
+    if(common.ok()){
+      const disk::NativeCommonPageHeaderBinding expected{binding,root->page_number,root->page_generation,0x500,allocation->page_uuid};
+      const auto bound_header=disk::DecodeNativeCommonPageHeader(bytes.data(),128,&expected);
+      if(bound_header.error==disk::NativeCommonPageHeaderError::resource_exhausted)throw E::resource_exhausted;
+      Require(bound_header.ok()&&common.header->flags==0&&common.header->page_size_bytes==size,E::binding_mismatch);
+    }
     c->decoded[i]=DecodeNativePublicationWatermark(bytes);auto& d=c->decoded[i];Backend(d.error);
     if(d.ok()){
       const disk::NativeCommonPageHeaderBinding expected{binding,root->page_number,root->page_generation,0x500,allocation->page_uuid};
@@ -145,7 +157,8 @@ std::unique_ptr<Context> Prepare(const Uuid& database,const std::vector<disk::Na
     if(!c->stable)Require(pair.error==NativePublicationWatermarkError::repair_required&&
       (c->decoded[0].state->watermark>c->decoded[1].state->watermark||
        (c->decoded[0].state->watermark==c->decoded[1].state->watermark&&
-        c->decoded[0].state->publication_plan&&!c->decoded[1].state->publication_plan)),E::image_failure);
+        ((c->decoded[0].state->publication_plan&&!c->decoded[1].state->publication_plan)||
+         (c->decoded[0].state->abandonment&&!c->decoded[1].state->abandonment)))),E::image_failure);
   }else {Require(c->decoded[0].ok()||c->decoded[1].ok(),E::image_failure);selected=c->decoded[0].ok()?0:1;}
   Require(c->stable||recover,E::repair_required);
   c->snapshot={*c->bound.selection,*c->decoded[selected].state,c->decoded[selected].state_sha256};
@@ -200,12 +213,13 @@ NativePublicationReservation ReserveNativePublicationGenerationOnOpenDevices(con
     Require(V7(operation),E::invalid_request);auto c=Prepare(db,devices,primary,budget,true,false);
     Require(SameBase(expected,c->snapshot),E::stale_base);
     auto w=c->snapshot.watermark;
-    Require(!w.intent||w.watermark==c->snapshot.selection.checkpoint_generation,E::operation_pending);
+    Require(!w.intent||w.abandonment||w.watermark==c->snapshot.selection.checkpoint_generation,E::operation_pending);
     Require(operation!=w.operation_uuid&&operation!=c->snapshot.selection.publication_uuid,E::invalid_request);
     Require(w.watermark!=std::numeric_limits<u64>::max(),E::generation_exhausted);
     w.previous_watermark=w.watermark;++w.watermark;w.previous_state_sha256=c->snapshot.state_sha256;w.operation_uuid=operation;
     w.intent=intent?std::optional<NativePublicationIntent>(*intent):std::nullopt;
     w.publication_plan.reset();
+    w.abandonment.reset();
     const auto& s=c->snapshot.selection;w.base_checkpoint=s.checkpoint;w.base_checkpoint_object_uuid=s.checkpoint_object_uuid;
     w.base_checkpoint_sha256=s.checkpoint_sha256;w.base_checkpoint_generation=s.checkpoint_generation;w.base_root_set_generation=s.root_set_generation;
     auto images=EncodePair(*c,w);const auto encoded=DecodeNativePublicationWatermark(images[0]);Backend(encoded.error);Require(encoded.ok(),E::image_failure);
@@ -224,7 +238,7 @@ NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(cons
     auto c=Prepare(db,devices,primary,budget,true,false);
     Require(SameBase(expected,c->snapshot),E::stale_base);
     const auto& w=c->snapshot.watermark;
-    Require(w.intent&&w.watermark>c->snapshot.selection.checkpoint_generation,E::invalid_request);
+    Require(w.intent&&!w.abandonment&&w.watermark>c->snapshot.selection.checkpoint_generation,E::invalid_request);
     Require(w.operation_uuid==operation&&*w.intent==intent,E::request_mismatch);
     auto images=EncodePair(*c,w);
     auto impl=std::make_unique<NativePublicationLease::Impl>();impl->snapshot=c->snapshot;impl->context=std::move(c);
@@ -232,6 +246,42 @@ NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(cons
     std::vector<byte> scratch(lease->impl_->context->zero.bootstrap.page_size_bytes);
     Publish(*lease->impl_->context,images,scratch);
     return {E::none,std::move(lease)};
+  }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
+   catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+}
+NativePublicationInspection AbandonNativeMetadataPublicationOnOpenDevices(
+    const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,
+    const NativePublicationSnapshot& expected,const Uuid& operation,const NativePublicationIntent& intent,
+    const Uuid& resolution,u64 budget) noexcept {
+  try {
+    Require(V7(operation)&&V7(resolution)&&resolution!=operation&&intent.recovery_profile==1&&
+      !expected.watermark.abandonment&&expected.watermark.operation_uuid==operation&&
+      expected.watermark.intent&&*expected.watermark.intent==intent,E::invalid_request);
+    const auto file=std::find_if(devices.begin(),devices.end(),[&](const auto& f){return f.filespace_uuid==primary;});
+    Require(file!=devices.end(),E::invalid_device);const auto* profile=disk::FindCanonicalFilespacePageProfile(file->page_size_profile_uuid);Require(profile,E::invalid_device);
+    const u64 size=profile->page_size_bytes;u64 used=0;
+    const auto charge=[&](u64 count,u64 unit=1){Require(unit&&count<=(budget-used)/unit,E::resource_exhausted);used+=count*unit;};
+    charge(20,size);for(const auto& f:devices)if(f.filespace_uuid!=primary){const auto* p=disk::FindCanonicalFilespacePageProfile(f.page_size_profile_uuid);Require(p,E::invalid_device);charge(4,p->page_size_bytes);}
+    auto c=Prepare(database,devices,primary,budget-used+6*size,true,false);charge(c->bound.retained_image_bytes);
+    const auto& w=c->snapshot.watermark;
+    Require(w.intent&&*w.intent==intent&&w.operation_uuid==operation,E::request_mismatch);
+    Require(w.watermark>c->snapshot.selection.checkpoint_generation,E::invalid_request);
+    auto next=w;
+    if(w.abandonment){
+      Require(w.abandonment->resolution_uuid==resolution,E::request_mismatch);
+      auto pending=c->snapshot;pending.watermark.abandonment.reset();auto encoded=EncodeNativePublicationWatermark(pending.watermark);
+      Backend(encoded.error);Require(encoded.ok(),E::image_failure);pending.state_sha256=encoded.state_sha256;
+      Require(SameBase(expected,pending),E::stale_base);
+    }else{
+      Require(SameBase(expected,c->snapshot),E::stale_base);
+      next.abandonment=NativePublicationWatermark::Abandonment{resolution,c->snapshot.state_sha256};
+    }
+    auto images=EncodePair(*c,next);const auto decoded=DecodeNativePublicationWatermark(images[0]);Backend(decoded.error);Require(decoded.ok(),E::image_failure);
+    NativePublicationSnapshot planned{c->snapshot.selection,*decoded.state,decoded.state_sha256};std::vector<byte> scratch(size);
+    Publish(*c,images,scratch);
+    auto final=Prepare(database,devices,primary,budget-used+6*size,true,false);charge(final->bound.retained_image_bytes);
+    Require(SameBase(planned,final->snapshot)&&final->bytes==images,E::binding_mismatch);
+    return {E::none,std::move(final->snapshot)};
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
    catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
 }
@@ -401,7 +451,7 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
 NativePublicationInspection ResumeNativeManagementControlGraphOnLease(NativePublicationLease& lease,u64 budget) noexcept {
   try {
     Require(!lease.impl_->installation_ambiguous,E::stale_base);const auto& context=*lease.impl_->context;const auto& held=lease.impl_->snapshot;const auto& anchor=held.watermark.publication_plan;
-    Require(anchor&&held.watermark.intent&&held.watermark.watermark>held.selection.checkpoint_generation,E::invalid_request);
+    Require(anchor&&held.watermark.intent&&!held.watermark.abandonment&&held.watermark.watermark>held.selection.checkpoint_generation,E::invalid_request);
     const u64 size=context.zero.bootstrap.page_size_bytes;Require(budget>=6*size,E::resource_exhausted);u64 allowance=6*size;
     Require(anchor->page.page_number<context.zero.total_pages,E::binding_mismatch);Bytes raw(size);const auto io=context.primary->ReadAt(anchor->page.page_number*size,raw.data(),raw.size());Require(io.ok()&&io.bytes_transferred==raw.size(),E::io_failure);
     auto image=DecodeNativePublicationPlan(raw);ControlPlanError(image.error);const auto& plan=*image.plan;
@@ -441,7 +491,7 @@ NativePublicationInspection PublishNativeManagementControlGraphOnLease(NativePub
     auto c=Prepare(database,owned.devices,primary,budget-used+6*size,true,false);
     charge(c->bound.retained_image_bytes);Require(SameBase(held,c->snapshot),E::stale_base);
     const auto& w=c->snapshot.watermark;
-    Require(w.intent&&w.publication_plan&&w.watermark>c->snapshot.selection.checkpoint_generation,E::invalid_request);
+    Require(w.intent&&!w.abandonment&&w.publication_plan&&w.watermark>c->snapshot.selection.checkpoint_generation,E::invalid_request);
     const auto& anchor=*w.publication_plan;
     Require(anchor.page.filespace_uuid==primary&&anchor.page.page_size_profile_uuid==c->zero.bootstrap.page_size_profile_uuid&&anchor.page.page_number<c->zero.total_pages,E::binding_mismatch);
     Bytes raw(size);const auto read=c->primary->ReadAt(anchor.page.page_number*size,raw.data(),raw.size());Require(read.ok()&&read.bytes_transferred==raw.size(),E::io_failure);

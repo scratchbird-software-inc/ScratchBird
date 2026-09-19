@@ -82,7 +82,7 @@ void PlanSeal(Bytes& b){std::fill(b.begin()+688,b.begin()+720,0);const auto h=Sh
 Bytes Oracle(const db::NativePublicationPlan& p){
  const auto& h=p.header;Bytes b(h.page_size_bytes);std::copy_n("SBPGV002",8,b.begin());Num(b,8,4,128);Num(b,12,4,h.page_size_bytes);Num(b,16,4,0x500);Num(b,20,2,1);Num(b,22,2,1);
  Put(b,24,h.database_uuid);Put(b,40,h.filespace_uuid);Put(b,56,h.page_uuid);Num(b,72,8,h.page_number);Num(b,80,8,h.page_generation);Put(b,104,h.page_size_profile_uuid);Num(b,120,2,1);HeaderSeal(b);
- const bool v2=p.management_extent.has_value(),v3=p.control_bundle.has_value(),v4=p.base_selection_generation.has_value();std::copy_n(v4?"SBPPM004":v3?"SBPPM003":v2?"SBPPM002":"SBPPM001",8,b.begin()+128);Num(b,136,2,v4?4:v3?3:v2?2:1);Num(b,138,2,v3?1024:v2?896:640);Num(b,140,4,v3?1152:v2?1024:768);
+ const bool v2=p.management_extent.has_value(),v3=p.control_bundle.has_value(),v4=p.base_selection_generation.has_value(),v5=p.intent.recovery_profile!=0;std::copy_n(v5?"SBPPM005":v4?"SBPPM004":v3?"SBPPM003":v2?"SBPPM002":"SBPPM001",8,b.begin()+128);Num(b,136,2,v5?5:v4?4:v3?3:v2?2:1);Num(b,138,2,v3?1024:v2?896:640);Num(b,140,4,v3?1152:v2?1024:768);
  Put(b,144,p.object_uuid);Put(b,160,p.bootstrap_uuid);Put(b,176,p.timeline_uuid);Put(b,192,p.operation_uuid);Put(b,208,p.intent.initiator_uuid);Put(b,224,p.intent.request_context_uuid);Put(b,240,p.intent.policy_snapshot_uuid);Put(b,256,p.security_snapshot_uuid);
  std::copy(p.intent.normalized_request_sha256.begin(),p.intent.normalized_request_sha256.end(),b.begin()+272);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),b.begin()+304);
  Num(b,336,8,p.reserved_generation);Num(b,344,8,p.base_checkpoint_generation);Num(b,352,8,p.base_root_set_generation);Num(b,360,8,p.target_root_set_generation);
@@ -90,7 +90,7 @@ Bytes Oracle(const db::NativePublicationPlan& p){
  if(p.previous_plan)Ref(b,560,*p.previous_plan);Put(b,608,p.previous_plan_object_uuid);std::copy(p.previous_plan_sha256.begin(),p.previous_plan_sha256.end(),b.begin()+624);
  Num(b,656,8,p.catalog_generation);Num(b,664,8,p.configuration_generation);Num(b,672,8,p.security_generation);Num(b,680,2,p.intent.initiator_kind);Num(b,682,2,1);Num(b,684,2,2);
  if(p.management_extent){const auto& r=*p.management_extent;Num(b,720,4,p.generation_guard_flags);Ref(b,736,r.first);Put(b,784,r.object_uuid);Put(b,800,r.operation_uuid);Num(b,816,8,r.revision);Num(b,824,4,r.aggregate_bytes);Num(b,828,4,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),b.begin()+832);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),b.begin()+864);}
- if(p.control_bundle){const auto& r=*p.control_bundle;Ref(b,896,r.first);Put(b,944,r.object_uuid);Num(b,960,8,r.map_count);Num(b,968,8,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),b.begin()+976);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),b.begin()+1008);}if(v4)Num(b,1040,8,*p.base_selection_generation);PlanSeal(b);return b;
+ if(p.control_bundle){const auto& r=*p.control_bundle;Ref(b,896,r.first);Put(b,944,r.object_uuid);Num(b,960,8,r.map_count);Num(b,968,8,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),b.begin()+976);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),b.begin()+1008);}if(v4)Num(b,1040,8,*p.base_selection_generation);if(v5)Num(b,1048,2,p.intent.recovery_profile);PlanSeal(b);return b;
 }
 void Failed(const db::NativePublicationPlanImage& r){Check(!r.ok()&&!r.plan&&r.bytes.empty()&&std::all_of(r.sha256.begin(),r.sha256.end(),[](byte v){return !v;}),"no failed plan prefix");}
 void Bad(const db::NativePublicationPlan& p){Failed(db::EncodeNativePublicationPlan(p));const auto raw=Oracle(p);Failed(db::DecodeNativePublicationPlan(raw));}
@@ -577,6 +577,136 @@ void RecoveryAuthority(){
  }
  successor.Pair(f,1,1);Recovered(f,next,successor,2);
 }
+Bytes ResolutionOracle(Bytes bytes,const Uuid& resolution,const std::array<byte,32>& pending){
+ Check(LoadLittle16(bytes.data()+136)==4,"actual opt-in metadata watermark");Num(bytes,646,2,1);Put(bytes,648,resolution);std::copy(pending.begin(),pending.end(),bytes.begin()+664);
+ const std::string_view domain="SBPAGST4";Bytes material(domain.begin(),domain.end());material.insert(material.end(),bytes.begin()+128,bytes.begin()+368);material.insert(material.end(),bytes.begin()+432,bytes.begin()+768);
+ const auto state=Sha(material);std::copy(state.begin(),state.end(),bytes.begin()+368);std::fill(bytes.begin()+400,bytes.begin()+432,0);const auto image=Sha(bytes);std::copy(image.begin(),image.end(),bytes.begin()+400);return bytes;
+}
+void MetadataResolution(){
+ using P=db::NativePublicationError;
+ for(unsigned profile=0;profile<5;++profile)for(unsigned phase=0;phase<4;++phase){Fixture f(profile);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.plan.intent.recovery_profile=1;g.Refresh();
+  const auto old=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(old.ok(),"resolution actual base");
+  auto held=phase?InstallLease(f,g,b):db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*old.snapshot,g.plan.operation_uuid,f.budget,&g.plan.intent);Check(held.ok(),"profiled actual reserved intent");const auto expected=held.lease->snapshot();
+  if(phase==2){auto damaged=f.Read(g.plan.header.page_number);damaged.back()^=1;Write(f,g.plan.header.page_number,damaged);}
+  if(phase==3)Published(f,g,*held.lease);
+  const auto original=f.Read(0,256);auto final=original;const auto resolution=Id(32500);
+  if(phase!=3)for(const auto& root:g.zero.roots)if(root.kind==20||root.kind==21){const auto encoded=ResolutionOracle(f.Read(root.page_number),resolution,expected.state_sha256);std::copy(encoded.begin(),encoded.end(),final.begin()+root.page_number*f.size);}
+  Reset();io_counting=true;const auto result=db::AbandonNativeMetadataPublicationOnOpenDevices(Id(1),f.devices,Id(2),expected,g.plan.operation_uuid,g.plan.intent,resolution,f.budget);io_counting=false;
+  if(phase==3){Check(!result.ok()&&!result.snapshot&&!writes&&!syncs&&f.Read(0,256)==original,"selected publication cannot be abandoned even using its old pending snapshot");continue;}
+  if(!result.ok())std::cerr<<"abandonment error="<<unsigned(result.error)<<" phase="<<phase<<" profile="<<profile<<"\n";
+  Check(result.ok()&&result.snapshot->watermark.abandonment&&result.snapshot->watermark.abandonment->resolution_uuid==resolution&&result.snapshot->watermark.watermark==expected.watermark.watermark&&result.snapshot->selection.checkpoint==expected.selection.checkpoint,"only physical pending metadata attempt is resolved without counter or selector change");
+  Check(writes==2&&syncs==3&&f.Read(0,256)==final,"independent full-file oracle preserves every non-watermark byte including damaged unselected inputs");
+  Reset();io_counting=true;const auto stale=db::PublishNativeManagementControlGraphOnLease(*held.lease,f.budget);io_counting=false;Check(!stale.ok()&&!stale.snapshot&&!writes&&!syncs,"actual resolution invalidates a retained original lease");held.lease.reset();
+  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"reopen actual abandoned pending publication");
+  Reset();io_counting=true;const auto retry=db::AbandonNativeMetadataPublicationOnOpenDevices(Id(1),f.devices,Id(2),expected,g.plan.operation_uuid,g.plan.intent,resolution,f.budget);io_counting=false;Check(retry.ok()&&!writes&&syncs==3&&f.Read(0,256)==final,"same-resolution cold retry repeats barriers without rewriting or inventing a generation");
+  Reset();io_counting=true;const auto resumed=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*retry.snapshot,g.plan.operation_uuid,g.plan.intent,f.budget);const auto publish=Recover(f,g);io_counting=false;Check(!resumed.ok()&&!resumed.lease&&!publish.ok()&&!publish.snapshot&&!writes&&!syncs,"abandoned attempt cannot resume or publish selectors");
+  auto next=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*retry.snapshot,Id(32501),f.budget);Check(next.ok()&&next.lease->snapshot().watermark.watermark==expected.watermark.watermark+1&&!next.lease->snapshot().watermark.intent&&!next.lease->snapshot().watermark.abandonment&&!next.lease->snapshot().watermark.publication_plan,"subsequent distinct reservation preserves burned generation and clears only old pending context");
+ }
+}
+struct ResolutionCase {
+ Fixture f;Graph g;Bundle b;db::NativePublicationSnapshot pending;u64 slots[2]{};Bytes old[2],next[2],original,final;
+ explicit ResolutionCase(unsigned profile=0,bool anchored=true):f(profile),g(f),b(g){
+  f.budget*=4;g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.plan.intent.recovery_profile=1;g.Refresh();
+  const auto base=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(base.ok(),"resolution baseline admission");
+  auto held=anchored?InstallLease(f,g,b):db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*base.snapshot,g.plan.operation_uuid,f.budget,&g.plan.intent);
+  Check(held.ok(),"actual metadata-only reservation");pending=held.lease->snapshot();held.lease.reset();original=f.Read(0,256);final=original;
+  for(const auto& root:g.zero.roots)if(root.kind==20||root.kind==21){const auto i=root.kind-20;slots[i]=root.page_number;old[i]=f.Read(slots[i]);next[i]=ResolutionOracle(old[i],Id(32500),pending.state_sha256);std::copy(next[i].begin(),next[i].end(),final.begin()+slots[i]*f.size);}
+ }
+ auto Resolve(u64 budget=0){return db::AbandonNativeMetadataPublicationOnOpenDevices(Id(1),f.devices,Id(2),pending,g.plan.operation_uuid,g.plan.intent,Id(32500),budget?budget:f.budget);}
+ auto Repair(){return db::RecoverNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);}
+ void Pair(unsigned a=1,unsigned c=1){const unsigned kinds[]{a,c};for(unsigned i=0;i<2;++i){auto bytes=kinds[i]==2?next[i]:old[i];if(!kinds[i])bytes.back()^=1;Write(f,slots[i],bytes);}Check(f.device.Sync().ok(),"fixture pair durable");}
+ void Nonwatermarks(){auto bytes=f.Read(0,256);for(unsigned i=0;i<2;++i)std::copy(old[i].begin(),old[i].end(),bytes.begin()+slots[i]*f.size);Check(bytes==original,"all non-watermark bytes preserved");}
+ void Reopen(){Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"actual cold descriptor reopen");}
+};
+void ResolutionSafety(){
+ using P=db::NativePublicationError;
+ for(unsigned profile=0;profile<5;++profile){ResolutionCase c(profile);auto& f=c.f;
+  const auto bound=Bound(f);Check(bound.ok(),"independent resolution allowance reader");const u64 exact=20*f.size+2*bound.retained_image_bytes;
+  for(unsigned deficit=0;deficit<2;++deficit){c.Pair();Reset();io_counting=trace_io=true;const auto result=c.Resolve(exact-deficit);io_counting=trace_io=false;
+   Check(!deficit?result.ok():result.error==P::resource_exhausted&&!result.snapshot,"exact resolution allowance and final one-byte shortage");Check(writes==2&&syncs==3&&f.Read(0,256)==c.final,"final admission shortage never rolls back durable resolution");
+   unsigned at=0;while(at<io_event_count&&io_events[at].kind!='s')++at;Check(at<io_event_count,"resolution dependency barrier");++at;
+   for(unsigned i=0;i<2;++i){Check(at+2<io_event_count&&io_events[at].kind=='w'&&io_events[at].offset==off_t(c.slots[i]*f.size)&&io_events[at].length==f.size&&io_events[at+1].kind=='s'&&io_events[at+2].kind=='r'&&io_events[at+2].offset==off_t(c.slots[i]*f.size)&&io_events[at+2].length==f.size,"ordered resolution full write sync readback");at+=3;}
+   Check(at<io_event_count&&io_events[at].kind=='r',"resolution fresh admission after both barriers");Check(c.Resolve(exact).ok(),"durable resolution retry after final shortage");
+  }
+  for(unsigned first=0;first<3;++first)for(unsigned second=0;second<3;++second){c.Pair(first,second);const auto before=f.Read(0,256);Reset();io_counting=true;const auto repaired=c.Repair();io_counting=false;
+   const bool allowed=(first||second)&&!(first==1&&second==2);
+   if(allowed){const bool resolved=first==2||second==2;Check(repaired.ok()&&bool(repaired.snapshot->watermark.abandonment)==resolved&&f.Read(0,256)==(resolved?c.final:c.original),"repair retains exact surviving pending or resolved disposition");Check(c.Resolve().ok()&&f.Read(0,256)==c.final,"explicit repair followed by exact resolution");}
+   else Check(!repaired.ok()&&!repaired.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"reverse resolution and double damage refuse without mutation");
+  }
+  c.Pair();for(unsigned field=0;field<10;++field){auto expected=c.pending;auto request=c.g.plan.intent;auto operation=c.g.plan.operation_uuid,resolution=Id(32500);
+   if(field==0)operation=Id(32509);if(field==1)request.policy_snapshot_uuid=Id(32509);if(field==2)request.normalized_request_sha256[0]^=1;if(field==3)request.recovery_profile=0;if(field==4)request.recovery_profile=2;
+   if(field==5)resolution={};if(field==6)resolution=operation;if(field==7)expected.state_sha256[0]^=1;if(field==8)expected.selection.selection_generation++;if(field==9)expected.watermark.abandonment=db::NativePublicationWatermark::Abandonment{Id(32500),expected.state_sha256};
+   Reset();io_counting=true;const auto failed=db::AbandonNativeMetadataPublicationOnOpenDevices(Id(1),f.devices,Id(2),expected,operation,request,resolution,f.budget);io_counting=false;
+   Check(!failed.ok()&&!failed.snapshot&&!writes&&!syncs&&f.Read(0,256)==c.original,"resolution exact original request and CAS required before mutation");
+  }
+  c.Pair(2,2);Reset();io_counting=true;const auto conflict=db::AbandonNativeMetadataPublicationOnOpenDevices(Id(1),f.devices,Id(2),c.pending,c.g.plan.operation_uuid,c.g.plan.intent,Id(32509),f.budget);io_counting=false;
+  Check(conflict.error==P::request_mismatch&&!conflict.snapshot&&!writes&&!syncs&&f.Read(0,256)==c.final,"different resolution identity is not an idempotent retry");
+  c.Pair(2,2);Write(f,c.slots[1],ResolutionOracle(c.old[1],Id(32509),c.pending.state_sha256));const auto before=f.Read(0,256);Reset();io_counting=true;const auto mismatch=c.Repair();io_counting=false;
+  Check(!mismatch.ok()&&!mismatch.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"conflicting individually canonical resolutions refuse");
+ }
+ for(unsigned slot=1;slot<=2;++slot)for(unsigned torn=0;torn<2;++torn){ResolutionCase c(0,false);auto& f=c.f;const auto child=fork();Check(child>=0,"actual resolution process fork");
+  if(child==0){Reset();if(torn){write_fault=slot;torn_bytes=680;}else kill_write=slot;io_counting=true;const auto result=c.Resolve();_exit(result.error==P::io_failure?86:89);}
+  int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,"resolution child terminated at actual publication write boundary");Reset();c.Reopen();
+  const auto repaired=c.Repair();Check(repaired.ok()&&bool(repaired.snapshot->watermark.abandonment)==(slot==2),"cold repair preserves only actual durable disposition");c.Nonwatermarks();Check(c.Resolve().ok()&&f.Read(0,256)==c.final,"same-resolution cold retry after actual process loss");
+ }
+ {ResolutionCase c;auto& f=c.f;std::promise<void> p1,p2;auto s1=p1.get_future(),s2=p2.get_future();auto guard=f.device.AcquireOperationGuard();
+  auto first=std::async(std::launch::async,[&]{p1.set_value();return c.Resolve();});auto second=std::async(std::launch::async,[&]{p2.set_value();return c.Resolve();});s1.wait();s2.wait();
+  const bool waiting=first.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout&&second.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout;guard.unlock();const auto a=first.get(),b=second.get();
+  Check(waiting&&a.ok()&&b.ok()&&a.snapshot->state_sha256==b.snapshot->state_sha256&&f.Read(0,256)==c.final,"concurrent identical resolutions serialize on owned guards");
+ }
+ // A valid common header with contradictory identity is not repairable damage,
+ // even when its independent watermark family is also corrupt.
+ {ResolutionCase c;for(unsigned damaged=0;damaged<2;++damaged){c.Pair();auto bad=c.old[0];Put(bad,56,Id(32509));HeaderSeal(bad);std::fill(bad.begin()+400,bad.begin()+432,0);const auto h=Sha(bad);std::copy(h.begin(),h.end(),bad.begin()+400);if(damaged)bad.back()^=1;Write(c.f,c.slots[0],bad);
+   const auto before=c.f.Read(0,256);Reset();io_counting=true;const auto failed=c.Repair();io_counting=false;Check(failed.error==P::binding_mismatch&&!failed.snapshot&&!writes&&!syncs&&c.f.Read(0,256)==before,"canonical wrong watermark header cannot be repaired as damage");
+  }}
+}
+void ResolutionInterruptedInstallation(){
+ using P=db::NativePublicationError;
+ for(unsigned profile=0;profile<5;++profile){ResolutionCase measured(profile,false);auto& mf=measured.f;auto& mg=measured.g;mg.plan.reservation_state_sha256=measured.pending.state_sha256;mg.Refresh();
+  auto lease=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),mf.devices,Id(2),measured.pending,mg.plan.operation_uuid,mg.plan.intent,mf.budget);Check(lease.ok(),"installation baseline resumed exact reservation");Reset();io_counting=true;
+  const auto installed=db::InstallNativeManagementControlGraphOnLease(*lease.lease,mg.plan,mg.target_bytes,mg.extent,measured.b.pages,mf.budget);io_counting=false;const auto boundaries=writes;Check(installed.ok()&&boundaries>3,"actual immutable installer write boundaries measured");lease.lease.reset();
+  for(unsigned slot=1;slot<=boundaries;++slot)for(unsigned torn=0;torn<2;++torn){ResolutionCase c(profile,false);auto& f=c.f;auto& g=c.g;g.plan.reservation_state_sha256=c.pending.state_sha256;g.Refresh();
+   const auto child=fork();Check(child>=0,"actual immutable installer process fork");if(child==0){auto owned=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),c.pending,g.plan.operation_uuid,g.plan.intent,f.budget);if(!owned.ok())_exit(87);
+    Reset();if(torn){write_fault=slot;torn_bytes=680;}else kill_write=slot;io_counting=true;const auto result=db::InstallNativeManagementControlGraphOnLease(*owned.lease,g.plan,g.target_bytes,g.extent,c.b.pages,f.budget);_exit(result.error==P::io_failure?86:89);
+   }
+   int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,"installer process terminated at each actual write boundary");Reset();c.Reopen();const auto repaired=c.Repair();Check(repaired.ok()&&!repaired.snapshot->watermark.abandonment,"explicit watermark repair retains original pending intent after incomplete install");
+   auto expected=f.Read(0,256);for(unsigned i=0;i<2;++i){const auto image=ResolutionOracle(f.Read(c.slots[i]),Id(32500),repaired.snapshot->state_sha256);std::copy(image.begin(),image.end(),expected.begin()+c.slots[i]*f.size);}
+   const auto result=db::AbandonNativeMetadataPublicationOnOpenDevices(Id(1),f.devices,Id(2),*repaired.snapshot,g.plan.operation_uuid,g.plan.intent,Id(32500),f.budget);
+   Check(result.ok()&&result.snapshot->watermark.watermark==c.pending.watermark.watermark&&result.snapshot->selection.checkpoint==c.pending.selection.checkpoint&&f.Read(0,256)==expected,"incomplete immutable installation resolved without reconstructing or erasing any input");
+  }
+ }
+ {ResolutionCase c;auto& f=c.f;const auto original_zero=f.Read(0);
+  for(unsigned flags=1;flags<=3;++flags){auto zero=c.g.zero;zero.bootstrap.flags=flags;if(flags&d::FilespaceBootstrapFlag::payload_encrypted)zero.bootstrap.encryption_profile_uuid=Id(32509);const auto image=d::EncodeFilespacePageZero(zero);Check(image.ok(),"resolution authority fixture");Write(f,0,*image.bytes);const auto before=f.Read(0,256);Reset();io_counting=true;const auto result=c.Resolve();io_counting=false;
+   Check(result.error==(flags&d::FilespaceBootstrapFlag::cluster_authority_required?P::cluster_requires_authority:P::encrypted_requires_authority)&&!result.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"resolution cannot cross cluster or encrypted ownership");Write(f,0,original_zero);
+  }
+  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only resolution fixture");Reset();io_counting=true;const auto result=c.Resolve();io_counting=false;Check(result.error==P::invalid_device&&!result.snapshot&&!writes&&!syncs,"resolution requires actual writable owned device");
+ }
+ {Fixture f(0);f.budget*=4;Graph g(f);const auto base=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(base.ok(),"legacy reservation base");auto lease=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*base.snapshot,g.plan.operation_uuid,f.budget,&g.plan.intent);Check(lease.ok(),"actual legacy unprofiled pending intent");auto expected=lease.lease->snapshot();lease.lease.reset();auto forged=g.plan.intent;forged.recovery_profile=1;expected.watermark.intent=forged;const auto before=f.Read(0,256);Reset();io_counting=true;
+  const auto result=db::AbandonNativeMetadataPublicationOnOpenDevices(Id(1),f.devices,Id(2),expected,g.plan.operation_uuid,forged,Id(32500),f.budget);io_counting=false;Check(result.error==P::request_mismatch&&!result.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"caller cannot promote an actual legacy pending intent into abandonable profile");
+ }
+}
+void ResolutionFaults(unsigned route,int shard=-1,bool retry=false){
+ using P=db::NativePublicationError;ResolutionCase c;auto& f=c.f;
+ if(retry)Check(c.Resolve().ok(),"actual completed resolution before retry fault sweep");
+ byte scratch=0;for(unsigned n=0;n<4097;++n){const auto io=f.device.ReadAt(0,&scratch,1);Check(io.ok()&&io.bytes_transferred==1,"resolution optional metric capacity stabilized");}
+ Reset();hash_seen=0;hash_counting=counting=io_counting=true;allocations=0;const auto baseline=c.Resolve();io_counting=counting=hash_counting=false;
+ const auto nr=reads,nw=writes,ns=syncs,nh=hash_seen;const auto sites=allocations;Check(baseline.ok()&&nw==(retry?0u:2u)&&ns==3,"measured actual resolution");
+ const auto reset_pair=[&]{c.Pair(retry?2:1,retry?2:1);};
+ const auto failed=[&](const db::NativePublicationInspection& result,unsigned written,unsigned synchronized){Check(!result.ok()&&!result.snapshot,"failed resolution exposes no snapshot");if(!written&&!synchronized)Check(f.Read(0,256)==(retry?c.final:c.original),"resolution preflight failure leaves full node unchanged");c.Nonwatermarks();};
+ if(route==0){for(unsigned mode=0;mode<5;++mode){const auto count=mode<2?nr:mode<4?nw:ns;for(unsigned at=1;at<=count;++at){reset_pair();Reset();if(mode==0)read_fault=at;if(mode==1)corrupt_read=at;if(mode==2||mode==3){write_fault=at;if(mode==3)torn_bytes=680;}if(mode==4)sync_fault=at;
+    io_counting=true;const auto result=c.Resolve();io_counting=false;const auto written=writes,synchronized=syncs;Reset();Check(mode==1||result.error==P::io_failure,"resolution I/O failures preserve cause");failed(result,written,synchronized);
+    c.Reopen();Check(c.Repair().ok()&&c.Resolve().ok()&&f.Read(0,256)==c.final,"explicit recovery and retry after each actual resolution I/O failure");
+   }}
+ }else if(route==1){for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=nh;++at){reset_pair();Reset();hash_fault=mode;hash_target=at;hash_seen=0;io_counting=true;const auto result=c.Resolve();io_counting=false;const bool consumed=!hash_fault;const auto written=writes,synchronized=syncs;Reset();
+   Check(consumed&&result.error==P::hash_failure,"every resolution hash failure consumed and preserved");failed(result,written,synchronized);
+  }
+ }else{Check(shard>=0&&shard<8,"resolution allocation shard");for(unsigned long at=shard;at<sites;at+=8){reset_pair();Reset();const auto lost=f.device.failed_io_latency_observations();allocation_budget=at;io_counting=true;const auto result=c.Resolve();io_counting=false;const auto remaining=allocation_budget;allocation_budget=-1;const auto written=writes,synchronized=syncs;Reset();
+   if(result.ok())Check(remaining==-1&&f.device.failed_io_latency_observations()==lost+1&&f.Read(0,256)==c.final,"only consumed optional observation loss permits complete resolution");
+   else{Check(result.error==P::resource_exhausted&&remaining==-1,"every required resolution allocation consumed and preserved");failed(result,written,synchronized);}
+  }
+ }
+ Reset();std::cout<<"resolution reads="<<nr<<" writes="<<nw<<" syncs="<<ns<<" hashes="<<nh<<" allocation sites="<<sites<<" route="<<route<<" shard="<<shard<<" retry="<<retry<<"\n";
+}
 void RecoveryFaults(unsigned route,int shard=-1){
  using P=db::NativePublicationError;Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();Install(f,g,b);RecoverySelectors images(f,g);
  byte scratch=0;for(unsigned n=0;n<4097;++n){const auto io=f.device.ReadAt(0,&scratch,1);Check(io.ok()&&io.bytes_transferred==1,"recovery optional metric capacity stabilized");}
@@ -617,6 +747,18 @@ void SequenceCodecFaults(const Graph& g,const db::NativePublicationLease& lease)
   }
  }
  Reset();
+}
+void ResolutionPlanCodec(){
+ for(unsigned profile=0;profile<5;++profile){Fixture f(profile);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.plan.intent.recovery_profile=1;g.Refresh();
+  const auto base=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(base.ok(),"version5 base");auto held=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*base.snapshot,g.plan.operation_uuid,f.budget,&g.plan.intent);Check(held.ok(),"version5 profiled reservation");g.plan.reservation_state_sha256=held.lease->snapshot().state_sha256;g.Refresh();
+  const auto decoded=db::DecodeNativePublicationPlan(g.plan_bytes);Check(decoded.ok()&&decoded.plan->intent.recovery_profile==1&&g.plan_bytes==Oracle(g.plan)&&decoded.sha256==Sha(g.plan_bytes),"independent exact version5 image hash and profile");
+  Check(LoadLittle16(g.plan_bytes.data()+136)==5&&LoadLittle16(g.plan_bytes.data()+138)==1024&&LoadLittle32(g.plan_bytes.data()+140)==1152&&LoadLittle16(g.plan_bytes.data()+1048)==1,"exact version5 layout");
+  for(unsigned field=0;field<5;++field){auto bad=g.plan;if(field==0)bad.intent.recovery_profile=2;if(field==1)bad.base_selection_generation.reset();if(field==2)bad.control_bundle.reset();if(field==3)bad.management_extent.reset();if(field==4)bad.base_selection_generation=0;Failed(db::EncodeNativePublicationPlan(bad));}
+  for(unsigned field=0;field<5;++field){auto bad=g.plan_bytes;if(field==0)Num(bad,1048,2,0);if(field==1)Num(bad,1048,2,2);if(field==2)bad[1050]=1;if(field==3)bad[1151]=1;if(field==4){bad[135]='4';Num(bad,136,2,4);}PlanSeal(bad);Failed(db::DecodeNativePublicationPlan(bad));}
+  auto legacy=g.plan;legacy.intent.recovery_profile=0;const auto legacy_bytes=db::EncodeNativePublicationPlan(legacy);Check(legacy_bytes.ok()&&legacy_bytes.bytes==Oracle(legacy)&&LoadLittle16(legacy_bytes.bytes.data()+136)==4&&legacy_bytes.bytes[1048]==0,"legacy profile remains exactly version4");
+  Check(db::BindNativePublicationPlanToLease(legacy,*held.lease,g.target_bytes)!=E::none,"legacy plan cannot bind profiled lease");
+  SequenceCodecFaults(g,*held.lease);
+ }
 }
 void Sequences(){
  for(unsigned profile=0;profile<5;++profile){
@@ -760,4 +902,4 @@ void Invalid(){
  const auto slot=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[](const auto& r){return r.kind==19;});auto torn=f.Read(slot->page_number);torn.back()^=1;Write(f,slot->page_number,torn);reject();Write(f,0,original);Good(f,g,1);
 }
 }
-int main(int argc,char** argv){try{const std::string mode=argc>1?argv[1]:"all";Check(mode=="all"||mode=="profiles"||mode=="invalid"||mode=="retained"||mode=="graphs"||mode=="sequences"||mode=="publication"||mode=="publication-faults"||mode=="recovery"||mode=="recovery-faults"||mode=="faults"||mode=="allocations","known test mode");if(mode=="faults"||mode=="allocations"){Check(argc==(mode=="faults"?3:4),"fault route and shard arguments");const auto route=std::stoul(argv[2]);Check(route<5,"fault route range");int shard=-1;if(mode=="allocations"){shard=std::stoi(argv[3]);Check(shard>=0&&shard<4,"allocation shard range");}Faults(route,shard);}if(mode=="publication-faults"){Check(argc==3||argc==4,"publisher fault arguments");const auto route=std::stoul(argv[2]);Check(route<3,"publisher fault route");PublicationFaults(route,argc==4?std::stoi(argv[3]):-1);}if(mode=="all"||mode=="profiles")Profiles();if(mode=="all"||mode=="invalid")Invalid();if(mode=="all"||mode=="retained")Retained();if(mode=="all"||mode=="graphs")Graphs();if(mode=="all"||mode=="sequences")Sequences();if(mode=="all"||mode=="publication")Publication();if(mode=="all"||mode=="recovery"){Recovery();RecoveryInputs();RecoveryBudget();RecoveryAuthority();}if(mode=="recovery-faults"){Check(argc==3||argc==4,"recovery fault arguments");const auto route=std::stoul(argv[2]);Check(route<3,"recovery fault route");RecoveryFaults(route,argc==4?std::stoi(argv[3]):-1);}std::cout<<"native management control authority checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;io_counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}
+int main(int argc,char** argv){try{const std::string mode=argc>1?argv[1]:"all";Check(mode=="all"||mode=="profiles"||mode=="invalid"||mode=="retained"||mode=="graphs"||mode=="sequences"||mode=="publication"||mode=="publication-faults"||mode=="recovery"||mode=="recovery-faults"||mode=="resolution"||mode=="resolution-faults"||mode=="resolution-retry-faults"||mode=="faults"||mode=="allocations","known test mode");if(mode=="faults"||mode=="allocations"){Check(argc==(mode=="faults"?3:4),"fault route and shard arguments");const auto route=std::stoul(argv[2]);Check(route<5,"fault route range");int shard=-1;if(mode=="allocations"){shard=std::stoi(argv[3]);Check(shard>=0&&shard<4,"allocation shard range");}Faults(route,shard);}if(mode=="publication-faults"){Check(argc==3||argc==4,"publisher fault arguments");const auto route=std::stoul(argv[2]);Check(route<3,"publisher fault route");PublicationFaults(route,argc==4?std::stoi(argv[3]):-1);}if(mode=="all"||mode=="profiles")Profiles();if(mode=="all"||mode=="invalid")Invalid();if(mode=="all"||mode=="retained")Retained();if(mode=="all"||mode=="graphs")Graphs();if(mode=="all"||mode=="sequences")Sequences();if(mode=="all"||mode=="publication")Publication();if(mode=="all"||mode=="recovery"){Recovery();RecoveryInputs();RecoveryBudget();RecoveryAuthority();}if(mode=="recovery-faults"){Check(argc==3||argc==4,"recovery fault arguments");const auto route=std::stoul(argv[2]);Check(route<3,"recovery fault route");RecoveryFaults(route,argc==4?std::stoi(argv[3]):-1);}if(mode=="all"||mode=="resolution"){MetadataResolution();ResolutionSafety();ResolutionPlanCodec();ResolutionInterruptedInstallation();}if(mode=="resolution-faults"||mode=="resolution-retry-faults"){Check(argc==3||argc==4,"resolution fault arguments");const auto route=std::stoul(argv[2]);Check(route<3,"resolution fault route");ResolutionFaults(route,argc==4?std::stoi(argv[3]):-1,mode=="resolution-retry-faults");}std::cout<<"native management control authority checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;io_counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}
