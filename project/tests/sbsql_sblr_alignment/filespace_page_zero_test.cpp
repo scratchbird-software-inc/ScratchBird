@@ -1647,7 +1647,7 @@ void CanonicalCheckpointInventoryPair() {
   persist(inventory,checkpoint,18);auto result=read();
   Check(result.ok()&&result.inventory.entries.size()==1&&result.inventory_generation==19&&result.retained_image_bytes==16384
     &&!result.inventory.publication_base,"actual checkpoint and complete inventory creator binding");
-  result=read(16383);empty(result);Check(result.error==E::inventory_failure
+  result=read(16383);empty(result);Check(result.error==E::resource_exhausted
     &&result.inventory_error==page::NativeInventoryError::resource_exhausted,"pair budget includes checkpoint and chain");
   for(auto state:{mga::TransactionState::active,mga::TransactionState::prepared,mga::TransactionState::limbo,
       mga::TransactionState::failed_terminal,mga::TransactionState::rolled_back}) {
@@ -1669,7 +1669,7 @@ void CanonicalCheckpointInventoryPair() {
   auto operation=checkpoint;operation.creator_transaction_uuid={};operation.creator_local_transaction_id=0;operation.creator_operation_uuid=Id(201);
   const auto operation_bytes=persist(inventory,operation,18);
   Check(db::DecodeNativeCheckpointRoot(operation_bytes).ok(),"operation-owned checkpoint is structurally valid");
-  result=read();empty(result);Check(result.error==E::inventory_mismatch,"transaction-only reader cannot substitute inventory outcome for operation authority");
+  result=read(128*sizes[0]);empty(result);Check(result.error==E::creator_not_committed,"inventory outcome cannot substitute for actual selected operation authority");
   auto global=inventory;global.inventory.entries[0].identity.scope=mga::TransactionScope::cluster_global;
   persist(global,checkpoint,18);result=read();empty(result);Check(result.error==E::inventory_mismatch,"global transaction cannot certify standalone checkpoint");
   mismatch=checkpoint;mismatch.selected_local_transaction_id=18;persist(inventory,mismatch,18);result=read();empty(result);Check(result.error==E::inventory_mismatch,"selected transaction boundary must bind inventory next counter");
@@ -1741,7 +1741,7 @@ void CanonicalCheckpointCatalogRoots() {
     Check(result.ok()&&result.catalogs.size()==2&&result.feature_root_index==1&&result.retained_image_bytes==distinct_budget
       &&result.catalogs[1].root->object_uuid==Id(43)&&result.catalogs[1].root->root_kind==8,"distinct cross-profile feature root actual image binding");
     result=read(distinct_budget-1);empty(result);Check(result.error==E::resource_exhausted,"distinct root exact budget boundary");
-    result=read(2*sizes[p]-1);empty(result);Check(result.error==E::inventory_failure
+    result=read(2*sizes[p]-1);empty(result);Check(result.error==E::resource_exhausted
       &&result.checkpoint_inventory.inventory_error==page::NativeInventoryError::resource_exhausted,"nested inventory refusal retains its actual cause");
     for(bool bad_feature:{false,true}) {
       auto cat=catalog,feat=feature;auto& bad=bad_feature?feat:cat;bad.creator_transaction_uuid=Id(200);
@@ -3537,8 +3537,10 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     {const auto prior_current=current;
       current.creator_transaction_uuid={};current.creator_local_transaction_id=0;current.creator_operation_uuid=Id(201);
       Check(db::DecodeNativeCheckpointRoot(CheckpointOracle(current)).ok(),"operation checkpoint is structural data before actual authority lookup");
-      persist();const auto rejected=read(budget);empty(rejected);
-      Check(rejected.error==E::checkpoint_failure&&rejected.checkpoint_error==db::NativeCheckpointError::inventory_mismatch,
+      persist();const auto rejected=read(budget+64*sizes[p]);empty(rejected);
+      if(rejected.error!=E::checkpoint_failure||rejected.checkpoint_error!=db::NativeCheckpointError::creator_not_committed)
+        std::cerr<<"unproved operation creator error="<<static_cast<int>(rejected.error)<<" checkpoint="<<static_cast<int>(rejected.checkpoint_error)<<std::endl;
+      Check(rejected.error==E::checkpoint_failure&&rejected.checkpoint_error==db::NativeCheckpointError::creator_not_committed,
         "selected checkpoint cannot invent operation authority from a complete marker");consumers(CheckpointRef(current),false);
       current=prior_current;persist();}
     const auto saved=map;
@@ -3590,7 +3592,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       auto admitted=read(mixed_budget);track_reads=count_allocations=count_full_digests=false;
       const auto mixed_reads=reads,mixed_digests=observed_full_digests;const auto mixed_allocations=observed_allocations;
       if(!admitted.ok())std::cerr<<"mixed control allocation error="<<static_cast<int>(admitted.error)<<" cp="<<static_cast<int>(admitted.checkpoint_error)<<" map="<<static_cast<int>(admitted.allocation_error)<<std::endl;
-      Check(admitted.ok()&&admitted.checkpoint_inventory.inventory_pages.size()==2&&admitted.predecessor.inventory_pages.size()==2&&
+      Check(admitted.ok()&&admitted.retained_image_bytes==mixed_budget&&admitted.checkpoint_inventory.inventory_pages.size()==2&&admitted.predecessor.inventory_pages.size()==2&&
         admitted.checkpoint_inventory.inventory_pages.back().header.filespace_uuid==Id(7),"actual complete mixed-profile control allocations admitted");
       empty(read(mixed_budget-1));
       if(p==0&&role==1){

@@ -80,7 +80,7 @@ enum class NativeCheckpointError {
   horizon_failure, horizon_creator_mismatch, horizon_creator_not_committed,
   horizon_retention_mismatch, horizon_boundary_mismatch, horizon_observation_mismatch,
   retention_failure, retention_creator_mismatch, retention_creator_not_committed,
-  horizon_pin_missing, horizon_pin_lineage_mismatch
+  horizon_pin_missing, horizon_pin_lineage_mismatch, cluster_requires_authority
 };
 struct NativeCheckpointRootResult {
   NativeCheckpointError error = NativeCheckpointError::invalid_family;

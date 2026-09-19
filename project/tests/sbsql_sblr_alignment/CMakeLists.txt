@@ -8345,6 +8345,28 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_native_management_history native_management_history_test.cpp)
   add_executable(sbsql_sblr_alignment_native_management_control_allocation native_management_control_allocation_test.cpp)
   add_executable(sbsql_sblr_alignment_native_management_control_bundle native_management_control_bundle_test.cpp)
+  add_executable(sbsql_sblr_alignment_native_management_control_authority native_management_control_authority_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_management_control_authority PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_management_control_authority PRIVATE sb_storage_database)
+  target_link_options(sbsql_sblr_alignment_native_management_control_authority PRIVATE
+    -Wl,--wrap=pwrite -Wl,--wrap=pread -Wl,--wrap=fsync
+    -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
+    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
+  add_test(NAME sbsql_sblr_alignment_native_management_control_authority COMMAND sbsql_sblr_alignment_native_management_control_authority)
+  set_tests_properties(sbsql_sblr_alignment_native_management_control_authority PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_management_control_authority;binary_UUID;actual_read;not_SQL_E2E" TIMEOUT 300)
+  foreach(route RANGE 0 2)
+    set(test_name "sbsql_sblr_alignment_native_management_control_authority_faults_${route}")
+    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority faults ${route})
+    set_tests_properties(${test_name} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_management_control_authority;operational_fault;not_SQL_E2E" TIMEOUT 900)
+    foreach(shard RANGE 0 3)
+      set(test_name "sbsql_sblr_alignment_native_management_control_authority_allocations_${route}_${shard}")
+      add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority allocations ${route} ${shard})
+      set_tests_properties(${test_name} PROPERTIES
+        LABELS "sbsql_sblr_alignment;native_management_control_authority;allocation_fault;not_SQL_E2E" TIMEOUT 1800)
+    endforeach()
+  endforeach()
   add_executable(sbsql_sblr_alignment_native_management_control_install native_management_control_install_test.cpp)
   target_compile_features(sbsql_sblr_alignment_native_management_control_install PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_management_control_install PRIVATE sb_storage_database)

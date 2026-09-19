@@ -36,6 +36,7 @@ add_library(sb_storage_database
   native_management_operation.cpp
   native_management_extent.cpp
   native_management_history.cpp
+  native_management_control_authority.cpp
   native_management_control_allocation.cpp
   native_management_control_bundle.cpp
   native_checkpoint_selection_binding.cpp

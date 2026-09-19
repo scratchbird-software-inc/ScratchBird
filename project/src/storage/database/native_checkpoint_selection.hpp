@@ -30,7 +30,7 @@ enum class NativeCheckpointSelectionError {
   invalid_integrity, hash_failure, resource_exhausted, invalid_pair, repair_required,
   invalid_filespace, bootstrap_failure, slot_binding_mismatch, checkpoint_failure,
   checkpoint_binding_mismatch, allocation_failure, allocation_binding_mismatch,
-  creator_mismatch, io_failure
+  creator_mismatch, io_failure, encrypted_requires_authority, cluster_requires_authority
 };
 struct NativeCheckpointSelectionImage {
   NativeCheckpointSelectionError error=NativeCheckpointSelectionError::invalid_family;

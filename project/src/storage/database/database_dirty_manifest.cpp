@@ -8,6 +8,7 @@
 
 #include "database_dirty_manifest.hpp"
 #include "native_checkpoint_selection.hpp"
+#include "native_management_control_authority.hpp"
 #include "hash_digest_parts.hpp"
 #include "disk_device.hpp"
 #include "transaction_inventory_validation.hpp"
@@ -712,7 +713,8 @@ NativeCheckpointRootResult EncodeNativeCheckpointRoot(const NativeCheckpointRoot
     StoreLittle64(f+48,r.selected_local_transaction_id);StoreLittle64(f+56,r.stable_local_transaction_id);
     StoreLittle64(f+64,r.local_durable_transaction_id);StoreLittle64(f+72,r.cluster_quorum_transaction_id);
     Put(f+80,r.timeline_uuid);Put(f+96,r.creator_transaction_uuid);StoreLittle64(f+112,r.creator_local_transaction_id);StoreLittle64(f+120,r.flags);
-    if(r.predecessor)PutRef(f+128,*r.predecessor);std::copy(r.predecessor_sha256.begin(),r.predecessor_sha256.end(),f+176);
+    if(r.predecessor)PutRef(f+128,*r.predecessor);
+    std::copy(r.predecessor_sha256.begin(),r.predecessor_sha256.end(),f+176);
     StoreLittle64(f+272,r.completed?1:0);
     Put(f+280,r.creator_operation_uuid);
     for(std::size_t i=0;i<r.roots.size();++i){const auto& target=r.roots[i];auto* out=b.data()+entries+112*i;
@@ -747,7 +749,8 @@ NativeCheckpointRootResult DecodeNativeCheckpointRoot(const std::vector<scratchb
     r.local_durable_transaction_id=LoadLittle64(f+64);r.cluster_quorum_transaction_id=LoadLittle64(f+72);
     r.timeline_uuid=Get(f+80);r.creator_transaction_uuid=Get(f+96);r.creator_local_transaction_id=LoadLittle64(f+112);r.flags=LoadLittle64(f+120);
     if(version==2){r.creator_operation_uuid=Get(f+280);if(r.creator_operation_uuid.is_nil())return Fail(Error::invalid_family);}
-    if(!Zero(f+128,48))r.predecessor=GetRef(f+128);std::copy_n(f+176,32,r.predecessor_sha256.begin());r.completed=LoadLittle64(f+272)==1;
+    if(!Zero(f+128,48))r.predecessor=GetRef(f+128);
+    std::copy_n(f+176,32,r.predecessor_sha256.begin());r.completed=LoadLittle64(f+272)==1;
     for(std::size_t at=entries;at<used;at+=112){const auto* in=b.data()+at;NativeCheckpointRootReference target;
       if(!Zero(in+2,2)||!Zero(in+104,8))return Fail(Error::invalid_roots);
       target.role=LoadLittle16(in);target.page_type=LoadLittle32(in+4);target.page=GetRef(in+8);target.object_uuid=Get(in+56);
@@ -814,24 +817,41 @@ NativeCheckpointInventoryResult VerifyNativeCheckpointInventoryFromOpenDevices(
       target.page.page_number,target.page.page_generation,target.page.page_size_profile_uuid,target.object_uuid};
     auto chain=scratchbird::storage::page::ReadNativeTransactionInventoryChainFromOpenDevices(
       database_uuid,ordered,inventory_ref,maximum_retained_image_bytes-loaded.bytes.size());
-    if(!chain.ok()){auto result=fail(Error::inventory_failure);result.inventory_error=chain.error;return result;}
+    if(!chain.ok()){
+      using I=scratchbird::storage::page::NativeInventoryError;
+      const auto error=chain.error==I::resource_exhausted?Error::resource_exhausted:
+        chain.error==I::hash_failure?Error::hash_failure:
+        chain.error==I::io_failure?Error::io_failure:
+        chain.error==I::encrypted_requires_crypto_authority?Error::encrypted_requires_crypto_authority:
+        Error::inventory_failure;
+      auto result=fail(error);result.inventory_error=chain.error;return result;
+    }
     const auto digest=hash::ComputeSha256Digest(chain.pages.front().bytes);
     if(!digest.ok())return fail(Error::hash_failure);
     if(digest.digest!=target.sha256)return fail(Error::invalid_integrity);
     const auto& root=*loaded.root;
     if(chain.inventory.next_local_transaction_id<=root.selected_local_transaction_id
       ||chain.inventory.next_local_transaction_id-1!=root.selected_local_transaction_id)return fail(Error::inventory_mismatch);
-    const auto creator=scratchbird::transaction::mga::LookupLocalTransaction(chain.inventory,
-      scratchbird::transaction::mga::MakeLocalTransactionId(root.creator_local_transaction_id));
-    if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=root.creator_transaction_uuid
-      ||(!(root.flags&4)&&creator.entry.identity.scope!=scratchbird::transaction::mga::TransactionScope::local_node))return fail(Error::inventory_mismatch);
-    if(!scratchbird::transaction::mga::HasCommittedInventoryOutcome(creator.entry))return fail(Error::creator_not_committed);
     const auto checkpoint_digest=hash::ComputeSha256Digest(loaded.bytes);
     if(!checkpoint_digest.ok())return fail(Error::hash_failure);
+    u64 operation_work=0;
+    if(root.creator_operation_uuid.is_nil()){
+      const auto creator=scratchbird::transaction::mga::LookupLocalTransaction(chain.inventory,
+        scratchbird::transaction::mga::MakeLocalTransactionId(root.creator_local_transaction_id));
+      if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=root.creator_transaction_uuid
+        ||(!(root.flags&4)&&creator.entry.identity.scope!=scratchbird::transaction::mga::TransactionScope::local_node))return fail(Error::inventory_mismatch);
+      if(!scratchbird::transaction::mga::HasCommittedInventoryOutcome(creator.entry))return fail(Error::creator_not_committed);
+    }else{
+      const auto proof=ReadNativeManagementControlAuthorityFromOpenDevices(database_uuid,ordered,
+        root.header.filespace_uuid,maximum_retained_image_bytes-loaded.bytes.size()-chain.retained_image_bytes);
+      if(!proof.ok()){using P=NativeManagementControlAuthorityError;return fail(proof.error==P::hash_failure?Error::hash_failure:proof.error==P::resource_exhausted?Error::resource_exhausted:proof.error==P::io_failure?Error::io_failure:proof.error==P::encrypted_requires_authority?Error::encrypted_requires_crypto_authority:proof.error==P::cluster_requires_authority?Error::cluster_requires_authority:Error::creator_not_committed);}
+      if(!MatchesNativeManagementPublishedCheckpoint(proof,root,checkpoint_digest.digest))return fail(Error::creator_not_committed);
+      operation_work=proof.verified_image_bytes;
+    }
     NativeCheckpointInventoryResult result;result.error=Error::none;
     result.checkpoint_sha256=checkpoint_digest.digest;
     result.inventory_generation=chain.pages.front().page->inventory_generation;
-    result.retained_image_bytes=loaded.bytes.size()+chain.retained_image_bytes;
+    result.retained_image_bytes=loaded.bytes.size()+chain.retained_image_bytes+operation_work;
     result.inventory_pages.reserve(chain.pages.size());
     for(const auto& image:chain.pages)
       result.inventory_pages.push_back({image.page->header,image.page->object_uuid});

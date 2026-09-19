@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_checkpoint_selection.hpp"
+#include "native_management_control_authority.hpp"
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
 #include "transaction_inventory_validation.hpp"
@@ -20,7 +21,9 @@ NativeBoundCheckpointSelection CheckpointFailure(const NativeCheckpointInventory
   const auto nested=source.error==C::inventory_failure?source.inventory_error:I::none;
   auto r=Fail(source.error==C::hash_failure||nested==I::hash_failure?E::hash_failure:
     source.error==C::resource_exhausted||nested==I::resource_exhausted?E::resource_exhausted:
-    source.error==C::io_failure||nested==I::io_failure?E::io_failure:E::checkpoint_failure);
+    source.error==C::io_failure||nested==I::io_failure?E::io_failure:
+    source.error==C::encrypted_requires_crypto_authority||nested==I::encrypted_requires_crypto_authority?E::encrypted_requires_authority:
+    source.error==C::cluster_requires_authority?E::cluster_requires_authority:E::checkpoint_failure);
   r.checkpoint_error=source.error;return r;
 }
 NativeBoundCheckpointSelection AllocationFailure(page::NativeAllocationError error){
@@ -38,7 +41,8 @@ NativeBoundCheckpointSelection ReadNativeBoundCheckpointSelectionFromOpenDevices
     std::set<disk::FileDevice*> handles;std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(devices.size());
     for(std::size_t i=0;i<devices.size();++i){const auto& f=devices[i];
       if(!V7(f.filespace_uuid)||!disk::FindCanonicalFilespacePageProfile(f.page_size_profile_uuid)||!f.device||!handles.insert(f.device).second||
-        (i&&devices[i-1].filespace_uuid==f.filespace_uuid))return Fail(E::invalid_filespace);guards.push_back(f.device->AcquireOperationGuard());}
+        (i&&devices[i-1].filespace_uuid==f.filespace_uuid))return Fail(E::invalid_filespace);
+      guards.push_back(f.device->AcquireOperationGuard());}
     const auto primary=std::lower_bound(devices.begin(),devices.end(),primary_uuid,[](const auto& f,const auto& id){return f.filespace_uuid<id;});
     if(primary==devices.end()||primary->filespace_uuid!=primary_uuid)return Fail(E::invalid_filespace);
     const disk::FilespaceBootstrapBinding binding{database_uuid,primary_uuid,primary->page_size_profile_uuid};
@@ -60,7 +64,8 @@ NativeBoundCheckpointSelection ReadNativeBoundCheckpointSelectionFromOpenDevices
       const disk::NativeCommonPageHeaderBinding expected{binding,ref.page_number,ref.page_generation,0x30e,{}};
       const auto h=disk::DecodeNativeCommonPageHeader(bytes.data(),128,&expected);if(!h.ok())return Fail(E::slot_binding_mismatch);headers[i]=*h.header;}
     const auto classified=ClassifyNativeCheckpointSelectionPair(result.slots[0],result.slots[1]);
-    if(!classified.ok())return Fail(classified.error);const auto& selection=*classified.selection;
+    if(!classified.ok())return Fail(classified.error);
+    const auto& selection=*classified.selection;
     if(selection.bootstrap_uuid!=z.page_uuid||selection.object_uuid!=first->object_uuid||selection.object_uuid!=second->object_uuid)return Fail(E::slot_binding_mismatch);
     const auto& ref=selection.checkpoint;
     const disk::FilespaceRootReference checkpoint{9,0x300,ref.filespace_uuid,ref.page_number,ref.page_generation,ref.page_size_profile_uuid,selection.checkpoint_object_uuid};
@@ -92,27 +97,35 @@ NativeBoundCheckpointSelection ReadNativeBoundCheckpointSelectionFromOpenDevices
     }
     const auto target=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==4;});
     if(target==cp.roots.end()||target->page.filespace_uuid!=primary_uuid||target->page.page_size_profile_uuid!=primary->page_size_profile_uuid)return Fail(E::allocation_binding_mismatch);
+    std::optional<NativeManagementControlAuthority> operation_proof;
+    if(std::any_of(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==16;})){
+      auto proof=ReadNativeManagementControlAuthorityFromOpenDevices(database_uuid,devices,primary_uuid,budget-result.retained_image_bytes);
+      if(!proof.ok()){using P=NativeManagementControlAuthorityError;return Fail(proof.error==P::hash_failure?E::hash_failure:proof.error==P::resource_exhausted?E::resource_exhausted:proof.error==P::io_failure?E::io_failure:proof.error==P::encrypted_requires_authority?E::encrypted_requires_authority:proof.error==P::cluster_requires_authority?E::cluster_requires_authority:E::creator_mismatch);}
+      if(proof.selection->checkpoint!=selection.checkpoint||proof.selection->checkpoint_sha256!=selection.checkpoint_sha256)return Fail(E::checkpoint_binding_mismatch);
+      result.retained_image_bytes+=proof.verified_image_bytes;operation_proof=std::move(proof);
+    }
+    const auto transaction_creator=[&](const Uuid& id,u64 number,bool committed){const auto owner=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(number));return owner.ok()&&owner.entry.identity.transaction_uuid.value==id&&owner.entry.identity.scope==mga::TransactionScope::local_node&&(!committed||mga::HasCommittedInventoryOutcome(owner.entry));};
+    const auto map_creator=[&](const page::NativeAllocationMap& map){return map.creator_operation_uuid.is_nil()?transaction_creator(map.creator_transaction_uuid,map.creator_local_transaction_id,true):operation_proof&&MatchesNativeManagementControlMap(*operation_proof,map);};
+    const auto record_creator=[&](const Uuid& fs,const page::NativeAllocationRecord& r,page::NativeAllocationState state,bool committed){return r.creator_operation_uuid.is_nil()?transaction_creator(r.creator_transaction_uuid,r.creator_local_transaction_id,committed):operation_proof&&MatchesNativeManagementControlAllocation(*operation_proof,fs,r,state);};
     const disk::FilespaceRootReference allocation{3,3,primary_uuid,target->page.page_number,target->page.page_generation,target->page.page_size_profile_uuid,target->object_uuid};
     result.allocation=page::ReadNativeAllocationChainAtRootFromOpenDevice(*primary->device,binding,allocation,budget-result.retained_image_bytes);
     if(!result.allocation.ok())return AllocationFailure(result.allocation.error);
     const auto digest=core::hash::ComputeSha256Digest(result.allocation.pages.front().bytes);
-    if(!digest.ok())return Fail(E::hash_failure);if(digest.digest!=target->sha256)return Fail(E::allocation_binding_mismatch);
+    if(!digest.ok())return Fail(E::hash_failure);
+    if(digest.digest!=target->sha256)return Fail(E::allocation_binding_mismatch);
     std::set<Uuid> allocation_ids,page_ids;
     std::set<Uuid> controls{z.page_uuid,cp.header.page_uuid,headers[0].page_uuid,headers[1].page_uuid};
     if(controls.size()!=4)return Fail(E::slot_binding_mismatch);
     for(const auto& image:result.allocation.pages)if(!controls.insert(image.map->header.page_uuid).second)return Fail(E::allocation_binding_mismatch);
     bool matched[2]={false,false};
     for(const auto& image:result.allocation.pages){const auto& map=*image.map;
-      const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(map.creator_local_transaction_id));
-      if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=map.creator_transaction_uuid||
-        creator.entry.identity.scope!=mga::TransactionScope::local_node||!mga::HasCommittedInventoryOutcome(creator.entry))return Fail(E::creator_mismatch);
+      if(!map_creator(map))return Fail(E::creator_mismatch);
       for(const auto& r:map.records){
         if(!allocation_ids.insert(r.allocation_uuid).second||(!r.page_uuid.is_nil()&&!page_ids.insert(r.page_uuid).second))return Fail(E::allocation_binding_mismatch);
-        const auto owner=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(r.creator_local_transaction_id));
-        if(!owner.ok()||owner.entry.identity.transaction_uuid.value!=r.creator_transaction_uuid||owner.entry.identity.scope!=mga::TransactionScope::local_node)return Fail(E::creator_mismatch);
+        if(!record_creator(map.header.filespace_uuid,r,map.states[r.page_number-map.first_page],false))return Fail(E::creator_mismatch);
         for(unsigned i=0;i<2;++i)if(r.page_number==headers[i].page_number){
           if(map.states[r.page_number-map.first_page]!=page::NativeAllocationState::allocated||r.page_uuid!=headers[i].page_uuid||
-            r.page_generation!=headers[i].page_generation||r.page_type!=0x30e||r.owner_uuid!=selection.object_uuid||!mga::HasCommittedInventoryOutcome(owner.entry))return Fail(E::allocation_binding_mismatch);
+            r.page_generation!=headers[i].page_generation||r.page_type!=0x30e||r.owner_uuid!=selection.object_uuid||!record_creator(map.header.filespace_uuid,r,page::NativeAllocationState::allocated,true))return Fail(E::allocation_binding_mismatch);
           matched[i]=true;
         }
       }
@@ -135,16 +148,13 @@ NativeBoundCheckpointSelection ReadNativeBoundCheckpointSelectionFromOpenDevices
         secondary=page::ReadNativeAllocationChainFromOpenDevice(*file.device,
           {database_uuid,file.filespace_uuid,file.page_size_profile_uuid},budget-result.retained_image_bytes);
         if(!secondary.ok())return AllocationFailure(secondary.error);
+        result.retained_image_bytes+=secondary.retained_image_bytes;
         maps=&secondary;
         for(const auto& image:maps->pages){const auto& map=*image.map;
-          const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(map.creator_local_transaction_id));
-          if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=map.creator_transaction_uuid||
-            creator.entry.identity.scope!=mga::TransactionScope::local_node||!mga::HasCommittedInventoryOutcome(creator.entry))return Fail(E::creator_mismatch);
+          if(!map_creator(map))return Fail(E::creator_mismatch);
           for(const auto& record:map.records){
             if(!allocation_ids.insert(record.allocation_uuid).second||(!record.page_uuid.is_nil()&&!page_ids.insert(record.page_uuid).second))return Fail(E::allocation_binding_mismatch);
-            const auto original=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(record.creator_local_transaction_id));
-            if(!original.ok()||original.entry.identity.transaction_uuid.value!=record.creator_transaction_uuid||
-              original.entry.identity.scope!=mga::TransactionScope::local_node)return Fail(E::creator_mismatch);
+            if(!record_creator(file.filespace_uuid,record,map.states[record.page_number-map.first_page],false))return Fail(E::creator_mismatch);
           }
         }
       }
@@ -160,9 +170,7 @@ NativeBoundCheckpointSelection ReadNativeBoundCheckpointSelectionFromOpenDevices
         }
         if(!found||found->page_uuid!=h.page_uuid||found->page_generation!=h.page_generation||
           found->page_type!=h.page_type||found->owner_uuid!=control.object_uuid)return Fail(E::allocation_binding_mismatch);
-        const auto original=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(found->creator_local_transaction_id));
-        if(!original.ok()||original.entry.identity.transaction_uuid.value!=found->creator_transaction_uuid||
-          original.entry.identity.scope!=mga::TransactionScope::local_node||!mga::HasCommittedInventoryOutcome(original.entry))return Fail(E::creator_mismatch);
+        if(!record_creator(file.filespace_uuid,*found,page::NativeAllocationState::allocated,true))return Fail(E::creator_mismatch);
       }
     }
     result.selection=selection;result.error=E::none;return result;
