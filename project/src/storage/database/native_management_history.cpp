@@ -125,8 +125,8 @@ NativeManagementHistory ReadHistory(const Uuid& database,const std::vector<disk:
       if(!extent.ok())throw extent.error==NativeManagementExtentError::resource_exhausted?E::resource_exhausted:extent.error==NativeManagementExtentError::hash_failure?E::hash_failure:extent.error==NativeManagementExtentError::io_failure?E::io_failure:extent.error==NativeManagementExtentError::cluster_requires_authority?E::cluster_requires_authority:extent.error==NativeManagementExtentError::encrypted_requires_authority?E::encrypted_requires_authority:E::extent_failure;
       PlanError(BindNativePublicationPlanToManagementRecord(p,*extent.record));
       for(const auto& h:extent.page_headers)Require(h.page_uuid!=p.header.page_uuid,E::history_mismatch);
-      std::vector<disk::NativeCommonPageHeader> bundle_headers;std::vector<std::vector<byte>> allocation_images;
-      if(p.control_bundle){const auto& root=*p.control_bundle;const u64 allowance=root.page_count*size+4*root.map_count*size+2*size;c.Charge(allowance);
+      std::vector<disk::NativeCommonPageHeader> bundle_headers;std::vector<std::vector<byte>> allocation_images,inventory_images;
+      if(p.control_bundle){const auto& root=*p.control_bundle;const u64 allowance=root.page_count*size+4*(root.map_count+root.inventory_count)*size+2*size;c.Charge(allowance);
         auto bundle=ReadNativeManagementControlBundleFromOpenDevice(file,root,database,z.page_uuid,allowance);
         if(!bundle.ok())throw bundle.error==NativeManagementControlBundleError::resource_exhausted?E::resource_exhausted:bundle.error==NativeManagementControlBundleError::hash_failure?E::hash_failure:bundle.error==NativeManagementControlBundleError::io_failure?E::io_failure:bundle.error==NativeManagementControlBundleError::cluster_requires_authority?E::cluster_requires_authority:bundle.error==NativeManagementControlBundleError::encrypted_requires_authority?E::encrypted_requires_authority:E::extent_failure;
         const auto first=page::DecodeNativeAllocationMap(bundle.allocation_images.front());
@@ -135,9 +135,16 @@ NativeManagementHistory ReadHistory(const Uuid& database,const std::vector<disk:
         Require(target!=current.root.roots.end()&&target->page==disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid}&&target->object_uuid==first.map->object_uuid&&target->sha256==Hash(bundle.allocation_images.front()),E::history_mismatch);
         std::set<Uuid> control_ids{p.header.page_uuid};for(const auto& e:extent.page_headers)control_ids.insert(e.page_uuid);
         for(const auto& h:bundle.page_headers)Require(control_ids.insert(h.page_uuid).second,E::history_mismatch);
+        if(root.inventory_count){const auto head=page::DecodeNativeTransactionInventoryPage(bundle.inventory_images.front());
+          if(!head.ok())throw head.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:head.error==page::NativeInventoryError::hash_failure?E::hash_failure:E::history_mismatch;
+          const auto& inventory=*head.page;const auto& h=inventory.header;const auto target=std::find_if(current.root.roots.begin(),current.root.roots.end(),[](const auto& r){return r.role==1;});
+          Require(target!=current.root.roots.end()&&target->page_type==0x301&&target->page==disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid}&&target->object_uuid==inventory.object_uuid&&target->sha256==Hash(bundle.inventory_images.front())&&current.root.selected_local_transaction_id==inventory.inventory.next_local_transaction_id-1,E::history_mismatch);
+          for(const auto& bytes:bundle.inventory_images){const auto h=disk::DecodeNativeCommonPageHeader(bytes.data(),128);Require(h.ok()&&control_ids.insert(h.header->page_uuid).second,E::history_mismatch);}
+        }
         bundle_headers=std::move(bundle.page_headers);allocation_images=std::move(bundle.allocation_images);
+        inventory_images=std::move(bundle.inventory_images);
       }
-      result.entries.push_back({std::move(p),std::move(*extent.record),std::move(extent.page_headers),image.sha256,current.sha,std::move(bundle_headers),std::move(allocation_images)});current=std::move(base);
+      result.entries.push_back({std::move(p),std::move(*extent.record),std::move(extent.page_headers),image.sha256,current.sha,std::move(bundle_headers),std::move(allocation_images),std::move(inventory_images)});current=std::move(base);
     }
     std::reverse(result.entries.begin(),result.entries.end());Index(result);result.anchor=anchor;result.selection=actual_selection;result.verified_image_bytes=c.used;result.error=E::none;return result;
   }catch(E e){return Fail(e);}catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::io_failure);}

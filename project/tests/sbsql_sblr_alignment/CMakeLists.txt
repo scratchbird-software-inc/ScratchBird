@@ -8457,6 +8457,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME sbsql_sblr_alignment_native_management_control_bundle COMMAND sbsql_sblr_alignment_native_management_control_bundle)
   set_tests_properties(sbsql_sblr_alignment_native_management_control_bundle PROPERTIES
     LABELS "sbsql_sblr_alignment;native_management_control_bundle;binary_UUID;actual_read;not_SQL_E2E" TIMEOUT 300)
+  foreach(inventory_route RANGE 0 1)
+    foreach(inventory_shard RANGE 0 3)
+      add_test(NAME sbsql_sblr_alignment_native_inventory_history_allocations_${inventory_route}_${inventory_shard}
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-reader-allocations ${inventory_route} ${inventory_shard})
+      set_tests_properties(sbsql_sblr_alignment_native_inventory_history_allocations_${inventory_route}_${inventory_shard} PROPERTIES
+        LABELS "sbsql_sblr_alignment;native_management_control_bundle;inventory_history;allocation_fault;not_SQL_E2E" TIMEOUT 300)
+    endforeach()
+  endforeach()
   target_compile_features(sbsql_sblr_alignment_native_management_control_allocation PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_management_control_allocation PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_native_management_control_allocation PRIVATE

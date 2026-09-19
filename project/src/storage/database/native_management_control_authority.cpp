@@ -71,8 +71,9 @@ void Owners(const page::NativeAllocationChainResult& chain,const mga::LocalTrans
       else Require(MatchesNativeManagementControlAllocation(proof,m.header.filespace_uuid,r,m.states[r.page_number-m.first_page]),E::creator_mismatch);}
   }
 }
-void Controls(Context& c,const Checkpoint& cp,const page::NativeAllocationChainResult& maps,const NativeManagementControlAuthority& proof){
+page::NativeTransactionInventoryChainResult Controls(Context& c,const Checkpoint& cp,const page::NativeAllocationChainResult& maps,const NativeManagementControlAuthority& proof,const Pages* expected_inventory=nullptr){
   auto inventory=c.Inventory(cp.root);
+  if(expected_inventory){Require(inventory.pages.size()==expected_inventory->size(),E::binding_mismatch);for(std::size_t i=0;i<inventory.pages.size();++i)Require(inventory.pages[i].bytes==(*expected_inventory)[i],E::binding_mismatch);}
   if(cp.root.creator_operation_uuid.is_nil())Transaction(inventory.inventory,cp.root.creator_transaction_uuid,cp.root.creator_local_transaction_id,true);
   else Require(MatchesNativeManagementPublishedCheckpoint(proof,cp.root,cp.sha),E::creator_mismatch);
   Owners(maps,inventory.inventory,proof);
@@ -87,6 +88,7 @@ void Controls(Context& c,const Checkpoint& cp,const page::NativeAllocationChainR
   for(const auto& [key,record]:proof.allocations){Require(key.first==c.primary,E::binding_mismatch);const auto& h=maps.pages.front().map->header;
     auto expected=h;expected.page_number=record.page_number;expected.page_uuid=record.page_uuid;expected.page_generation=record.page_generation;expected.page_type=record.page_type;
     Require(Allocated(maps,expected,record.owner_uuid)==record,E::binding_mismatch);}
+  return inventory;
 }
 Pages Images(const page::NativeAllocationChainResult& maps){Pages out;out.reserve(maps.pages.size());for(const auto& p:maps.pages)out.push_back(p.bytes);return out;}
 }
@@ -111,27 +113,30 @@ NativeManagementControlAuthority ReadControlGraph(const Uuid& database,const std
     else{auto actual=ReadNativeManagementHistoryFromOpenDevices(database,c.files,primary,budget);selected=actual.selection;history=std::move(static_cast<NativeManagementGraphHistory&>(actual));}
     if(!history.ok())throw history.error==NativeManagementHistoryError::hash_failure?E::hash_failure:history.error==NativeManagementHistoryError::resource_exhausted?E::resource_exhausted:history.error==NativeManagementHistoryError::io_failure?E::io_failure:history.error==NativeManagementHistoryError::encrypted_requires_authority?E::encrypted_requires_authority:history.error==NativeManagementHistoryError::cluster_requires_authority?E::cluster_requires_authority:E::history_failure;
     c.Charge(history.verified_image_bytes);NativeManagementControlAuthority result;const u64 size=disk::FindCanonicalFilespacePageProfile(c.File(primary).page_size_profile_uuid)->page_size_bytes;
+    const Pages* expected_inventory=nullptr;
     for(const auto& entry:history.entries){const auto& p=entry.plan;Require(p.control_bundle&&p.management_extent,E::binding_mismatch);
       auto base=c.Read(p.base_checkpoint,p.base_checkpoint_object_uuid,p.base_checkpoint_sha256);auto target=c.Read(p.target_checkpoint,p.target_checkpoint_object_uuid,entry.checkpoint_sha256);
-      auto before=c.Maps(primary,&Root(base.root,4));Controls(c,base,before,result);auto after=c.Maps(primary,&Root(target.root,4));
+      auto before=c.Maps(primary,&Root(base.root,4));auto before_inventory=Controls(c,base,before,result,expected_inventory);auto after=c.Maps(primary,&Root(target.root,4));
       Require(after.pages.size()==entry.control_allocation_images.size(),E::binding_mismatch);for(std::size_t i=0;i<after.pages.size();++i)Require(after.pages[i].bytes==entry.control_allocation_images[i],E::binding_mismatch);
       c.Charge(2,size);auto plan=EncodeNativePublicationPlan(p);PlanError(plan.error);Require(plan.sha256==entry.plan_sha256,E::binding_mismatch);
       auto start=c.used;c.Charge(p.management_extent->page_count,size);c.Charge(p.management_extent->aggregate_bytes,4);c.Charge(2,size);
       auto extent=EncodeNativeManagementExtent(entry.record,p.management_extent->object_uuid,entry.extent_pages,c.used-start);
       if(!extent.ok())throw extent.error==NativeManagementExtentError::hash_failure?E::hash_failure:extent.error==NativeManagementExtentError::resource_exhausted?E::resource_exhausted:E::binding_mismatch;
       Require(extent.root==p.management_extent,E::binding_mismatch);
-      start=c.used;c.Charge(p.control_bundle->page_count,size);c.Charge(p.control_bundle->map_count,4*size);c.Charge(2,size);
-      auto bundle=EncodeNativeManagementControlBundle(entry.control_allocation_images,database,p.bootstrap_uuid,p.control_bundle->object_uuid,p.operation_uuid,entry.bundle_pages,c.used-start);
+      start=c.used;c.Charge(p.control_bundle->page_count,size);c.Charge(p.control_bundle->map_count,4*size);c.Charge(p.control_bundle->inventory_count,4*size);c.Charge(2,size);
+      auto bundle=EncodeNativeManagementControlBundle(entry.control_allocation_images,database,p.bootstrap_uuid,p.control_bundle->object_uuid,p.operation_uuid,entry.bundle_pages,c.used-start,entry.control_inventory_images);
       if(!bundle.ok())throw bundle.error==NativeManagementControlBundleError::hash_failure?E::hash_failure:bundle.error==NativeManagementControlBundleError::resource_exhausted?E::resource_exhausted:E::binding_mismatch;
       Require(bundle.root==p.control_bundle,E::binding_mismatch);
       c.Charge(before.retained_image_bytes);c.Charge(after.retained_image_bytes);auto before_bytes=Images(before);auto after_bytes=Images(after);
-      const auto delta=ValidateNativeManagementControlAllocation(base.bytes,target.bytes,plan.bytes,extent.pages,before_bytes,after_bytes,budget,bundle.pages);
-      if(delta!=NativeManagementControlAllocationError::none)throw delta==NativeManagementControlAllocationError::hash_failure?E::hash_failure:delta==NativeManagementControlAllocationError::resource_exhausted?E::resource_exhausted:E::binding_mismatch;
+      Pages before_inventory_bytes;
+      if(p.intent.recovery_profile==2){for(const auto& raw:before_inventory.pages)c.Charge(4,raw.bytes.size());for(const auto& raw:entry.control_inventory_images)c.Charge(4,raw.size());before_inventory_bytes.reserve(before_inventory.pages.size());for(const auto& raw:before_inventory.pages)before_inventory_bytes.push_back(raw.bytes);expected_inventory=&entry.control_inventory_images;}
+      const auto delta=ValidateNativeManagementControlAllocation(base.bytes,target.bytes,plan.bytes,extent.pages,before_bytes,after_bytes,budget,bundle.pages,before_inventory_bytes);
+      if(delta!=NativeManagementControlAllocationError::none)throw delta==NativeManagementControlAllocationError::hash_failure?E::hash_failure:delta==NativeManagementControlAllocationError::resource_exhausted?E::resource_exhausted:delta==NativeManagementControlAllocationError::cluster_requires_authority?E::cluster_requires_authority:delta==NativeManagementControlAllocationError::encrypted_requires_authority?E::encrypted_requires_authority:E::binding_mismatch;
       Require(result.publications.emplace(p.operation_uuid,NativeManagementPublishedCheckpoint{p.target_checkpoint,p.target_checkpoint_object_uuid,entry.checkpoint_sha256}).second,E::binding_mismatch);
       for(const auto& image:after.pages)for(const auto& record:image.map->records)if(record.creator_operation_uuid==p.operation_uuid)Require(result.allocations.emplace(std::make_pair(primary,record.page_number),record).second,E::binding_mismatch);
-      Controls(c,target,after,result);
+      Controls(c,target,after,result,expected_inventory);
     }
-    const auto& anchor=*history.anchor;auto current=c.Read(anchor.checkpoint,anchor.checkpoint_object_uuid,anchor.checkpoint_sha256);auto maps=c.Maps(primary,&Root(current.root,4));Controls(c,current,maps,result);
+    const auto& anchor=*history.anchor;auto current=c.Read(anchor.checkpoint,anchor.checkpoint_object_uuid,anchor.checkpoint_sha256);auto maps=c.Maps(primary,&Root(current.root,4));Controls(c,current,maps,result,expected_inventory);
     result.anchor=anchor;result.selection=selected;result.verified_image_bytes=c.used;result.error=E::none;return result;
   }catch(E e){return Fail(e);}catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::binding_mismatch);}
 }

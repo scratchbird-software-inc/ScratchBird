@@ -18,6 +18,7 @@ struct NativeManagementHistoryEntry {
   std::array<byte,32> plan_sha256{},checkpoint_sha256{};
   std::vector<disk::NativeCommonPageHeader> bundle_pages;
   std::vector<std::vector<byte>> control_allocation_images;
+  std::vector<std::vector<byte>> control_inventory_images;
 };
 struct NativeManagementCheckpointAnchor {
   disk::NativePageReference checkpoint;
