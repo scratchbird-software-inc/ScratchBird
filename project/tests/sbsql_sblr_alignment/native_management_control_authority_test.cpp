@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "native_management_control_bundle.hpp"
 #include "native_management_control_authority.hpp"
+#include "native_management_publication_recovery.hpp"
 #include "native_management_control_allocation.hpp"
 #include "native_management_history.hpp"
 #include "native_creation_workspace.hpp"
@@ -476,6 +477,127 @@ void PublicationFaults(unsigned route,int shard=-1){
  }
  Reset();std::cout<<"publication reads="<<nr<<" writes="<<nw<<" syncs="<<ns<<" hashes="<<nh<<" allocation sites="<<sites<<" route="<<route<<" shard="<<shard<<"\n";
 }
+struct RecoverySelectors {
+ std::array<u64,2> slots{};std::array<Bytes,2> old,next;Bytes original,expected;
+ RecoverySelectors(Fixture& f,const Graph& g):original(f.Read(0,256)),expected(original){
+  for(unsigned i=0;i<2;++i){slots[i]=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[&](const auto& r){return r.kind==18+i;})->page_number;
+   old[i]=f.Read(slots[i]);const auto decoded=db::DecodeNativeCheckpointSelection(old[i]);Check(decoded.ok(),"recovery original selector");auto s=*decoded.selection;
+   s.selection_generation=*g.plan.base_selection_generation+1;s.previous_selection_generation=*g.plan.base_selection_generation;s.previous_checkpoint=g.plan.base_checkpoint;s.previous_checkpoint_object_uuid=g.plan.base_checkpoint_object_uuid;s.previous_checkpoint_sha256=g.plan.base_checkpoint_sha256;
+   s.publication_uuid=g.plan.operation_uuid;s.checkpoint=g.plan.target_checkpoint;s.checkpoint_object_uuid=g.plan.target_checkpoint_object_uuid;s.checkpoint_sha256=Sha(g.target_bytes);s.checkpoint_generation=g.plan.reserved_generation;s.root_set_generation=g.plan.target_root_set_generation;
+   next[i]=SelectorOracle(s);std::copy(next[i].begin(),next[i].end(),expected.begin()+slots[i]*f.size);
+  }
+ }
+ void Pair(Fixture& f,unsigned first,unsigned second)const{const unsigned kinds[]{first,second};for(unsigned i=0;i<2;++i){auto bytes=kinds[i]==2?next[i]:old[i];if(!kinds[i])bytes[432]^=1;Write(f,slots[i],bytes);}Check(f.device.Sync().ok(),"isolated pair matrix preparation; not production recovery");}
+ void Nonselectors(Fixture& f)const{auto bytes=f.Read(0,256);for(unsigned i=0;i<2;++i)std::copy(old[i].begin(),old[i].end(),bytes.begin()+slots[i]*f.size);Check(bytes==original,"recovery never changes nonselector bytes");}
+};
+auto Recover(Fixture& f,const Graph& g,u64 budget=0){return db::RecoverNativeManagementCheckpointPublicationOnOpenDevices(Id(1),f.devices,Id(2),g.plan.operation_uuid,g.plan.intent,budget?budget:f.budget);}
+void Recovered(Fixture& f,const Graph& g,const RecoverySelectors& images,unsigned expected_writes){
+ Reset();io_counting=trace_io=true;const auto result=Recover(f,g);io_counting=trace_io=false;
+ if(!result.ok())std::cerr<<"recovery error="<<unsigned(result.error)<<"\n";
+ Check(result.ok()&&result.snapshot&&result.snapshot->selection.selection_generation==*g.plan.base_selection_generation+1&&result.snapshot->selection.checkpoint_generation==g.plan.reserved_generation,"actual cold recovery returns exact original attempt and target");
+ Check(writes==expected_writes&&syncs==3&&f.Read(0,256)==images.expected,"recovery full-file independent oracle and barrier count");
+ unsigned at=0;while(at<io_event_count&&io_events[at].kind!='s')++at;Check(at<io_event_count,"recovery dependency barrier");++at;
+ for(unsigned i=0;i<2;++i){if(io_events[at].kind=='w'){Check(io_events[at].offset==off_t(images.slots[i]*f.size)&&io_events[at].length==f.size,"recovery ordered full slot write");++at;}
+  Check(at+1<io_event_count&&io_events[at].kind=='s'&&io_events[at+1].kind=='r'&&io_events[at+1].offset==off_t(images.slots[i]*f.size)&&io_events[at+1].length==f.size,"recovery slot sync precedes full readback even when write skipped");at+=2;
+ }
+ Check(at<io_event_count&&io_events[at].kind=='r',"recovery fresh ordinary admission follows both slot barriers");
+}
+void Recovery(){
+ using P=db::NativePublicationError;
+ for(unsigned profile=0;profile<5;++profile){Fixture f(profile);f.budget*=4;
+  for(unsigned n=0;n<3;++n){const auto state=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(state.ok(),"recovery burn base");auto lease=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*state.snapshot,Id(31000+n),f.budget);Check(lease.ok(),"recovery actual burned reservation");}
+  Graph g(f,false,1,nullptr,5);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();auto owned=InstallLease(f,g,b);RecoverySelectors images(f,g);
+  Reset();write_fault=2;io_counting=true;const auto interrupted=db::PublishNativeManagementControlGraphOnLease(*owned.lease,f.budget);io_counting=false;Reset();Check(interrupted.error==P::io_failure&&!interrupted.snapshot,"real warm publication interrupted between selectors");owned.lease.reset();
+  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"cold reopen interrupted actual publication");Check(!Bound(f).ok(),"ordinary admission refuses actual mixed selectors");Recovered(f,g,images,1);Good(f,g,1);Recovered(f,g,images,0);
+  Graph next(f,false,1,&g);Bundle nb(next);next.plan.control_bundle=nb.root;next.plan.base_selection_generation=2;next.Refresh();auto successor=InstallLease(f,next,nb);RecoverySelectors second(f,next);successor.lease.reset();Recovered(f,next,second,2);Good(f,next,2);
+ }
+ {Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();Install(f,g,b);RecoverySelectors images(f,g);
+  for(unsigned first=0;first<3;++first)for(unsigned second=0;second<3;++second){images.Pair(f,first,second);const auto before=f.Read(0,256);const bool allowed=(first||second)&&!(first==1&&second==2);
+   if(allowed){Recovered(f,g,images,unsigned(first!=2)+unsigned(second!=2));}
+   else{Reset();io_counting=true;const auto result=Recover(f,g);io_counting=false;Check(!result.ok()&&!result.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"reverse pair and double damage refuse without writes");}
+  }
+  for(unsigned field=0;field<10;++field){images.Pair(f,1,1);auto selected=*db::DecodeNativeCheckpointSelection(images.old[0]).selection;
+   if(field==0)selected.header.page_uuid=Id(30000);if(field==1)selected.object_uuid=Id(30000);if(field==2)selected.bootstrap_uuid=Id(30000);if(field==3)selected.publication_uuid=g.plan.operation_uuid;
+   if(field==4)selected.checkpoint_sha256[0]^=1;if(field==5)selected.timeline_uuid=Id(30000);if(field==6)selected.publication_uuid=Id(30000);if(field==7)selected.checkpoint.page_number++;if(field==8)selected.root_set_generation++;
+   if(field==9)selected.header.page_uuid=Id(30000);auto encoded=SelectorOracle(selected);if(field==9)encoded[432]^=1;
+   Write(f,images.slots[0],encoded);const auto before=f.Read(0,256);Reset();io_counting=true;const auto result=Recover(f,g);io_counting=false;Check(!result.ok()&&!result.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"canonical contradictory selector header is not damage even with a damaged family payload");
+  }
+  // A transaction-created base does not carry the original publication UUID.
+  images.Pair(f,1,1);for(unsigned i=0;i<2;++i){auto old=*db::DecodeNativeCheckpointSelection(images.old[i]).selection;old.publication_uuid=Id(30000);Write(f,images.slots[i],SelectorOracle(old));}Recovered(f,g,images,2);
+  for(unsigned wrong=0;wrong<3;++wrong){images.Pair(f,2,1);auto request=g.plan.intent;auto attempt=g.plan.operation_uuid;if(wrong==0)attempt=Id(30000);if(wrong==1)request.policy_snapshot_uuid=Id(30000);if(wrong==2)request.normalized_request_sha256[0]^=1;
+   const auto before=f.Read(0,256);Reset();io_counting=true;const auto result=db::RecoverNativeManagementCheckpointPublicationOnOpenDevices(Id(1),f.devices,Id(2),attempt,request,f.budget);io_counting=false;Check(result.error==P::request_mismatch&&!result.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"cold repair requires exact durable caller request");
+  }
+  images.Pair(f,2,1);const auto before=f.Read(0,256);Reset();io_counting=true;const auto exhausted=db::RecoverNativeManagementCheckpointPublicationOnOpenDevices(Id(1),f.devices,Id(2),g.plan.operation_uuid,g.plan.intent,0);io_counting=false;Check(exhausted.error==P::resource_exhausted&&!exhausted.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"zero recovery allowance refuses without mutation");
+  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"read-only recovery fixture");Reset();io_counting=true;const auto readonly=Recover(f,g);io_counting=false;Check(readonly.error==P::invalid_device&&!readonly.snapshot&&!writes&&!syncs,"recovery requires owned writable primary");
+ }
+ for(unsigned slot=1;slot<=2;++slot)for(unsigned torn=0;torn<2;++torn){Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();Install(f,g,b);RecoverySelectors images(f,g);
+  const auto child=fork();Check(child>=0,"actual publication process fork");if(child==0){Reset();const auto state=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);if(!state.ok())_exit(87);auto lease=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*state.snapshot,g.plan.operation_uuid,g.plan.intent,f.budget);if(!lease.ok())_exit(88);
+   Reset();if(torn){write_fault=slot;torn_bytes=201;}else kill_write=slot;io_counting=true;const auto result=db::PublishNativeManagementControlGraphOnLease(*lease.lease,f.budget);_exit(result.error==P::io_failure?86:89);
+  }
+  int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,"actual child stopped at selected write boundary");Reset();Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"fresh owned descriptor after actual process loss");
+  if(slot==2||torn)Check(!Bound(f).ok(),"ordinary reader never serves mixed or torn actual publication");Recovered(f,g,images,slot==1?2:1);images.Nonselectors(f);Good(f,g,1);
+ }
+}
+void RecoveryInputs(){
+ Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();Install(f,g,b);RecoverySelectors images(f,g);
+ std::vector<u64> pages{g.plan.header.page_number,g.plan.target_checkpoint.page_number,g.plan.base_checkpoint.page_number,g.plan.management_extent->first.page_number,g.plan.control_bundle->first.page_number,g.after.front().header.page_number,g.before.front().header.page_number};
+ for(const auto& r:g.zero.roots)if(r.kind==20||r.kind==21||r.kind==4)pages.push_back(r.page_number);
+ for(const auto page:pages){images.Pair(f,2,1);const auto original=f.Read(page);auto damaged=original;damaged.back()^=1;Write(f,page,damaged);const auto before=f.Read(0,256);Reset();io_counting=true;const auto result=Recover(f,g);io_counting=false;
+  Check(!result.ok()&&!result.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"cold recovery proves actual complete immutable graph and stable watermark before any write");Write(f,page,original);
+ }
+ images.Pair(f,2,1);std::future<db::NativePublicationInspection> first,second;std::promise<void> p1,p2;auto s1=p1.get_future(),s2=p2.get_future();auto guard=f.device.AcquireOperationGuard();
+ first=std::async(std::launch::async,[&]{p1.set_value();return Recover(f,g);});second=std::async(std::launch::async,[&]{p2.set_value();return Recover(f,g);});s1.wait();s2.wait();
+ const bool waiting=first.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout&&second.wait_for(std::chrono::milliseconds(20))==std::future_status::timeout;guard.unlock();
+ const auto a=first.get(),c=second.get();Check(waiting&&a.ok()&&c.ok()&&a.snapshot->selection.checkpoint==c.snapshot->selection.checkpoint&&f.Read(0,256)==images.expected,"concurrent recoveries serialize on actual guards and converge on the same publication");
+}
+void RecoveryBudget(){
+ Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();Install(f,g,b);RecoverySelectors images(f,g);
+ const auto maps=[&](const db::NativeCheckpointRoot& cp){const auto& r=*std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& v){return v.role==4;});return page::ReadNativeAllocationChainAtRootFromOpenDevice(f.device,{Id(1),Id(2),g.zero.bootstrap.page_size_profile_uuid},{3,r.page_type,r.page.filespace_uuid,r.page.page_number,r.page.page_generation,r.page.page_size_profile_uuid,r.object_uuid},f.budget);};
+ const auto target=*db::DecodeNativeCheckpointRoot(g.target_bytes).root;const auto before=maps(g.base),after=maps(target);const auto& inv=*std::find_if(target.roots.begin(),target.roots.end(),[](const auto& r){return r.role==1;});
+ const auto inventory=page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),f.devices,{4,inv.page_type,inv.page.filespace_uuid,inv.page.page_number,inv.page.page_generation,inv.page.page_size_profile_uuid,inv.object_uuid},f.budget);const auto graph=GraphRead(f,Anchor(g));
+ Check(before.ok()&&after.ok()&&inventory.ok()&&graph.ok(),"independent actual recovery work accounting");Recovered(f,g,images,2);const auto selected=Bound(f);Check(selected.ok(),"final ordinary retained image accounting");
+ const u64 exact=46*f.size+before.retained_image_bytes+after.retained_image_bytes+inventory.retained_image_bytes+graph.verified_image_bytes+selected.retained_image_bytes;
+ for(unsigned deficit=0;deficit<2;++deficit){images.Pair(f,1,1);Reset();io_counting=true;const auto result=Recover(f,g,exact-deficit);io_counting=false;
+  Check(writes==2&&syncs==3&&f.Read(0,256)==images.expected,"recovery final allowance shortage leaves exact durable pair");
+  Check(!deficit?result.ok():result.error==db::NativePublicationError::resource_exhausted&&!result.snapshot,"exact independently charged recovery allowance and one-byte shortage");
+  Recovered(f,g,images,0);
+ }
+ std::cout<<"recovery exact image allowance="<<exact<<"\n";
+}
+void RecoveryAuthority(){
+ using P=db::NativePublicationError;Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();Install(f,g,b);RecoverySelectors images(f,g);
+ const auto original_zero=f.Read(0);
+ for(unsigned flags=1;flags<=3;++flags){auto zero=g.zero;zero.bootstrap.flags=flags;if(flags&d::FilespaceBootstrapFlag::payload_encrypted)zero.bootstrap.encryption_profile_uuid=Id(32000);
+  const auto encoded=d::EncodeFilespacePageZero(zero);Check(encoded.ok(),"canonical cluster/encrypted bootstrap test input");Write(f,0,*encoded.bytes);const auto before=f.Read(0,256);Reset();io_counting=true;const auto result=Recover(f,g);io_counting=false;
+  Check(result.error==(flags&d::FilespaceBootstrapFlag::cluster_authority_required?P::cluster_requires_authority:P::encrypted_requires_authority)&&!result.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"cold repair preserves actual cluster and encrypted authority boundaries");Write(f,0,original_zero);
+ }
+ Recovered(f,g,images,2);Graph next(f,false,1,&g);Bundle nb(next);next.plan.control_bundle=nb.root;next.plan.base_selection_generation=2;next.Refresh();Install(f,next,nb);RecoverySelectors successor(f,next);
+ for(unsigned damaged=0;damaged<2;++damaged){successor.Pair(f,1,1);for(unsigned i=0;i<2;++i){auto old=*db::DecodeNativeCheckpointSelection(successor.old[i]).selection;old.publication_uuid=Id(32000);auto bytes=SelectorOracle(old);if(damaged&&i==0)bytes[432]^=1;Write(f,successor.slots[i],bytes);}
+  const auto before=f.Read(0,256);Reset();io_counting=true;const auto result=Recover(f,next);io_counting=false;Check(result.error==P::binding_mismatch&&!result.snapshot&&!writes&&!syncs&&f.Read(0,256)==before,"operation-created base binds its actual creator even with only one surviving selector");
+ }
+ successor.Pair(f,1,1);Recovered(f,next,successor,2);
+}
+void RecoveryFaults(unsigned route,int shard=-1){
+ using P=db::NativePublicationError;Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();Install(f,g,b);RecoverySelectors images(f,g);
+ byte scratch=0;for(unsigned n=0;n<4097;++n){const auto io=f.device.ReadAt(0,&scratch,1);Check(io.ok()&&io.bytes_transferred==1,"recovery optional metric capacity stabilized");}
+ Reset();hash_seen=0;hash_counting=counting=io_counting=true;allocations=0;const auto baseline=Recover(f,g);io_counting=counting=hash_counting=false;
+ const auto nr=reads,nw=writes,ns=syncs,nh=hash_seen;const auto sites=allocations;Check(baseline.ok()&&nw==2&&ns==3,"measured actual cold recovery");
+ const auto failed=[&](const db::NativePublicationInspection& result,unsigned written,unsigned synchronized){Check(!result.ok()&&!result.snapshot,"failed cold recovery exposes no snapshot");if(!written&&!synchronized)Check(f.Read(0,256)==images.original,"recovery preflight failure leaves whole file unchanged");images.Nonselectors(f);};
+ if(route==0){for(unsigned mode=0;mode<5;++mode){const auto count=mode<2?nr:mode<4?nw:ns;for(unsigned at=1;at<=count;++at){images.Pair(f,1,1);Reset();if(mode==0)read_fault=at;if(mode==1)corrupt_read=at;if(mode==2||mode==3){write_fault=at;if(mode==3)torn_bytes=201;}if(mode==4)sync_fault=at;
+    io_counting=true;const auto result=Recover(f,g);io_counting=false;const auto written=writes,synchronized=syncs;Reset();if(result.ok())std::cerr<<"unexpected recovery success mode="<<mode<<" at="<<at<<"\n";
+    Check(mode==1||result.error==P::io_failure,"recovery I/O failures preserve cause");failed(result,written,synchronized);
+    Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"reopen after each actual recovery I/O failure");const auto retry=Recover(f,g);Check(retry.ok()&&f.Read(0,256)==images.expected,"actual recovery retries finish forward after every I/O failure");
+   }}
+ }else if(route==1){for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=nh;++at){images.Pair(f,1,1);Reset();hash_fault=mode;hash_target=at;hash_seen=0;io_counting=true;const auto result=Recover(f,g);io_counting=false;const bool consumed=!hash_fault;const auto written=writes,synchronized=syncs;Reset();
+   if(!consumed||result.error!=P::hash_failure)std::cerr<<"recovery hash="<<at<<" mode="<<mode<<" error="<<unsigned(result.error)<<"\n";Check(consumed&&result.error==P::hash_failure,"every cold recovery hash failure consumed and preserved");failed(result,written,synchronized);
+  }
+ }else{Check(shard>=0&&shard<8,"recovery allocation shard");for(unsigned long at=shard;at<sites;at+=8){images.Pair(f,1,1);Reset();const auto lost=f.device.failed_io_latency_observations();allocation_budget=at;io_counting=true;const auto result=Recover(f,g);io_counting=false;const auto remaining=allocation_budget;allocation_budget=-1;const auto written=writes,synchronized=syncs;Reset();
+   if(result.ok())Check(remaining==-1&&f.device.failed_io_latency_observations()==lost+1&&f.Read(0,256)==images.expected,"only consumed optional observation loss permits complete recovery");
+   else{if(result.error!=P::resource_exhausted)std::cerr<<"recovery allocation="<<at<<" error="<<unsigned(result.error)<<"\n";Check(result.error==P::resource_exhausted&&remaining==-1,"every required cold recovery allocation consumed and preserved");failed(result,written,synchronized);}
+  }
+ }
+ Reset();std::cout<<"recovery reads="<<nr<<" writes="<<nw<<" syncs="<<ns<<" hashes="<<nh<<" allocation sites="<<sites<<" route="<<route<<" shard="<<shard<<"\n";
+}
 void SequenceCodecFaults(const Graph& g,const db::NativePublicationLease& lease){
  const auto call=[&](unsigned route){
   if(route==2)return db::BindNativePublicationPlanToLease(g.plan,lease,g.target_bytes);
@@ -638,4 +760,4 @@ void Invalid(){
  const auto slot=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[](const auto& r){return r.kind==19;});auto torn=f.Read(slot->page_number);torn.back()^=1;Write(f,slot->page_number,torn);reject();Write(f,0,original);Good(f,g,1);
 }
 }
-int main(int argc,char** argv){try{const std::string mode=argc>1?argv[1]:"all";Check(mode=="all"||mode=="profiles"||mode=="invalid"||mode=="retained"||mode=="graphs"||mode=="sequences"||mode=="publication"||mode=="publication-faults"||mode=="faults"||mode=="allocations","known test mode");if(mode=="faults"||mode=="allocations"){Check(argc==(mode=="faults"?3:4),"fault route and shard arguments");const auto route=std::stoul(argv[2]);Check(route<5,"fault route range");int shard=-1;if(mode=="allocations"){shard=std::stoi(argv[3]);Check(shard>=0&&shard<4,"allocation shard range");}Faults(route,shard);}if(mode=="publication-faults"){Check(argc==3||argc==4,"publisher fault arguments");const auto route=std::stoul(argv[2]);Check(route<3,"publisher fault route");PublicationFaults(route,argc==4?std::stoi(argv[3]):-1);}if(mode=="all"||mode=="profiles")Profiles();if(mode=="all"||mode=="invalid")Invalid();if(mode=="all"||mode=="retained")Retained();if(mode=="all"||mode=="graphs")Graphs();if(mode=="all"||mode=="sequences")Sequences();if(mode=="all"||mode=="publication")Publication();std::cout<<"native management control authority checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;io_counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}
+int main(int argc,char** argv){try{const std::string mode=argc>1?argv[1]:"all";Check(mode=="all"||mode=="profiles"||mode=="invalid"||mode=="retained"||mode=="graphs"||mode=="sequences"||mode=="publication"||mode=="publication-faults"||mode=="recovery"||mode=="recovery-faults"||mode=="faults"||mode=="allocations","known test mode");if(mode=="faults"||mode=="allocations"){Check(argc==(mode=="faults"?3:4),"fault route and shard arguments");const auto route=std::stoul(argv[2]);Check(route<5,"fault route range");int shard=-1;if(mode=="allocations"){shard=std::stoi(argv[3]);Check(shard>=0&&shard<4,"allocation shard range");}Faults(route,shard);}if(mode=="publication-faults"){Check(argc==3||argc==4,"publisher fault arguments");const auto route=std::stoul(argv[2]);Check(route<3,"publisher fault route");PublicationFaults(route,argc==4?std::stoi(argv[3]):-1);}if(mode=="all"||mode=="profiles")Profiles();if(mode=="all"||mode=="invalid")Invalid();if(mode=="all"||mode=="retained")Retained();if(mode=="all"||mode=="graphs")Graphs();if(mode=="all"||mode=="sequences")Sequences();if(mode=="all"||mode=="publication")Publication();if(mode=="all"||mode=="recovery"){Recovery();RecoveryInputs();RecoveryBudget();RecoveryAuthority();}if(mode=="recovery-faults"){Check(argc==3||argc==4,"recovery fault arguments");const auto route=std::stoul(argv[2]);Check(route<3,"recovery fault route");RecoveryFaults(route,argc==4?std::stoi(argv[3]):-1);}std::cout<<"native management control authority checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;io_counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}
