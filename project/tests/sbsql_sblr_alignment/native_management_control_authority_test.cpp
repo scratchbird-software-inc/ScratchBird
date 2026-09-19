@@ -75,7 +75,7 @@ void PlanSeal(Bytes& b){std::fill(b.begin()+688,b.begin()+720,0);const auto h=Sh
 Bytes Oracle(const db::NativePublicationPlan& p){
  const auto& h=p.header;Bytes b(h.page_size_bytes);std::copy_n("SBPGV002",8,b.begin());Num(b,8,4,128);Num(b,12,4,h.page_size_bytes);Num(b,16,4,0x500);Num(b,20,2,1);Num(b,22,2,1);
  Put(b,24,h.database_uuid);Put(b,40,h.filespace_uuid);Put(b,56,h.page_uuid);Num(b,72,8,h.page_number);Num(b,80,8,h.page_generation);Put(b,104,h.page_size_profile_uuid);Num(b,120,2,1);HeaderSeal(b);
- const bool v2=p.management_extent.has_value(),v3=p.control_bundle.has_value();std::copy_n(v3?"SBPPM003":v2?"SBPPM002":"SBPPM001",8,b.begin()+128);Num(b,136,2,v3?3:v2?2:1);Num(b,138,2,v3?1024:v2?896:640);Num(b,140,4,v3?1152:v2?1024:768);
+ const bool v2=p.management_extent.has_value(),v3=p.control_bundle.has_value(),v4=p.base_selection_generation.has_value();std::copy_n(v4?"SBPPM004":v3?"SBPPM003":v2?"SBPPM002":"SBPPM001",8,b.begin()+128);Num(b,136,2,v4?4:v3?3:v2?2:1);Num(b,138,2,v3?1024:v2?896:640);Num(b,140,4,v3?1152:v2?1024:768);
  Put(b,144,p.object_uuid);Put(b,160,p.bootstrap_uuid);Put(b,176,p.timeline_uuid);Put(b,192,p.operation_uuid);Put(b,208,p.intent.initiator_uuid);Put(b,224,p.intent.request_context_uuid);Put(b,240,p.intent.policy_snapshot_uuid);Put(b,256,p.security_snapshot_uuid);
  std::copy(p.intent.normalized_request_sha256.begin(),p.intent.normalized_request_sha256.end(),b.begin()+272);std::copy(p.reservation_state_sha256.begin(),p.reservation_state_sha256.end(),b.begin()+304);
  Num(b,336,8,p.reserved_generation);Num(b,344,8,p.base_checkpoint_generation);Num(b,352,8,p.base_root_set_generation);Num(b,360,8,p.target_root_set_generation);
@@ -83,7 +83,7 @@ Bytes Oracle(const db::NativePublicationPlan& p){
  if(p.previous_plan)Ref(b,560,*p.previous_plan);Put(b,608,p.previous_plan_object_uuid);std::copy(p.previous_plan_sha256.begin(),p.previous_plan_sha256.end(),b.begin()+624);
  Num(b,656,8,p.catalog_generation);Num(b,664,8,p.configuration_generation);Num(b,672,8,p.security_generation);Num(b,680,2,p.intent.initiator_kind);Num(b,682,2,1);Num(b,684,2,2);
  if(p.management_extent){const auto& r=*p.management_extent;Num(b,720,4,p.generation_guard_flags);Ref(b,736,r.first);Put(b,784,r.object_uuid);Put(b,800,r.operation_uuid);Num(b,816,8,r.revision);Num(b,824,4,r.aggregate_bytes);Num(b,828,4,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),b.begin()+832);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),b.begin()+864);}
- if(p.control_bundle){const auto& r=*p.control_bundle;Ref(b,896,r.first);Put(b,944,r.object_uuid);Num(b,960,8,r.map_count);Num(b,968,8,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),b.begin()+976);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),b.begin()+1008);}PlanSeal(b);return b;
+ if(p.control_bundle){const auto& r=*p.control_bundle;Ref(b,896,r.first);Put(b,944,r.object_uuid);Num(b,960,8,r.map_count);Num(b,968,8,r.page_count);std::copy(r.aggregate_sha256.begin(),r.aggregate_sha256.end(),b.begin()+976);std::copy(r.first_page_sha256.begin(),r.first_page_sha256.end(),b.begin()+1008);}if(v4)Num(b,1040,8,*p.base_selection_generation);PlanSeal(b);return b;
 }
 void Failed(const db::NativePublicationPlanImage& r){Check(!r.ok()&&!r.plan&&r.bytes.empty()&&std::all_of(r.sha256.begin(),r.sha256.end(),[](byte v){return !v;}),"no failed plan prefix");}
 void Bad(const db::NativePublicationPlan& p){Failed(db::EncodeNativePublicationPlan(p));const auto raw=Oracle(p);Failed(db::DecodeNativePublicationPlan(raw));}
@@ -208,12 +208,12 @@ page::NativeAllocationMap& Cover(Maps& maps,u64 n){for(auto& m:maps)if(n>=m.firs
 page::NativeAllocationRecord& Find(Maps& maps,u64 n){auto& m=Cover(maps,n);for(auto& r:m.records)if(r.page_number==n)return r;throw std::runtime_error("fixture record");}
 struct Graph {
  Fixture& fixture;d::FilespacePageZero zero;db::NativeCheckpointRoot base,target;db::NativePublicationPlan plan;Maps before,after;Bytes base_bytes,target_bytes,plan_bytes;Pages before_bytes,after_bytes,extent;
- Graph(Fixture& f,bool retained_operation=false,unsigned extent_count=1,const Graph* previous=nullptr):fixture(f){
+ Graph(Fixture& f,bool retained_operation=false,unsigned extent_count=1,const Graph* previous=nullptr,u64 generation_override=0):fixture(f){
   const auto z=d::ReadFilespacePageZeroFromOpenDevice(f.device);Check(z.ok(),"actual page zero");zero=*z.record;
   const auto ref=std::find_if(zero.roots.begin(),zero.roots.end(),[](const auto& r){return r.kind==9;});const auto cp=db::ReadNativeCheckpointRootFromOpenDevice(f.device,Id(1),*ref);Check(cp.ok(),"actual base checkpoint");base=*cp.root;
   const auto allocation=page::ReadNativeAllocationChainFromOpenDevice(f.device,{Id(1),Id(2),zero.bootstrap.page_size_profile_uuid},f.budget);Check(allocation.ok(),"actual base allocation");for(const auto& image:allocation.pages)before.push_back(*image.map);
   if(previous){base=*db::DecodeNativeCheckpointRoot(previous->target_bytes).root;before=previous->after;}
-  const unsigned offset=previous?60:0;const u64 generation=base.checkpoint_generation+1;
+  const unsigned offset=previous?60:0;const u64 generation=generation_override?generation_override:base.checkpoint_generation+1;
   if(retained_operation){auto& m=Cover(before,200);m.states[200-m.first_page]=State::quarantined;page::NativeAllocationRecord r;r.page_number=200;r.allocation_uuid=Id(850);r.owner_uuid=Id(851);r.creator_operation_uuid=Id(852);r.page_type=0x500;m.records.push_back(r);std::sort(m.records.begin(),m.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});}
   before_bytes=EncodeMaps(before);auto& root=*std::find_if(base.roots.begin(),base.roots.end(),[](const auto& r){return r.role==4;});root.sha256=Sha(before_bytes.front());const auto base_encoded=db::EncodeNativeCheckpointRoot(base);Check(base_encoded.ok(),"base fixture");base_bytes=base_encoded.bytes;
   auto o=records::Example(1);o.uuid=Id(333);o.bootstrap_uuid=zero.page_uuid;o.security_snapshot_uuid={};o.generation_guards={};
@@ -272,7 +272,7 @@ void Write(Fixture& f,u64 n,const Bytes& b){const auto r=f.device.WriteAt(n*f.si
 void SelectFixture(Fixture& f,const Graph& g){
  // Independent test-only selector fixture, not a production publisher.
  for(unsigned i=0;i<2;++i){const auto ref=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[&](const auto& r){return r.kind==18+i;});const auto old=db::DecodeNativeCheckpointSelection(f.Read(ref->page_number));Check(old.ok(),"actual selector fixture header");auto s=*old.selection;
-  s.selection_generation=g.plan.reserved_generation;s.previous_selection_generation=s.selection_generation-1;s.previous_checkpoint=g.plan.base_checkpoint;s.previous_checkpoint_object_uuid=g.plan.base_checkpoint_object_uuid;s.previous_checkpoint_sha256=g.plan.base_checkpoint_sha256;
+  s.selection_generation=g.plan.base_selection_generation?*g.plan.base_selection_generation+1:g.plan.reserved_generation;s.previous_selection_generation=s.selection_generation-1;s.previous_checkpoint=g.plan.base_checkpoint;s.previous_checkpoint_object_uuid=g.plan.base_checkpoint_object_uuid;s.previous_checkpoint_sha256=g.plan.base_checkpoint_sha256;
   s.publication_uuid=g.plan.operation_uuid;s.checkpoint=g.plan.target_checkpoint;s.checkpoint_object_uuid=g.plan.target_checkpoint_object_uuid;s.checkpoint_sha256=Sha(g.target_bytes);s.checkpoint_generation=g.plan.reserved_generation;s.root_set_generation=g.plan.target_root_set_generation;
   const auto encoded=db::EncodeNativeCheckpointSelection(s);const auto raw=SelectorOracle(s);Check(encoded.ok()&&encoded.bytes==raw,"independent selector oracle");Write(f,ref->page_number,raw);}
  Check(f.device.Sync().ok(),"isolated selector fixture barrier");
@@ -361,7 +361,7 @@ int Call(Fixture& f,const Graph& g,unsigned route,const db::NativeManagementChec
  const auto r=Bound(f);if(!r.ok())Check(!r.selection&&!r.checkpoint_inventory.checkpoint&&!r.predecessor.checkpoint&&r.allocation.pages.empty()&&!r.retained_image_bytes,"no failed selected authority prefix");return int(r.error);
 }
 void Faults(unsigned route,int shard=-1){
- Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.Refresh();Install(f,g,b);if(route<3)SelectFixture(f,g);const auto anchor=Anchor(g);const auto original=f.Read(0,256);
+ Fixture f(0);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();Install(f,g,b);if(route<3)SelectFixture(f,g);const auto anchor=Anchor(g);const auto original=f.Read(0,256);
  byte scratch=0;for(unsigned i=0;i<4097;++i){const auto read=f.device.ReadAt(0,&scratch,1);Check(read.ok()&&read.bytes_transferred==1,"stabilize optional metric-history capacity");}
  using HE=db::NativeManagementHistoryError;
  const int resource=route==0||route==4?int(AE::resource_exhausted):route==3?int(HE::resource_exhausted):route==1?int(db::NativeCheckpointError::resource_exhausted):int(db::NativeCheckpointSelectionError::resource_exhausted);
@@ -381,6 +381,83 @@ void Faults(unsigned route,int shard=-1){
   if(result!=hash)std::cerr<<"route="<<route<<" hash="<<at<<" mode="<<mode<<" result="<<result<<" expected="<<hash<<"\n";
   Check(consumed&&result==hash&&!writes&&!syncs,"every hash provider failure retained through consumer");}
  Reset();Check(f.Read(0,256)==original,"entire operational failure sweep leaves node unchanged");std::cout<<"route="<<route<<" reads="<<nr<<" hashes="<<nh<<"\n";
+}
+void SequenceCodecFaults(const Graph& g,const db::NativePublicationLease& lease){
+ const auto call=[&](unsigned route){
+  if(route==2)return db::BindNativePublicationPlanToLease(g.plan,lease,g.target_bytes);
+  const auto result=route?db::DecodeNativePublicationPlan(g.plan_bytes):db::EncodeNativePublicationPlan(g.plan);
+  if(!result.ok())Failed(result);return result.error;
+ };
+ for(unsigned route=0;route<3;++route){
+  allocations=0;counting=true;const auto baseline=call(route);counting=false;const auto sites=allocations;
+  Check(baseline==E::none&&sites,"version4 codec/binder allocation baseline");
+  for(unsigned long at=0;at<=sites;++at){allocation_budget=at;const auto result=call(route);const auto remaining=allocation_budget;allocation_budget=-1;
+   Check(at==sites?result==E::none&&remaining==0:result==E::resource_exhausted&&remaining==-1,"every required version4 allocation is consumed and classified");
+  }
+  hash_seen=0;hash_counting=true;const auto hashed=call(route);hash_counting=false;const auto hashes=hash_seen;
+  Check(hashed==E::none&&hashes,"version4 codec/binder hash baseline");
+  for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hashes;++at){hash_fault=mode;hash_target=at;hash_seen=0;const auto result=call(route);const bool consumed=!hash_fault;hash_fault=0;hash_active=false;
+   Check(consumed&&result==E::hash_failure,"every version4 hash failure is consumed and classified");
+  }
+ }
+ Reset();
+}
+void Sequences(){
+ for(unsigned profile=0;profile<5;++profile){
+  Fixture f(profile);f.budget*=4;
+  for(unsigned burn=0;burn<3;++burn){const auto base=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(base.ok(),"actual pre-burn inspection");
+   auto reserved=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*base.snapshot,Id(30000+burn),f.budget);
+   Check(reserved.ok()&&reserved.lease->snapshot().watermark.watermark==burn+2&&reserved.lease->snapshot().selection.selection_generation==1,"actual durable reservation burns do not select a checkpoint");
+  }
+  Graph g(f,false,1,nullptr,5);Bundle b(g);g.plan.control_bundle=b.root;g.plan.base_selection_generation=1;g.Refresh();
+  const auto inspected=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(inspected.ok(),"actual post-burn inspection");
+  auto reserved=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*inspected.snapshot,g.plan.operation_uuid,f.budget,&g.plan.intent);
+  Check(reserved.ok()&&reserved.lease->snapshot().watermark.watermark==5&&reserved.lease->snapshot().selection.selection_generation==1,"intent reservation retains distinct actual selector and checkpoint counters");
+  g.plan.reservation_state_sha256=reserved.lease->snapshot().state_sha256;g.Refresh();
+  const auto image=db::EncodeNativePublicationPlan(g.plan);const auto decoded=db::DecodeNativePublicationPlan(g.plan_bytes);
+  Check(image.ok()&&decoded.ok()&&image.bytes==Oracle(g.plan)&&image.sha256==Sha(g.plan_bytes)&&decoded.sha256==image.sha256&&decoded.plan->base_selection_generation==1,"independent full version4 image and digest roundtrip");
+  Check(LoadLittle16(g.plan_bytes.data()+136)==4&&LoadLittle16(g.plan_bytes.data()+138)==1024&&LoadLittle32(g.plan_bytes.data()+140)==1152&&LoadLittle64(g.plan_bytes.data()+1040)==1,"exact version4 selector field layout");
+  auto old=g.plan;old.base_selection_generation.reset();const auto old_image=db::EncodeNativePublicationPlan(old);const auto old_decoded=db::DecodeNativePublicationPlan(old_image.bytes);
+  Check(old_image.ok()&&old_image.bytes==Oracle(old)&&old_decoded.ok()&&!old_decoded.plan->base_selection_generation&&LoadLittle16(old_image.bytes.data()+136)==3,"version3 remains unchanged and has no inferred selector sequence");
+  for(const auto value:{u64(0),std::numeric_limits<u64>::max()}){auto bad=g.plan;bad.base_selection_generation=value;Bad(bad);}
+  {auto bad=g.plan;bad.control_bundle.reset();Bad(bad);}
+  {auto high=g.plan;high.base_selection_generation=std::numeric_limits<u64>::max()-1;const auto encoded=db::EncodeNativePublicationPlan(high);Check(encoded.ok()&&encoded.bytes==Oracle(high)&&db::DecodeNativePublicationPlan(encoded.bytes).plan->base_selection_generation==high.base_selection_generation,"largest nonwrapping selector base roundtrip");}
+  for(unsigned mode=0;mode<6;++mode){auto raw=g.plan_bytes;
+   if(mode==0)raw[1048]=1;
+   if(mode==1)raw[1151]=1;
+   if(mode==2)raw.back()=1;
+   if(mode==3)Num(raw,136,2,3);
+   if(mode==4){std::copy_n("SBPPM003",8,raw.begin()+128);Num(raw,136,2,3);}
+   if(mode==5){std::copy_n("SBPPM002",8,raw.begin()+128);Num(raw,136,2,2);Num(raw,138,2,896);Num(raw,140,4,1024);}
+   PlanSeal(raw);Failed(db::DecodeNativePublicationPlan(raw));
+  }
+  const auto original=f.Read(0,256);auto wrong=g.plan;wrong.base_selection_generation=2;const auto wrong_target=Finish(wrong,g.target);
+  Reset();io_counting=true;const auto bind=db::BindNativePublicationPlanToLease(wrong,*reserved.lease,wrong_target);
+  const auto rejected=db::InstallNativeManagementControlGraphOnLease(*reserved.lease,wrong,wrong_target,g.extent,b.pages,f.budget);io_counting=false;
+  Check(bind==E::binding_mismatch&&rejected.error==db::NativePublicationError::binding_mismatch&&!rejected.snapshot&&!writes&&!syncs&&f.Read(0,256)==original,"wrong actual base selector counter fails before any mutation");
+  if(profile==0)SequenceCodecFaults(g,*reserved.lease);
+  Check(db::InstallNativeManagementControlGraphOnLease(*reserved.lease,g.plan,g.target_bytes,g.extent,b.pages,f.budget).ok(),"install exact version4 graph under real lease");reserved.lease.reset();
+  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing).ok(),"cold reopen installed version4 plan");
+  Write(f,g.plan.target_checkpoint.page_number,Bytes(f.size));Check(f.device.Sync().ok(),"isolated missing target checkpoint persisted");
+  const auto pending=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
+  Check(pending.ok()&&pending.snapshot->selection.selection_generation==1&&pending.snapshot->watermark.watermark==5,"cold actual old selection and burned watermark preserved");
+  auto resumed=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),*pending.snapshot,g.plan.operation_uuid,g.plan.intent,f.budget);Check(resumed.ok(),"cold exact original request lease");
+  const auto reconstructed=db::ResumeNativeManagementControlGraphOnLease(*resumed.lease,f.budget);Check(reconstructed.ok(),"cold reconstruction with original selector sequence");resumed.lease.reset();
+  const auto stored=db::DecodeNativePublicationPlan(f.Read(g.plan.header.page_number));Check(stored.ok()&&stored.bytes==g.plan_bytes&&stored.plan->base_selection_generation==1&&f.Read(g.plan.target_checkpoint.page_number)==g.target_bytes,"cold reconstruction neither rewrites counter nor mints identities");
+  Check(GraphRead(f,Anchor(g)).ok()&&Read(f).ok()&&Read(f).publications.empty()&&!Inventory(f,g).ok(),"reconstructed graph does not grant selected status");
+  SelectFixture(f,g);Good(f,g,1);
+  const auto selected=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);
+  Check(selected.ok()&&selected.snapshot->selection.selection_generation==2&&selected.snapshot->selection.checkpoint_generation==5,"selected sequence increments once despite three real reservation burns");
+  for(unsigned slot=0;slot<2;++slot){const auto ref=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[&](const auto& r){return r.kind==18+slot;});auto s=*db::DecodeNativeCheckpointSelection(f.Read(ref->page_number)).selection;
+   s.selection_generation=5;s.previous_selection_generation=4;const auto raw=SelectorOracle(s);Check(db::DecodeNativeCheckpointSelection(raw).ok(),"wrong counter pair remains individually canonical");Write(f,ref->page_number,raw);
+  }
+  const auto mismatched=f.Read(0,256);Reset();io_counting=true;const auto authority=Read(f);const auto inventory=Inventory(f,g);const auto bound=Bound(f);const auto history=db::ReadNativeManagementHistoryFromOpenDevices(Id(1),f.devices,Id(2),f.budget);const auto graph=GraphRead(f,Anchor(g));io_counting=false;
+  Empty(authority);Check(!inventory.ok()&&!bound.ok()&&!history.ok()&&graph.ok()&&!writes&&!syncs&&f.Read(0,256)==mismatched,"canonical but incorrect actual sequence refused by selected consumers only");SelectFixture(f,g);
+  if(profile==0){Graph next(f,false,1,&g);Bundle next_bundle(next);next.plan.control_bundle=next_bundle.root;next.plan.base_selection_generation=2;next.Refresh();Install(f,next,next_bundle);SelectFixture(f,next);Good(f,next,2);
+   const auto second=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),f.budget);Check(second.ok()&&second.snapshot->selection.selection_generation==3&&second.snapshot->selection.checkpoint_generation==6,"second publication preserves independent counter progression");
+  }
+  Check(f.device.Close().ok()&&f.device.Open(f.path.string(),d::FileOpenMode::open_existing_read_only).ok(),"version4 read-only reopen");const auto reopened=Read(f);Check(reopened.ok()&&reopened.selection->selection_generation==(profile?2:3),"actual selected sequence survives read-only reopen");
+ }
 }
 void Profiles(){
  for(unsigned profile=0;profile<5;++profile){Fixture f(profile);f.budget*=4;Graph g(f);Bundle b(g);g.plan.control_bundle=b.root;g.Refresh();Install(f,g,b);
@@ -467,4 +544,4 @@ void Invalid(){
  const auto slot=std::find_if(g.zero.roots.begin(),g.zero.roots.end(),[](const auto& r){return r.kind==19;});auto torn=f.Read(slot->page_number);torn.back()^=1;Write(f,slot->page_number,torn);reject();Write(f,0,original);Good(f,g,1);
 }
 }
-int main(int argc,char** argv){try{const std::string mode=argc>1?argv[1]:"all";Check(mode=="all"||mode=="profiles"||mode=="invalid"||mode=="retained"||mode=="graphs"||mode=="faults"||mode=="allocations","known test mode");if(mode=="faults"||mode=="allocations"){Check(argc==(mode=="faults"?3:4),"fault route and shard arguments");const auto route=std::stoul(argv[2]);Check(route<5,"fault route range");int shard=-1;if(mode=="allocations"){shard=std::stoi(argv[3]);Check(shard>=0&&shard<4,"allocation shard range");}Faults(route,shard);}if(mode=="all"||mode=="profiles")Profiles();if(mode=="all"||mode=="invalid")Invalid();if(mode=="all"||mode=="retained")Retained();if(mode=="all"||mode=="graphs")Graphs();std::cout<<"native management control authority checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;io_counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}
+int main(int argc,char** argv){try{const std::string mode=argc>1?argv[1]:"all";Check(mode=="all"||mode=="profiles"||mode=="invalid"||mode=="retained"||mode=="graphs"||mode=="sequences"||mode=="faults"||mode=="allocations","known test mode");if(mode=="faults"||mode=="allocations"){Check(argc==(mode=="faults"?3:4),"fault route and shard arguments");const auto route=std::stoul(argv[2]);Check(route<5,"fault route range");int shard=-1;if(mode=="allocations"){shard=std::stoi(argv[3]);Check(shard>=0&&shard<4,"allocation shard range");}Faults(route,shard);}if(mode=="all"||mode=="profiles")Profiles();if(mode=="all"||mode=="invalid")Invalid();if(mode=="all"||mode=="retained")Retained();if(mode=="all"||mode=="graphs")Graphs();if(mode=="all"||mode=="sequences")Sequences();std::cout<<"native management control authority checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;io_counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}

@@ -20,6 +20,9 @@ struct NativePublicationPlan {
   core::platform::u32 generation_guard_flags=7;
   std::optional<NativeManagementExtentRoot> management_extent;
   std::optional<NativeManagementControlBundleRoot> control_bundle;
+  // Version4 binds the actual selector sequence, not the reserved checkpoint
+  // watermark. Absence preserves the earlier plan image definitions.
+  std::optional<u64> base_selection_generation;
 };
 enum class NativePublicationPlanError {
   none, invalid_header, invalid_identity, invalid_family, invalid_reference,

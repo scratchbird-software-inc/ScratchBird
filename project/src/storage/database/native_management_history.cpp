@@ -113,6 +113,8 @@ NativeManagementHistory ReadHistory(const Uuid& database,const std::vector<disk:
       Require(head&&head->page_type==0x500&&head->page.filespace_uuid==primary&&head->page.page_size_profile_uuid==z.bootstrap.page_size_profile_uuid&&head->page.page_number<z.total_pages,E::history_mismatch);
       c.Charge(2*size);std::vector<byte> bytes(size);const auto io=file.device->ReadAt(head->page.page_number*size,bytes.data(),bytes.size());Require(io.ok()&&io.bytes_transferred==bytes.size(),E::io_failure);
       auto image=DecodeNativePublicationPlan(bytes);PlanError(image.error);auto p=std::move(*image.plan);
+      if(actual_selection&&Self(current.root)==anchor.checkpoint&&p.base_selection_generation)
+        Require(*p.base_selection_generation+1==actual_selection->selection_generation,E::history_mismatch);
       Require(p.management_extent&&Self(p)==head->page&&p.object_uuid==head->object_uuid&&image.sha256==head->sha256&&p.bootstrap_uuid==z.page_uuid&&p.header.database_uuid==database&&p.timeline_uuid==c.timeline&&p.operation_uuid==current.root.creator_operation_uuid&&p.target_checkpoint==Self(current.root)&&p.target_checkpoint_object_uuid==current.root.object_uuid&&p.reserved_generation==current.root.checkpoint_generation&&p.target_root_set_generation==current.root.root_set_generation,E::history_mismatch);
       Require(attempts.insert(p.operation_uuid).second,E::history_mismatch);
       const auto graph=ComputeNativePublicationTargetGraphDigest(current.bytes);PlanError(graph.error);Require(graph.sha256==p.target_graph_sha256,E::history_mismatch);
