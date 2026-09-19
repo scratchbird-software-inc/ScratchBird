@@ -28,6 +28,9 @@ auto ImageHash(const std::vector<byte>& b){const std::array<byte,32> zero{};cons
 E Validate(const NativePublicationPlan& p){
   const auto& h=p.header;if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=0x500||h.flags)return E::invalid_header;
   if(p.control_bundle&&!p.management_extent)return E::invalid_family;
+  // Existing plan versions carry no inventory count and cannot authorize an
+  // inventory-bearing bundle by silently discarding part of its descriptor.
+  if(p.control_bundle&&p.control_bundle->inventory_count)return E::invalid_family;
   if(p.base_selection_generation&&(!p.control_bundle||!*p.base_selection_generation||*p.base_selection_generation==std::numeric_limits<u64>::max()))return E::invalid_family;
   if(p.intent.recovery_profile>1||(p.intent.recovery_profile&&!p.base_selection_generation))return E::invalid_family;
   for(const auto* id:{&p.object_uuid,&p.bootstrap_uuid,&p.timeline_uuid,&p.operation_uuid,&p.intent.initiator_uuid,&p.intent.request_context_uuid,&p.intent.policy_snapshot_uuid,&p.base_checkpoint_object_uuid,&p.target_checkpoint_object_uuid})if(!V7(*id))return E::invalid_identity;
