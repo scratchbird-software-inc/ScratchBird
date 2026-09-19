@@ -8,6 +8,7 @@
 #include "transaction_inventory_page.hpp"
 #include "database_dirty_manifest.hpp"
 #include "native_checkpoint_selection.hpp"
+#include "native_management_control_authority.hpp"
 #include "native_filespace_initialization.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
@@ -524,7 +525,7 @@ std::vector<page::NativeBtreePage> BtreeDeepTreeExample(unsigned p) {
   const page::NativeBtreeKey boundary{{100},Id(170),Id(220)};
   nodes[0].first_child=ref(1);nodes[0].cells[0].child=ref(8);nodes[0].cells[0].key=boundary;
   nodes[1].header.page_type=0x201;nodes[8].header.page_type=0x201;nodes[1].parent=ref(0);nodes[8].parent=ref(0);
-  for(const auto pair:{std::pair{1u,8u},std::pair{3u,9u},std::pair{7u,11u}}){nodes[pair.first].right=ref(pair.second);nodes[pair.second].left=ref(pair.first);
+  for(const auto& pair:{std::pair{1u,8u},std::pair{3u,9u},std::pair{7u,11u}}){nodes[pair.first].right=ref(pair.second);nodes[pair.second].left=ref(pair.first);
     nodes[pair.first].high_fence=boundary;nodes[pair.second].low_fence=boundary;}
   return nodes;
 }
@@ -828,7 +829,7 @@ void CatalogRootRanges() {
   Check(f.Read(8192,2).ok(),"one-root exact head/terminal range");
   Check(f.Read(24576,1).ok(),"explicit retained terminal stops before older history");
   for(u64 budget:{0ull,8191ull,8192ull,24575ull,24576ull,32767ull}) RangeReject(f.Read(budget),RootError::resource_exhausted);
-  for(const auto [budget,expected_reads]:std::array<std::pair<u64,unsigned>,3>{{{8191,4},{8192,7},{24576,10}}}) {
+  for(const auto& [budget,expected_reads]:std::array<std::pair<u64,unsigned>,3>{{{8191,4},{8192,7},{24576,10}}}) {
     reads=0; track_reads=true; r=f.Read(budget); track_reads=false;
     RangeReject(r,RootError::resource_exhausted);
     Check(reads==expected_reads,"byte allowance checked before reading the next root image");
@@ -1997,7 +1998,9 @@ void CanonicalCheckpointAllocation() {
       r.checkpoint_inventory.retained_image_bytes==0&&r.allocation.pages.empty()&&r.retained_image_bytes==0&&
       r.allocation.retained_image_bytes==0&&std::all_of(r.allocation.state_counts.begin(),r.allocation.state_counts.end(),[](u64 n){return n==0;}),
       "checkpoint allocation failure exposes no authority prefix");};
-    persist(inventory,map,zero,checkpoint);reads=0;track_reads=true;count_allocations=true;observed_allocations=0;
+    persist(inventory,map,zero,checkpoint);
+    if(profile==0){byte warm=0;for(unsigned n=0;n<4097;++n){const auto io=device.ReadAt(0,&warm,1);Check(io.ok()&&io.bytes_transferred==1,"warm optional allocation-reader telemetry before fault measurement");}}
+    reads=0;track_reads=true;count_allocations=true;observed_allocations=0;
     auto result=read(budget);count_allocations=false;track_reads=false;const auto allocation_count=observed_allocations;const auto read_count=reads;
     Check(result.ok()&&result.retained_image_bytes==budget&&result.allocation.pages.size()==1&&
       result.allocation.pages[0].bytes==AllocationOracle(map)&&result.allocation.state_counts[2]==4&&
@@ -2008,11 +2011,19 @@ void CanonicalCheckpointAllocation() {
     for(unsigned fault=1;fault<=3;++fault){full_digest_fault=fault;result=read(budget);
       Check(full_digest_fault==0&&result.error==E::hash_failure,"checkpoint inventory allocation digest provider failure");empty(result);}
     for(unsigned fault=1;fault<=read_count;++fault){reads=0;read_fault=fault;track_reads=true;result=read(budget);track_reads=false;read_fault=0;empty(result);}
-    if(profile==0){bool success=false;
-      for(unsigned long n=0;n<=allocation_count;++n){allocation_budget=static_cast<long>(n);result=read(budget);allocation_budget=-1;
-        if(result.ok()){success=true;break;}empty(result);}
-      Check(success,"all measured checkpoint allocation fault positions");
-      std::cout<<"checkpoint allocation fault positions="<<allocation_count<<std::endl;
+    if(profile==0){unsigned long consumed=0;
+      for(unsigned long n=0;n<=allocation_count;++n){const auto loss=device.failed_io_latency_observations();
+        allocation_budget=static_cast<long>(n);result=read(budget);const auto remaining=allocation_budget;allocation_budget=-1;
+        if(remaining<0)++consumed;
+        if(result.ok()){Check(result.retained_image_bytes==budget&&result.allocation.pages.size()==1&&result.allocation.pages.front().bytes==AllocationOracle(map),"successful allocation injection retains complete exact authority");
+          if(remaining<0)Check(device.failed_io_latency_observations()==loss+1,"only recorded optional telemetry loss permits consumed allocation success");}
+        else{Check(remaining<0,"each failed allocation reader actually consumed its injection");empty(result);
+          Check(result.error==E::resource_exhausted||result.allocation_error==page::NativeAllocationError::resource_exhausted||
+            result.checkpoint_inventory.inventory_error==page::NativeInventoryError::resource_exhausted,"allocation failure preserves resource classification");}
+        if(n<allocation_count)Check(remaining<0,"every measured allocation failure position reached");
+        else Check(result.ok()&&remaining>=0,"allocation fault sweep reaches uninjected terminal success");}
+      Check(consumed==allocation_count,"complete measured allocation fault coverage");
+      std::cout<<"checkpoint allocation fault positions="<<allocation_count<<" consumed="<<consumed<<std::endl;
     }
     for(unsigned mutation=0;mutation<7;++mutation){auto altered=map;
       if(mutation==0)altered.creator_transaction_uuid=Id(90);
@@ -2024,6 +2035,8 @@ void CanonicalCheckpointAllocation() {
       if(mutation==6){auto& r=altered.records.back();r.creator_transaction_uuid={};r.creator_local_transaction_id=0;r.creator_operation_uuid=Id(90);}
       if(mutation>=5)Check(page::DecodeNativeAllocationMap(AllocationOracle(altered)).ok(),"structural operation lineage alone is not durable operation authority");
       persist(inventory,altered,zero,checkpoint);result=read(budget);empty(result);
+      if(mutation>=5){Check(result.error==E::resource_exhausted,"operation proof cannot turn exhausted allowance into an identity mismatch");
+        result=read(32*u64{sizes[profile]});empty(result);}
       Check(result.error==(mutation==1?E::allocation_creator_not_committed:
         mutation==2||mutation==3||mutation==6?E::allocation_record_creator_mismatch:E::allocation_creator_mismatch),"exact map/original creator refusal");
     }
@@ -2199,6 +2212,112 @@ Bytes DirectoryOracle(const page::NativeFilespaceDirectory& value) {
 }
 
 
+Bytes DirectoryAllocationOracle(const page::NativeFilespaceDirectory& value){
+  const auto legacy=DirectoryOracle(value);Bytes b(legacy.size());std::copy_n(legacy.begin(),384,b.begin());
+  std::copy_n("SBFDIR02",8,b.begin()+128);Number(b,136,2,2);Number(b,140,4,384+320*value.records.size());Number(b,212,4,320);
+  PutUuid(b,328,value.creator_operation_uuid);std::fill(b.begin()+296,b.begin()+328,0);
+  for(std::size_t i=0;i<value.records.size();++i){const auto at=384+320*i;std::copy_n(legacy.begin()+384+192*i,192,b.begin()+at);
+    if(const auto& root=value.records[i].allocation_root){PutUuid(b,at+192,root->page.filespace_uuid);Number(b,at+208,8,root->page.page_number);
+      Number(b,at+216,8,root->page.page_generation);PutUuid(b,at+224,root->page.page_size_profile_uuid);PutUuid(b,at+240,root->object_uuid);
+      std::copy(root->sha256.begin(),root->sha256.end(),b.begin()+at+256);Number(b,at+288,8,root->map_generation);Number(b,at+296,8,root->capacity_generation);}}
+  const auto digest=WholeRootHash(b);std::copy(digest.begin(),digest.end(),b.begin()+296);return b;
+}
+
+void CanonicalDirectoryAllocationBindings(){using E=page::NativeDirectoryError;
+  const auto empty=[](const auto& r){Check(!r.ok()&&!r.directory&&r.bytes.empty(),"directory allocation codec refuses without a prefix");};
+  for(unsigned p=0;p<5;++p){const unsigned q=(p+1)%5;auto primary=Example(p),secondary=Example(q,5);
+    secondary.bootstrap.filespace_uuid=Id(7);secondary.page_uuid=Id(8);for(auto& r:secondary.roots)r.filespace_uuid=Id(7);
+    page::NativeFilespaceDirectory d;d.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};d.object_uuid=Id(45);d.directory_generation=5;
+    d.creator_transaction_uuid=Id(91);d.creator_local_transaction_id=11;d.total_records=2;
+    for(const auto* z:{&primary,&secondary})d.records.push_back({z->bootstrap,Id(z==&primary?120:121),z->page_uuid,z->page_generation,z->root_set_generation,z->total_pages,0,{}});
+    const auto binding=[&](unsigned index){const auto& r=d.records[index];page::NativeFilespaceAllocationRoot root;
+      root.page={r.bootstrap.filespace_uuid,13,103,r.bootstrap.page_size_profile_uuid};root.object_uuid=Id(43+index);root.sha256.fill(static_cast<byte>(index+1));root.map_generation=5;root.capacity_generation=6;return root;};
+    const auto original=d;
+    for(unsigned mode=0;mode<4;++mode){d=original;
+      if(mode&1){d.records[0].allocation_root=binding(0);d.records[1].allocation_root=binding(1);}
+      if(mode&2){d.creator_transaction_uuid={};d.creator_local_transaction_id=0;d.creator_operation_uuid=Id(93);}
+      const auto oracle=mode?DirectoryAllocationOracle(d):DirectoryOracle(d);const auto encoded=page::EncodeNativeFilespaceDirectory(d);
+      Check(encoded.ok()&&encoded.bytes==oracle,"independent exact directory version/creator/root image");
+      const auto decoded=page::DecodeNativeFilespaceDirectory(oracle);
+      Check(decoded.ok()&&decoded.directory->creator_operation_uuid==d.creator_operation_uuid&&decoded.directory->creator_transaction_uuid==d.creator_transaction_uuid&&
+        decoded.directory->creator_local_transaction_id==d.creator_local_transaction_id&&decoded.directory->records.size()==2&&
+        decoded.directory->records[0].allocation_root==d.records[0].allocation_root&&decoded.directory->records[1].allocation_root==d.records[1].allocation_root&&
+        page::EncodeNativeFilespaceDirectory(*decoded.directory).bytes==oracle,"binary allocation references and exclusive creator survive decoding");
+      if(mode&2){
+        // Matcher contract only: these in-memory entries are NOT durable
+        // publication or selected graph authority evidence.
+        db::NativeManagementControlGraph proof;page::NativeFilespaceDirectoryChainResult chain;
+        chain.error=E::none;chain.pages.push_back(decoded);const auto sha=WholeRootHash(oracle);
+        db::NativeManagementPublishedCheckpoint publication;
+        publication.directory_root={3,9,{Id(2),15,105,Profile(p)},d.object_uuid,sha};
+        proof.publications.emplace(d.creator_operation_uuid,publication);
+        page::NativeAllocationRecord record;record.page_number=15;record.allocation_uuid=Id(97);record.page_uuid=d.header.page_uuid;
+        record.page_generation=105;record.page_type=9;record.owner_uuid=d.object_uuid;record.creator_operation_uuid=d.creator_operation_uuid;
+        proof.allocations.emplace(std::make_pair(Id(2),u64{15}),record);
+        Check(db::MatchesNativeManagementPublishedDirectory(proof,chain,sha),"directory matcher uses original entries without recursive selected authority");
+        Check(!proof.ok(),"matcher fixture cannot masquerade as verified control graph");
+        for(unsigned field=0;field<10;++field){auto wrong=proof;auto& r=wrong.publications.begin()->second.directory_root;
+          if(field==0)r.role=4;if(field==1)r.page_type=3;if(field==2)r.page.filespace_uuid=Id(7);
+          if(field==3)++r.page.page_number;if(field==4)++r.page.page_generation;if(field==5)r.page.page_size_profile_uuid=Profile(q);
+          if(field==6)r.object_uuid=Id(99);if(field==7)r.sha256[0]^=1;if(field==8)wrong.publications.clear();if(field==9)wrong.allocations.clear();
+          Check(!db::MatchesNativeManagementPublishedDirectory(wrong,chain,sha),"directory matcher rejects substituted publication root or missing original allocation");}
+        for(unsigned field=0;field<9;++field){auto wrong=proof;auto& r=wrong.allocations.begin()->second;
+          if(field==0)++r.page_number;if(field==1)r.page_uuid=Id(99);if(field==2)++r.page_generation;
+          if(field==3)r.page_type=3;if(field==4)r.owner_uuid=Id(99);if(field==5)r.creator_operation_uuid=Id(99);
+          if(field==6)r.creator_transaction_uuid=Id(91);if(field==7)r.creator_local_transaction_id=11;
+          if(field==8){wrong.allocations.clear();wrong.allocations.emplace(std::make_pair(Id(7),u64{15}),record);}
+          Check(!db::MatchesNativeManagementPublishedDirectory(wrong,chain,sha),"directory matcher rejects reparented reused or foreign original records");}
+        for(unsigned field=0;field<7;++field){auto wrong=chain;auto& image=*wrong.pages.front().directory;
+          if(field==0)image.creator_operation_uuid=Id(99);if(field==1)image.creator_transaction_uuid=Id(91);
+          if(field==2)image.creator_local_transaction_id=11;if(field==3)image.header.page_type=3;
+          if(field==4)wrong.pages.front().directory.reset();if(field==5)wrong.error=E::chain_mismatch;if(field==6)wrong.pages.clear();
+          Check(!db::MatchesNativeManagementPublishedDirectory(proof,wrong,sha),"directory matcher rejects incomplete or nonexclusive chain images");}
+        auto tail=d;tail.header.filespace_uuid=Id(7);tail.header.page_size_profile_uuid=Profile(q);tail.header.page_size_bytes=sizes[q];
+        tail.header.page_number=16;tail.header.page_uuid=Id(98);tail.header.page_generation=106;
+        page::NativeFilespaceDirectoryResult tail_image;tail_image.error=E::none;tail_image.directory=tail;chain.pages.push_back(tail_image);
+        Check(!db::MatchesNativeManagementPublishedDirectory(proof,chain,sha),"every directory continuation requires its own original allocation");
+        auto tail_record=record;tail_record.page_number=16;tail_record.page_uuid=Id(98);tail_record.page_generation=106;tail_record.allocation_uuid=Id(100);
+        proof.allocations.emplace(std::make_pair(Id(7),u64{16}),tail_record);
+        Check(db::MatchesNativeManagementPublishedDirectory(proof,chain,sha),"matcher checks continuation binary filespace and slot against exact original record");
+        chain.pages.back().directory->creator_operation_uuid=Id(99);
+        Check(!db::MatchesNativeManagementPublishedDirectory(proof,chain,sha),"continuation cannot borrow another operation publication");
+      }
+      if(!mode)continue;
+      for(unsigned mutation=0;mutation<18;++mutation){auto bad=d;bad.records[0].allocation_root=binding(0);auto& root=*bad.records[0].allocation_root;
+        if(mutation==0){bad.creator_transaction_uuid=Id(91);bad.creator_local_transaction_id=11;bad.creator_operation_uuid=Id(93);}
+        if(mutation==1){bad.creator_transaction_uuid={};bad.creator_local_transaction_id=0;bad.creator_operation_uuid={};}
+        if(mutation==2){bad.creator_transaction_uuid=Id(91);bad.creator_local_transaction_id=0;bad.creator_operation_uuid={};}
+        if(mutation==3){bad.creator_transaction_uuid={};bad.creator_local_transaction_id=0;bad.creator_operation_uuid=Id(93);bad.creator_operation_uuid.bytes[6]=0x40;}
+        if(mutation==4)root.page.filespace_uuid=Id(7);if(mutation==5)root.page.page_size_profile_uuid=Profile(q);
+        if(mutation==6)root.page.page_number=0;if(mutation==7)root.page.page_generation=0;
+        if(mutation==8)root.page.page_number=bad.records[0].total_pages;if(mutation==9)root.page.page_number=bad.header.page_number;
+        if(mutation==10)root.object_uuid={};if(mutation==11)root.object_uuid.bytes[6]=0x40;
+        if(mutation==12)root.sha256.fill(0);if(mutation==13)root.map_generation=0;if(mutation==14)root.capacity_generation=0;
+        if(mutation==15)root.page.filespace_uuid={};if(mutation==16)root.page.page_size_profile_uuid={};if(mutation==17)root={};
+        empty(page::EncodeNativeFilespaceDirectory(bad));const auto bytes=DirectoryAllocationOracle(bad);
+        if(mutation!=17)empty(page::DecodeNativeFilespaceDirectory(bytes));
+        else{const auto r=page::DecodeNativeFilespaceDirectory(bytes);Check(r.ok()&&!r.directory->records[0].allocation_root,"all-zero wire tuple means absence, not a partial allocation root");}
+      }
+      for(unsigned mutation=0;mutation<9;++mutation){auto bytes=oracle;
+        if(mutation==0)bytes[135]='1';if(mutation==1)Number(bytes,136,2,1);if(mutation==2)Number(bytes,212,4,192);
+        if(mutation==3)bytes[344]=1;if(mutation==4)bytes[384+304]=1;if(mutation==5)bytes.back()=1;
+        if(mutation==6)Number(bytes,140,4,384+192*d.records.size());if(mutation==7)Number(bytes,208,4,0xffffffff);
+        if(mutation==8){std::fill(bytes.begin()+384+192,bytes.begin()+384+304,0);bytes[384+256]=1;}
+        std::fill(bytes.begin()+296,bytes.begin()+328,0);const auto hash=WholeRootHash(bytes);std::copy(hash.begin(),hash.end(),bytes.begin()+296);
+        empty(page::DecodeNativeFilespaceDirectory(bytes));
+      }
+      for(unsigned route=0;route<2;++route){const auto call=[&](){return route?page::DecodeNativeFilespaceDirectory(oracle):page::EncodeNativeFilespaceDirectory(d);};
+        for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;const auto r=call();Check(!hash_fault&&r.error==E::hash_failure,"directory extension consumes hash backend failures");empty(r);}
+        if(p==0){observed_allocations=0;count_allocations=true;const auto good=call();count_allocations=false;const auto count=observed_allocations;Check(good.ok(),"directory allocation fault baseline");
+          for(unsigned long n=0;n<=count;++n){allocation_budget=n;const auto r=call();const auto remaining=allocation_budget;allocation_budget=-1;
+            if(n<count){Check(remaining<0&&r.error==E::resource_exhausted,"directory extension allocation failure consumed");empty(r);}
+            else Check(r.ok()&&remaining>=0&&r.bytes==oracle,"directory extension allocation terminal exact success");}}
+      }
+    }
+    d=original;empty(page::DecodeNativeFilespaceDirectory(DirectoryAllocationOracle(d)));
+  }
+}
+
 void CanonicalCatalogLeafStaging(){using E=db::NativeCatalogLeafStageError;using S=page::NativeAllocationState;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=5;++role){const unsigned q=(p+1)%5;const bool primary=role<=4;
     Fixture fixture;disk::FileDevice first,second;auto z1=Example(p,primary?role:1),z2=Example(q,5);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
@@ -2293,7 +2412,7 @@ void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using
       for(unsigned n:{27u,28u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(220+n);r.page_uuid=Id(n==27?155:156);r.page_generation=1;r.page_type=0x30e;r.owner_uuid=Id(154);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;map.records.push_back(r);map.states[n]=S::allocated;}
       for(const auto& control:std::vector<db::NativeInventoryPageBinding>{{inv.header,inv.object_uuid},{cp.header,cp.object_uuid}}){
         const auto& h=control.header;map.states[h.page_number]=S::allocated;
-        map.records.push_back({h.page_number,Id(100+h.page_number),h.page_uuid,control.object_uuid,Id(98),17,h.page_generation,0,h.page_type});}
+        map.records.push_back({h.page_number,Id(100+h.page_number),h.page_uuid,control.object_uuid,Id(98),17,h.page_generation,0,h.page_type,{}});}
       std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});}
     page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=1;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
     const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& b){const auto io=file.WriteAt(number*size,b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size()&&file.Sync().ok(),"persist independent root staging fixture");};
@@ -2308,13 +2427,24 @@ void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using
       if(selected){db::NativeCheckpointSelection selection;selection.header={sizes[p],0x30e,Id(1),Id(2),Id(155),27,1,0,Profile(p)};selection.object_uuid=Id(154);selection.bootstrap_uuid=z1.page_uuid;selection.publication_uuid=Id(153);selection.selection_generation=1;selection.checkpoint={Id(2),19,109,Profile(p)};selection.checkpoint_object_uuid=cp.object_uuid;selection.checkpoint_sha256=WholeRootHash(cb);selection.checkpoint_generation=1;selection.root_set_generation=8;selection.timeline_uuid=cp.timeline_uuid;
         put(first,27,sizes[p],SelectionOracle(selection));selection.header.page_number=28;selection.header.page_uuid=Id(156);put(first,28,sizes[p],SelectionOracle(selection));}};
     const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
-    const u64 budget=6*sizes[p]+sizes[q];const Bytes blank(sizes[p],0),expected=RootOracle(root);
+    // A selector-bound genesis retains two selector images and its selected
+    // allocation image in addition to the checkpoint/inventory pair. The
+    // directory, staging allocation, predecessor and write/readback images
+    // are separate work; none may be lost when resolving the selected pair.
+    const u64 budget=(selected?9:6)*u64{sizes[p]}+sizes[q];const Bytes blank(sizes[p],0),expected=RootOracle(root);
     const auto reset=[&](){put(first,30,sizes[p],blank);};
     const auto bytes=[&](){Bytes b(sizes[p]);Check(first.ReadAt(30*sizes[p],b.data(),b.size()).ok(),"read actual staged root");return b;};
     const auto stage=[&](u64 b){return db::StageNativeCatalogRootSuccessorFromOpenDevices(devices,CheckpointRef(cp),owner,root,b);};
     const char* phase="initial";
     const auto empty=[&](const auto& r){if(r.ok()||r.receipt)std::cerr<<"unexpected root stage receipt phase="<<phase<<std::endl;Check(!r.ok()&&!r.receipt,"failed root staging returns no receipt");};
-    persist();reset();reads=observed_full_digests=0;observed_allocations=0;stage_writes=stage_syncs=0;track_reads=count_allocations=count_full_digests=true;
+    persist();reset();
+    if(selected){
+      const auto directory_proof=db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),devices,CheckpointRef(cp),budget);
+      Check(directory_proof.ok()&&directory_proof.retained_image_bytes==6*u64{sizes[p]},"selected root staging charges two selectors checkpoint inventory selected map and directory");
+      stage_writes=stage_syncs=0;const auto insufficient=stage(6*u64{sizes[p]}+sizes[q]);empty(insufficient);
+      Check(insufficient.error==E::resource_exhausted&&!stage_writes&&!stage_syncs&&bytes()==blank,"former uncharged root allowance refuses before durable I/O");
+    }
+    reads=observed_full_digests=0;observed_allocations=0;stage_writes=stage_syncs=0;track_reads=count_allocations=count_full_digests=true;
     auto result=stage(budget);track_reads=count_allocations=count_full_digests=false;const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
     if(!result.ok())std::cerr<<"root stage error="<<static_cast<int>(result.error)<<" cp="<<static_cast<int>(result.checkpoint_error)<<" root="<<static_cast<int>(result.root_error)<<std::endl;
     Check(result.ok()&&stage_writes==1&&stage_syncs==1&&result.receipt->root_uuid==root.object_uuid&&result.receipt->allocation_uuid==Id(230)&&result.receipt->sha256==WholeRootHash(expected)&&bytes()==expected,"actual staged root receipt and independent bytes");
@@ -2434,8 +2564,9 @@ void CanonicalBtreeStaging(){using E=db::NativeBtreeStageError;using S=page::Nat
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable resolves staged B-tree");
   }
 }
-void CanonicalCheckpointDirectory() {
+void CanonicalCheckpointDirectory(bool extended=false) {
   using E=db::NativeCheckpointError;
+  const auto image=[](const page::NativeFilespaceDirectory& d){return !d.creator_operation_uuid.is_nil()||std::any_of(d.records.begin(),d.records.end(),[](const auto& r){return r.allocation_root.has_value();})?DirectoryAllocationOracle(d):DirectoryOracle(d);};
   for(unsigned p=0;p<5;++p){const unsigned q=(p+1)%5;Fixture fixture;disk::FileDevice first,second;
     const auto path1=(fixture.root/"checkpoint-directory-primary").string(),path2=(fixture.root/"checkpoint-directory-secondary").string();
     auto z1=Example(p),z2=Example(q);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
@@ -2453,34 +2584,45 @@ void CanonicalCheckpointDirectory() {
     head.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};head.object_uuid=Id(45);head.directory_generation=5;
     head.creator_transaction_uuid=Id(91);head.creator_local_transaction_id=11;head.total_records=2;head.records={record(z1,Id(120))};
     auto tail=head;tail.header={sizes[q],9,Id(1),Id(7),Id(81),15,105,0,Profile(q)};tail.first_record=1;tail.records={record(z2,Id(121))};
-    head.next=disk::NativePageReference{Id(7),15,105,Profile(q)};head.next_sha256=WholeRootHash(DirectoryOracle(tail));
+    if(extended){page::NativeFilespaceAllocationRoot binding{{Id(2),13,103,Profile(p)},Id(43),{},2,1};binding.sha256.fill(0x5a);
+      head.records[0].allocation_root=binding;
+      if(p%2){binding.page.filespace_uuid=Id(7);binding.page.page_size_profile_uuid=Profile(q);binding.object_uuid=Id(179);tail.records[0].allocation_root=binding;}}
+    head.next=disk::NativePageReference{Id(7),15,105,Profile(q)};head.next_sha256=WholeRootHash(image(tail));
     const auto put=[&](auto& device,u64 number,unsigned size,const Bytes& bytes){const auto io=device.WriteAt(number*size,bytes.data(),bytes.size());
       Check(io.ok()&&io.bytes_transferred==bytes.size()&&device.Sync().ok(),"persist independent checkpoint directory fixture");};
     const auto persist=[&](const auto& inventory,const auto& primary,auto h,auto t,bool stale=false){
-      h.records[0]=record(primary,Id(120));h.next_sha256=WholeRootHash(DirectoryOracle(t));
-      auto cp=checkpoint;const auto ib=InventoryStateOracle(inventory),hb=DirectoryOracle(h);
+      const auto allocation=h.records[0].allocation_root;h.records[0]=record(primary,Id(120));h.records[0].allocation_root=allocation;h.next_sha256=WholeRootHash(image(t));
+      auto cp=checkpoint;const auto ib=InventoryStateOracle(inventory),hb=image(h);
       cp.roots[0].page=InventoryRef(inventory);cp.roots[0].object_uuid=inventory.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);
-      auto& target=cp.roots[2];target.page={Id(2),15,105,Profile(p)};target.object_uuid=Id(45);target.sha256=WholeRootHash(stale?DirectoryOracle(head):hb);
+      auto& target=cp.roots[2];target.page={Id(2),15,105,Profile(p)};target.object_uuid=Id(45);target.sha256=WholeRootHash(stale?image(head):hb);
       put(first,0,sizes[p],Oracle(primary));put(second,0,sizes[q],Oracle(z2));put(first,14,sizes[p],ib);
-      put(first,15,sizes[p],hb);put(second,15,sizes[q],DirectoryOracle(t));put(first,19,sizes[p],CheckpointOracle(cp));
+      put(first,15,sizes[p],hb);put(second,15,sizes[q],image(t));put(first,19,sizes[p],CheckpointOracle(cp));
     };
     const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
     const u64 limit=3*sizes[p]+sizes[q];const auto read=[&](u64 budget){return db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),devices,CheckpointRef(checkpoint),budget);};
     const auto empty=[&](const auto& r){Check(!r.ok()&&!r.retained_image_bytes&&r.directory.pages.empty()&&!r.directory.retained_image_bytes&&
       !r.checkpoint_inventory.checkpoint&&r.checkpoint_inventory.inventory.entries.empty()&&!r.checkpoint_inventory.inventory.publication_base&&
       !r.checkpoint_inventory.retained_image_bytes,"checkpoint directory failure exposes no authority prefix");};
-    persist(inv,z1,head,tail);reads=0;observed_allocations=0;count_allocations=true;track_reads=true;auto result=read(limit);track_reads=false;count_allocations=false;
-    const auto nr=reads;const auto na=observed_allocations;
-    Check(result.ok()&&result.retained_image_bytes==limit&&result.directory.pages.size()==2&&result.directory.pages[0].bytes==DirectoryOracle(head)&&
-      result.directory.pages[1].bytes==DirectoryOracle(tail)&&!result.checkpoint_inventory.inventory.publication_base,"actual current checkpoint directory inventory binding");
+    persist(inv,z1,head,tail);
+    if(p==0){byte warm=0;for(unsigned n=0;n<4097;++n)Check(first.ReadAt(0,&warm,1).ok()&&second.ReadAt(0,&warm,1).ok(),"warm directory reader telemetry before complete fault measurement");}
+    reads=observed_allocations=observed_full_digests=0;count_allocations=track_reads=count_full_digests=true;auto result=read(limit);track_reads=count_allocations=count_full_digests=false;
+    const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
+    Check(result.ok()&&result.retained_image_bytes==limit&&result.directory.pages.size()==2&&result.directory.pages[0].bytes==image(head)&&
+      result.directory.pages[1].bytes==image(tail)&&!result.checkpoint_inventory.inventory.publication_base,"actual current checkpoint directory inventory binding");
+    Check(result.directory.pages[0].directory->records[0].allocation_root==head.records[0].allocation_root&&result.directory.pages[1].directory->records[0].allocation_root==tail.records[0].allocation_root,"actual mixed-version directory chain retains every allocation descriptor");
     result=read(limit-1);empty(result);Check(result.error==E::directory_failure&&result.directory_error==page::NativeDirectoryError::resource_exhausted,"shared budget charges final directory image");
-    for(unsigned fault=1;fault<=nr;++fault){reads=0;read_fault=fault;track_reads=true;result=read(limit);track_reads=false;read_fault=0;empty(result);}
-    for(unsigned fault=1;fault<=3;++fault){full_digest_fault=fault;result=read(limit);Check(full_digest_fault==0&&result.error==E::hash_failure,"checkpoint inventory directory complete hash provider failure");empty(result);}
+    for(unsigned fault=1;fault<=nr;++fault){reads=0;read_fault=fault;track_reads=true;result=read(limit);track_reads=false;const auto unconsumed=read_fault;read_fault=0;Check(!unconsumed,"every measured directory read failure is consumed");empty(result);}
+    for(unsigned fault=1;fault<=nf;++fault){full_digest_fault=fault;result=read(limit);Check(full_digest_fault==0&&(result.error==E::hash_failure||result.directory_error==page::NativeDirectoryError::hash_failure),"checkpoint inventory directory complete hash provider failure");empty(result);}
     for(unsigned fault=1;fault<=5;++fault){hash_fault=fault;result=read(limit);Check(hash_fault==0,"checkpoint directory part hash fault consumed");empty(result);}
-    if(p==0){for(unsigned long n=0;n<=na;++n){allocation_budget=n;result=read(limit);allocation_budget=-1;
-        if(result.ok())Check(result.directory.pages[0].bytes==DirectoryOracle(head)&&result.directory.pages[1].bytes==DirectoryOracle(tail),"allocation sweep exact directory authority");else empty(result);
-        if(n==na)Check(result.ok(),"measured checkpoint directory allocation sweep completed");}
-      std::cout<<"checkpoint directory allocation sites="<<na<<std::endl;}
+    if(p==0){unsigned long consumed=0;for(unsigned long n=0;n<=na;++n){const auto loss=first.failed_io_latency_observations()+second.failed_io_latency_observations();
+        allocation_budget=n;result=read(limit);const auto remaining=allocation_budget;allocation_budget=-1;
+        if(n<na){Check(remaining<0,"every measured directory allocation failure is consumed");++consumed;}
+        if(result.ok()){Check(result.retained_image_bytes==limit&&result.directory.pages[0].bytes==image(head)&&result.directory.pages[1].bytes==image(tail),"allocation sweep exact directory authority");
+          if(remaining<0)Check(first.failed_io_latency_observations()+second.failed_io_latency_observations()==loss+1,"only recorded optional telemetry failure preserves directory read success");}
+        else{empty(result);Check(result.error==E::resource_exhausted||result.directory_error==page::NativeDirectoryError::resource_exhausted||result.checkpoint_inventory.inventory_error==page::NativeInventoryError::resource_exhausted,"directory allocation failure keeps resource classification");}
+        if(n==na)Check(result.ok()&&remaining>=0,"measured checkpoint directory allocation sweep terminal uninjected success");}
+      Check(consumed==na,"complete directory allocation failure coverage");
+      std::cout<<"checkpoint directory allocation sites="<<na<<" consumed="<<consumed<<" reads="<<nr<<" digests="<<nf<<std::endl;}
     for(unsigned change=0;change<3;++change){auto z=z1;if(change==0)z.root_set_generation++;if(change==1)z.roots[8].object_uuid=Id(199);if(change==2)z.roots[4].object_uuid=Id(199);
       persist(inv,z,head,tail);result=read(limit);empty(result);Check(result.error==E::binding_mismatch,"current primary checkpoint and directory roots exact");}
     for(unsigned change=0;change<3;++change){auto h=head,t=tail;if(change==0)h.creator_transaction_uuid=t.creator_transaction_uuid=Id(199);
@@ -2494,6 +2636,14 @@ void CanonicalCheckpointDirectory() {
     auto changed=inv;changed.inventory.entries[0].identity.scope=mga::TransactionScope::cluster_global;
     persist(changed,z1,head,tail);result=read(limit);empty(result);Check(result.error==E::directory_creator_mismatch,"cluster creator cannot certify standalone directory");
     auto h=head,t=tail;h.directory_generation++;t.directory_generation++;persist(inv,z1,h,t,true);result=read(limit);empty(result);Check(result.error==E::invalid_integrity,"resealed directory still binds exact checkpoint digest");
+    if(extended){auto oh=head,ot=tail;for(auto* d:{&oh,&ot}){d->creator_transaction_uuid={};d->creator_local_transaction_id=0;d->creator_operation_uuid=Id(248);}
+      const auto structural=[&]{return page::ReadNativeFilespaceDirectoryFromOpenDevices(Id(1),devices,{5,9,Id(2),15,105,Profile(p),Id(45)},sizes[p]+sizes[q]);};
+      persist(inv,z1,oh,ot);const auto operation=structural();
+      Check(operation.ok()&&operation.pages.size()==2&&operation.pages[0].directory->creator_operation_uuid==Id(248)&&operation.pages[1].directory->creator_operation_uuid==Id(248),"actual operation directory chain retains exclusive binary creator");
+      empty(read(limit)); // Structural identity alone is never an operation publication proof.
+      ot.creator_operation_uuid=Id(249);persist(inv,z1,oh,ot);const auto mismatch=structural();
+      Check(!mismatch.ok()&&mismatch.error==page::NativeDirectoryError::chain_mismatch&&mismatch.pages.empty()&&!mismatch.retained_image_bytes,"actual directory chain cannot splice distinct operation creators");
+    }
     persist(inv,z1,head,tail);Check(first.Close().ok()&&second.Close().ok()&&first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&
       second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok(),"checkpoint directory owned read-only reopen");
     Check(read(limit).ok()&&first.read_only()&&second.read_only(),"reopened current directory and inventory verified");
@@ -3174,7 +3324,7 @@ void CheckpointCatalogRelations() {
       // An unindexed row on another page still reserves its object identity.
       // Outcome comes from native inventory, not visibility or lifecycle text.
       const auto duplicate_inventory=inventory;
-      for(const auto [state,origin]:std::vector<std::pair<mga::TransactionState,mga::TransactionState>>{
+      for(const auto& [state,origin]:std::vector<std::pair<mga::TransactionState,mga::TransactionState>>{
           {mga::TransactionState::active,mga::TransactionState::none},
           {mga::TransactionState::prepared,mga::TransactionState::none},
           {mga::TransactionState::committed,mga::TransactionState::none},
@@ -3245,8 +3395,9 @@ Bytes SelectionOracle(const db::NativeCheckpointSelection& s){
   if(s.previous_checkpoint)ref(336,*s.previous_checkpoint);PutUuid(b,384,s.previous_checkpoint_object_uuid);std::copy(s.previous_checkpoint_sha256.begin(),s.previous_checkpoint_sha256.end(),b.begin()+400);
   const auto digest=WholeRootHash(b);std::copy(digest.begin(),digest.end(),b.begin()+432);return b;
 }
-void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_inventory=false){using E=db::NativeCheckpointSelectionError;using S=page::NativeAllocationState;
+void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_inventory=false,bool history_only=false,unsigned history_shard=0,unsigned history_stride=1,int inventory_allocation_shard=-1,bool directory_staging=false,bool directory_controls=false,bool directory_graph=false){using E=db::NativeCheckpointSelectionError;using S=page::NativeAllocationState;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=4;++role){
+    if(inventory_allocation_shard>=0&&(p!=0||role!=1))continue;
     Fixture fixture;disk::FileDevice device,second_device;const unsigned q=(p+1)%5;const auto path=(fixture.root/"bound-selector").string();auto zero=Example(p,role);zero.free_pages=zero.preallocated_pages=0;
     auto second_zero=Example(q,5);second_zero.bootstrap.filespace_uuid=Id(7);second_zero.page_uuid=Id(8);second_zero.free_pages=second_zero.preallocated_pages=0;for(auto& r:second_zero.roots)r.filespace_uuid=Id(7);
     second_zero.roots.front().object_uuid=Id(179);
@@ -3271,7 +3422,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       if(n==35){r.page_uuid=Id(164);r.page_generation=104;r.page_type=3;r.owner_uuid=Id(43);}map.records.push_back(r);}
     for(const auto& control:std::vector<db::NativeInventoryPageBinding>{{inv.header,inv.object_uuid},{initial.header,initial.object_uuid},{current.header,current.object_uuid}}){
       const auto& h=control.header;map.states[h.page_number]=S::allocated;
-      map.records.push_back({h.page_number,Id(100+h.page_number),h.page_uuid,control.object_uuid,Id(98),17,h.page_generation,0,h.page_type});}
+      map.records.push_back({h.page_number,Id(100+h.page_number),h.page_uuid,control.object_uuid,Id(98),17,h.page_generation,0,h.page_type,{}});}
     std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
     // Selected map counters differ from the immutable initial bootstrap.
     map.states[60]=S::free;
@@ -3290,7 +3441,8 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     std::optional<page::NativeTransactionInventoryPage> inventory_tail, preceding_inventory;
     std::array<u64,3> inventory_summary{13,13,13}, preceding_summary{13,13,13};
     const auto put=[&](u64 number,const Bytes& b){Check(device.WriteAt(number*sizes[p],b.data(),b.size()).ok()&&device.Sync().ok(),"persist independently authored selector graph");};
-    const auto persist=[&](){const auto ib=InventoryOracle(inv,inventory_summary[0],inventory_summary[1],inventory_summary[2]),mb=AllocationOracle(map),dbb=DirectoryOracle(directory),rb=RetentionOracle(retention),sb=SystemStateOracle(system);horizon.retention_sha256=WholeRootHash(rb);const auto hb=HorizonOracle(horizon);
+    const auto persist=[&](){const bool extended=!directory.creator_operation_uuid.is_nil()||std::any_of(directory.records.begin(),directory.records.end(),[](const auto& r){return r.allocation_root.has_value();});
+      const auto ib=InventoryOracle(inv,inventory_summary[0],inventory_summary[1],inventory_summary[2]),mb=AllocationOracle(map),dbb=extended?DirectoryAllocationOracle(directory):DirectoryOracle(directory),rb=RetentionOracle(retention),sb=SystemStateOracle(system);horizon.retention_sha256=WholeRootHash(rb);const auto hb=HorizonOracle(horizon);
       for(auto* cp:{&initial,&current}){cp->roots[0]={1,0x301,InventoryRef(inv),inv.object_uuid,WholeRootHash(ib)};
         cp->roots[2]={3,9,{Id(2),15,105,Profile(p)},Id(45),WholeRootHash(dbb)};}
       if(preceding_inventory){const auto& prior=*preceding_inventory;
@@ -3319,9 +3471,283 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       const auto sr=db::VerifyCurrentNativeCheckpointSystemStateFromOpenDevices(Id(1),devices,ref,budget);
       if(sr.ok()!=expected)std::cerr<<"selected system error="<<static_cast<int>(sr.error)<<" state="<<static_cast<int>(sr.system_error)<<std::endl;
       Check(sr.ok()==expected,"current system state uses selected root");
-      Check(db::VerifyCurrentNativeCheckpointHorizonFromOpenDevices(Id(1),devices,ref,budget).ok()==expected,"current horizons use selected root");};
+      Check(db::VerifyCurrentNativeCheckpointHorizonFromOpenDevices(Id(1),devices,ref,9*u64{sizes[p]}).ok()==expected,"current horizons use selected root and charge horizon plus retention images");};
+    if(directory_controls||directory_graph){
+      if(directory_graph){zero.root_set_generation=initial.root_set_generation=1;current.root_set_generation=selection.root_set_generation=2;directory.records[0].root_set_generation=1;}
+      second_zero=Example(q,2);second_zero.bootstrap.filespace_uuid=Id(7);second_zero.page_uuid=Id(8);second_zero.free_pages=second_zero.preallocated_pages=0;
+      for(auto& r:second_zero.roots)r.filespace_uuid=Id(7);second_zero.roots[2].object_uuid=Id(179);directory.records[1].bootstrap=second_zero.bootstrap;
+      inventory_tail=inv;inventory_tail->header={sizes[q],0x301,Id(1),Id(7),Id(201),14,104,0,Profile(q)};
+      inventory_tail->inventory.entries.erase(inventory_tail->inventory.entries.begin());inventory_tail->previous=InventoryRef(inv);inv.inventory.entries.pop_back();inv.next=InventoryRef(*inventory_tail);
+      page::NativeAllocationMap secondary;secondary.header={sizes[q],3,Id(1),Id(7),Id(202),13,103,0,Profile(q)};
+      secondary.object_uuid=Id(179);secondary.map_generation=secondary.capacity_generation=1;secondary.total_pages=64;
+      secondary.creator_transaction_uuid=Id(98);secondary.creator_local_transaction_id=17;secondary.states.assign(64,S::quarantined);
+      for(unsigned n:{0u,13u,14u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(220+n);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;secondary.states[n]=S::allocated;
+        if(n==0){r.page_uuid=Id(8);r.page_generation=7;r.page_type=1;r.owner_uuid=Id(7);}
+        if(n==13){r.page_uuid=Id(202);r.page_generation=103;r.page_type=3;r.owner_uuid=Id(179);}
+        if(n==14){r.page_uuid=Id(201);r.page_generation=104;r.page_type=0x301;r.owner_uuid=inv.object_uuid;}secondary.records.push_back(r);}
+      const auto store_map=[&](const auto& m){const auto b=AllocationOracle(m);Check(second_device.WriteAt(m.header.page_number*sizes[q],b.data(),b.size()).ok()&&second_device.Sync().ok(),"persist selected secondary control map");};
+      store_map(secondary);const auto bootstrap_map=secondary;
+      secondary.header.page_number=22;secondary.header.page_generation=104;secondary.header.page_uuid=Id(204);secondary.map_generation=2;
+      secondary.states[22]=S::allocated;secondary.records.push_back({22,Id(242),Id(204),Id(179),Id(98),17,104,0,3,{}});store_map(secondary);
+      directory.records[1].allocation_root=page::NativeFilespaceAllocationRoot{{Id(7),22,104,Profile(q)},Id(179),WholeRootHash(AllocationOracle(secondary)),2,1};
+      directory.records[0].allocation_root=page::NativeFilespaceAllocationRoot{{Id(2),35,104,Profile(p)},Id(43),WholeRootHash(AllocationOracle(map)),map.map_generation,map.capacity_generation};
+      const auto baseline=directory;const u64 limit=8*u64{sizes[p]}+3*u64{sizes[q]};
+      if(directory_graph){
+        const auto graph=[&](u64 allowance){return db::ReadNativeManagementControlGraphFromOpenDevices(Id(1),devices,Id(2),
+          {selection.checkpoint,selection.checkpoint_object_uuid,selection.checkpoint_sha256,selection.checkpoint_generation,selection.root_set_generation,selection.timeline_uuid},allowance);};
+        const auto no_graph=[&](const auto& r){Check(!r.ok()&&!r.anchor&&r.publications.empty()&&r.allocations.empty()&&!r.verified_image_bytes,"invalid directory graph exposes no authority prefix");};
+        persist();const auto original=graph(64*u64{sizes[p]});
+        if(!original.ok())std::cerr<<"directory graph fixture error="<<int(original.error)<<'\n';
+        Check(original.ok(),"independent transaction-created genesis ancestry admits graph fixture");
+        for(unsigned bad=0;bad<9;++bad){directory=baseline;auto& r=*directory.records[1].allocation_root;
+          if(bad==0)r.sha256[0]^=1;if(bad==1)++r.map_generation;if(bad==2)++r.capacity_generation;if(bad==3)++r.page.page_generation;
+          if(bad==4)r.object_uuid=Id(178);if(bad==5)r.page.page_number=23;
+          if(bad==6){directory.creator_transaction_uuid=Id(162);directory.creator_local_transaction_id=13;}
+          if(bad==7)directory.creator_transaction_uuid=Id(177);
+          if(bad==8){directory.creator_transaction_uuid={};directory.creator_local_transaction_id=0;directory.creator_operation_uuid=Id(177);}
+          persist();stage_writes=stage_syncs=0;no_graph(graph(64*u64{sizes[p]}));Check(!stage_writes&&!stage_syncs,"directory graph refusal is read-only");}
+        directory=baseline;persist();const u64 graph_limit=14*u64{sizes[p]}+4*u64{sizes[q]};const auto admitted=graph(graph_limit);
+        if(!admitted.ok()||admitted.verified_image_bytes!=graph_limit)std::cerr<<"directory graph error="<<int(admitted.error)<<" bytes="<<admitted.verified_image_bytes<<" expected="<<graph_limit<<'\n';
+        Check(admitted.ok()&&admitted.verified_image_bytes==graph_limit&&admitted.publications.empty()&&admitted.allocations.empty(),"immutable graph charges complete history checkpoints inventory maps and bound directory");
+        no_graph(graph(graph_limit-1));
+        auto stale=bootstrap_map;stale.records.pop_back();stale.states[14]=S::quarantined;store_map(stale);
+        Check(graph(graph_limit).ok(),"immutable graph uses its own checkpoint directory instead of obsolete bootstrap map");
+        directory.records[1].allocation_root.reset();persist();no_graph(graph(graph_limit));store_map(bootstrap_map);Check(graph(graph_limit).ok(),"graph bootstrap fallback only when binding absent");
+        directory=baseline;
+        for(unsigned bad=0;bad<3;++bad){auto changed=secondary;auto& r=changed.records[1];
+          if(bad==0)r.allocation_uuid=map.records.front().allocation_uuid;
+          if(bad==1)r.page_uuid=map.records.front().page_uuid;
+          if(bad==2){changed.creator_transaction_uuid=Id(162);changed.creator_local_transaction_id=13;}
+          store_map(changed);directory.records[1].allocation_root->sha256=WholeRootHash(AllocationOracle(changed));persist();no_graph(graph(graph_limit));}
+        store_map(secondary);directory=baseline;persist();Check(graph(graph_limit).ok(),"restored original graph ownership admitted");
+        if(p==0&&role==1){byte warm=0;for(unsigned n=0;n<4097;++n)Check(device.ReadAt(0,&warm,1).ok()&&second_device.ReadAt(0,&warm,1).ok(),"warm graph reader telemetry before full fault measurement");
+          reads=observed_full_digests=observed_allocations=0;track_reads=count_full_digests=count_allocations=true;const auto measured=graph(graph_limit);track_reads=count_full_digests=count_allocations=false;
+          Check(measured.ok(),"measure immutable directory graph fault sites");const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;stage_writes=stage_syncs=0;
+          for(unsigned n=1;n<=nr;++n){reads=0;read_fault=n;track_reads=true;const auto r=graph(graph_limit);track_reads=false;Check(!read_fault,"immutable graph read fault consumed");no_graph(r);}
+          for(unsigned n=1;n<=nf;++n){full_digest_fault=n;const auto r=graph(graph_limit);Check(!full_digest_fault,"immutable graph full digest fault consumed");no_graph(r);Check(r.error==db::NativeManagementControlAuthorityError::hash_failure,"immutable graph hash failure classification");}
+          for(unsigned n=1;n<=5;++n){hash_fault=n;const auto r=graph(graph_limit);Check(!hash_fault,"immutable graph multipart backend fault consumed");no_graph(r);}
+          unsigned long consumed=0;
+          for(unsigned long n=0;n<=na;++n){const auto loss=device.failed_io_latency_observations()+second_device.failed_io_latency_observations();
+            allocation_budget=n;const auto r=graph(graph_limit);const auto remaining=allocation_budget;allocation_budget=-1;
+            if(n<na){Check(remaining<0,"immutable graph allocation fault consumed");++consumed;}
+            if(r.ok()){Check(r.anchor==measured.anchor&&r.verified_image_bytes==graph_limit&&r.allocations.empty()&&r.publications.empty(),"injected graph success preserves full exact authority");
+              if(remaining<0)Check(device.failed_io_latency_observations()+second_device.failed_io_latency_observations()==loss+1,"only recorded optional telemetry loss preserves graph success");}
+            else{no_graph(r);Check(r.error==db::NativeManagementControlAuthorityError::resource_exhausted,"immutable graph allocation resource classification");}
+            if(n==na)Check(r.ok()&&remaining>=0,"immutable graph terminal uninjected allocation success");
+          }
+          Check(consumed==na&&!stage_writes&&!stage_syncs,"complete immutable graph fault sweep is read-only");
+          std::cout<<"directory graph allocations="<<na<<" consumed="<<consumed<<" reads="<<nr<<" digests="<<nf<<std::endl;
+        }
+        // An explicitly inspected ancestor owns its own directory, even when
+        // the currently selected graph is unavailable. This grants no fallback
+        // selection or serving permission for the older checkpoint.
+        auto historical_directory=baseline;historical_directory.header.page_number=16;historical_directory.header.page_generation=106;historical_directory.header.page_uuid=Id(206);
+        historical_directory.records[1].allocation_root=page::NativeFilespaceAllocationRoot{{Id(7),13,103,Profile(q)},Id(179),WholeRootHash(AllocationOracle(bootstrap_map)),1,1};
+        const auto hb=DirectoryAllocationOracle(historical_directory);put(16,hb);
+        auto ancestor=initial;ancestor.roots[2]={3,9,{Id(2),16,106,Profile(p)},Id(45),WholeRootHash(hb)};ancestor.roots[3]=current.roots[3];
+        // The original example's catalog root used slot35, now occupied by
+        // the selected map. Preserve distinct physical root addresses.
+        ancestor.roots[4]=current.roots[4];ancestor.roots[5]=current.roots[5];
+        const auto ab=CheckpointOracle(ancestor);Check(db::DecodeNativeCheckpointRoot(ab).ok(),"historical checkpoint fixture has no conflicting physical root aliases");put(19,ab);put(15,Bytes(sizes[p]));
+        const db::NativeManagementCheckpointAnchor anchor{{Id(2),19,109,Profile(p)},Id(49),WholeRootHash(ab),1,1,Id(97)};
+        const auto historical=db::ReadNativeManagementControlGraphFromOpenDevices(Id(1),devices,Id(2),anchor,11*u64{sizes[p]}+4*u64{sizes[q]});
+        if(!historical.ok()||historical.verified_image_bytes!=11*u64{sizes[p]}+4*u64{sizes[q]})std::cerr<<"historical directory graph error="<<int(historical.error)<<" bytes="<<historical.verified_image_bytes<<'\n';
+        Check(historical.ok()&&historical.anchor==anchor&&historical.verified_image_bytes==11*u64{sizes[p]}+4*u64{sizes[q]},"immutable ancestor uses its own directory and root without borrowing selected graph");
+        persist();
+        Check(device.Close().ok()&&second_device.Close().ok(),"release immutable directory graph fixture for fresh executable");
+        const auto child=::fork();Check(child>=0,"fork immutable directory graph reader");
+        if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","directory-graph-probe","--directory-graph-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
+        int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable verifies actual immutable directory control graph");
+        continue;
+      }
+      for(unsigned bad=0;bad<13;++bad){directory=baseline;auto& binding=*directory.records[1].allocation_root;
+        if(bad==0)binding.sha256[0]^=1;if(bad==1)++binding.map_generation;if(bad==2)++binding.capacity_generation;
+        if(bad==3)++binding.page.page_generation;if(bad==4)binding.object_uuid=Id(178);if(bad==5)binding.page.page_number=23;
+        if(bad==6){directory.creator_transaction_uuid=Id(162);directory.creator_local_transaction_id=13;}
+        if(bad==7){directory.creator_transaction_uuid=Id(177);directory.creator_local_transaction_id=17;}
+        auto& primary=*directory.records[0].allocation_root;
+        if(bad==8)primary.sha256[0]^=1;if(bad==9)++primary.map_generation;if(bad==10)++primary.capacity_generation;
+        if(bad==11)++primary.page.page_number;if(bad==12)primary.object_uuid=Id(178);
+        persist();stage_writes=stage_syncs=0;empty(read(limit));Check(!stage_writes&&!stage_syncs,"invalid directory control binding performs no writes");}
+      directory=baseline;persist();auto admitted=read(limit);
+      Check(admitted.ok()&&admitted.retained_image_bytes==limit&&admitted.checkpoint_inventory.inventory_pages.size()==2&&admitted.predecessor.inventory_pages.size()==2,"selected control map binds directory and charges all mixed-profile authority work");
+      const auto exhausted=read(limit-1);empty(exhausted);Check(exhausted.error==E::resource_exhausted,"selected directory verification work cannot be omitted from allowance");
+      auto stale=bootstrap_map;stale.records.pop_back();stale.states[14]=S::quarantined;store_map(stale);
+      Check(read(limit).ok(),"selected secondary control map supersedes obsolete bootstrap authority");
+      directory.records[1].allocation_root.reset();persist();empty(read(limit));
+      store_map(bootstrap_map);Check(read(limit).ok(),"absent directory binding retains valid bootstrap control map");
+      directory=baseline;persist();
+      auto resealed=directory;++resealed.directory_generation;put(15,DirectoryAllocationOracle(resealed));empty(read(limit));persist();
+      for(unsigned bad=0;bad<11;++bad){auto changed=secondary;
+        auto it=std::find_if(changed.records.begin(),changed.records.end(),[](const auto& r){return r.page_number==14;});
+        if(bad==0){changed.records.erase(it);changed.states[14]=S::quarantined;}
+        else{auto& r=*it;if(bad==1)changed.states[14]=S::reserved;if(bad==2)r.page_uuid=Id(205);if(bad==3)++r.page_generation;
+          if(bad==4)r.page_type=6;if(bad==5)r.owner_uuid=Id(205);if(bad==6){r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;}
+          if(bad==7)r.allocation_uuid=map.records.front().allocation_uuid;if(bad==8)r.page_uuid=inv.header.page_uuid;
+          if(bad==9){changed.creator_transaction_uuid=Id(162);changed.creator_local_transaction_id=13;}if(bad==10)r.creator_transaction_uuid=Id(205);}
+        store_map(changed);directory.records[1].allocation_root->sha256=WholeRootHash(AllocationOracle(changed));persist();stage_writes=stage_syncs=0;
+        empty(read(limit));Check(!stage_writes&&!stage_syncs,"selected explicit control map retains original ownership and state checks");
+      }
+      store_map(secondary);directory=baseline;persist();
+      if(p==0&&role==1){byte warm=0;for(unsigned n=0;n<4097;++n)Check(device.ReadAt(0,&warm,1).ok()&&second_device.ReadAt(0,&warm,1).ok(),"warm selected control telemetry before full fault measurement");
+        reads=observed_full_digests=observed_allocations=0;track_reads=count_full_digests=count_allocations=true;admitted=read(limit);track_reads=count_full_digests=count_allocations=false;
+        Check(admitted.ok(),"measure complete selected directory control authority");const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
+        stage_writes=stage_syncs=0;
+        for(unsigned n=1;n<=nr;++n){reads=0;read_fault=n;track_reads=true;auto r=read(limit);track_reads=false;Check(!read_fault,"selected directory control read fault consumed");empty(r);}
+        for(unsigned n=1;n<=nf;++n){full_digest_fault=n;auto r=read(limit);Check(!full_digest_fault,"selected directory control digest fault consumed");empty(r);Check(r.error==E::hash_failure,"selected control hash failure classification");}
+        for(unsigned n=1;n<=5;++n){hash_fault=n;auto r=read(limit);Check(!hash_fault,"selected directory control multipart hash fault consumed");empty(r);}
+        unsigned long consumed=0;
+        for(unsigned long n=0;n<=na;++n){const auto loss=device.failed_io_latency_observations()+second_device.failed_io_latency_observations();
+          allocation_budget=n;auto r=read(limit);const auto remaining=allocation_budget;allocation_budget=-1;
+          if(n<na){Check(remaining<0,"selected directory control allocation fault consumed");++consumed;}
+          if(r.ok()){Check(r.retained_image_bytes==limit&&r.selection->checkpoint_sha256==admitted.selection->checkpoint_sha256&&r.checkpoint_inventory.inventory_pages.size()==2&&r.predecessor.inventory_pages.size()==2,"successful injected selected control read retains complete authority");
+            if(remaining<0)Check(device.failed_io_latency_observations()+second_device.failed_io_latency_observations()==loss+1,"only recorded telemetry loss preserves selected control read success");}
+          else{empty(r);Check(r.error==E::resource_exhausted,"selected control allocation resource classification");}
+          if(n==na)Check(r.ok()&&remaining>=0,"selected control allocation sweep terminal uninjected success");
+        }
+        Check(consumed==na&&!stage_writes&&!stage_syncs,"complete selected control fault sweep is read-only");
+        std::cout<<"directory controls allocations="<<na<<" consumed="<<consumed<<" reads="<<nr<<" digests="<<nf<<std::endl;
+      }
+      Check(device.Close().ok()&&second_device.Close().ok(),"release directory-selected control fixture for independent executable");
+      const auto child=::fork();Check(child>=0,"fork directory selected control reader");
+      if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","directory-controls-probe","--directory-controls-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
+      int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable admits directory-selected secondary controls");
+      continue;
+    }
+    if(directory_staging){
+      auto secondary=map;secondary.header={sizes[q],3,Id(1),Id(7),Id(202),22,104,0,Profile(q)};
+      secondary.object_uuid=Id(179);secondary.records.clear();secondary.states.assign(64,S::quarantined);
+      secondary.map_generation=3;secondary.capacity_generation=2;
+      for(unsigned n:{0u,21u,22u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(220+n);
+        r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;secondary.states[n]=S::allocated;
+        if(n==0){r.page_uuid=second_zero.page_uuid;r.page_generation=second_zero.page_generation;r.page_type=2;r.owner_uuid=Id(7);}
+        if(n==22){r.page_uuid=Id(202);r.page_generation=104;r.page_type=3;r.owner_uuid=Id(179);}
+        if(n==21){r.page_uuid=Id(203);r.page_generation=7;r.page_type=6;r.owner_uuid=Id(101);r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;secondary.states[n]=S::reserved;}
+        secondary.records.push_back(r);}
+      const auto bind=[](const auto& m){return page::NativeFilespaceAllocationRoot{{m.header.filespace_uuid,m.header.page_number,m.header.page_generation,m.header.page_size_profile_uuid},m.object_uuid,WholeRootHash(AllocationOracle(m)),m.map_generation,m.capacity_generation};};
+      directory.records[0].allocation_root=bind(map);directory.records[1].allocation_root=bind(secondary);
+      const auto secondary_bytes=AllocationOracle(secondary);
+      Check(second_device.WriteAt(22*sizes[q],secondary_bytes.data(),secondary_bytes.size()).ok()&&second_device.Sync().ok(),"persist directory-selected secondary map");
+      // The bootstrap map remains well-formed but cannot reserve the destination.
+      auto old=secondary;old.header.page_number=13;old.header.page_generation=103;old.map_generation=1;old.capacity_generation=1;
+      old.states[22]=S::quarantined;old.states[13]=S::allocated;old.states[21]=S::allocated;
+      old.records.back().page_number=13;old.records.back().page_generation=103;
+      std::sort(old.records.begin(),old.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
+      const auto old_bytes=AllocationOracle(old);Check(second_device.WriteAt(13*sizes[q],old_bytes.data(),old_bytes.size()).ok()&&second_device.Sync().ok(),"persist stale bootstrap allocation map");
+      persist();
+      const auto baseline=directory;
+      for(unsigned target=0;target<2;++target){auto leaf=LeafExample(target?q:p);if(target){leaf.header.filespace_uuid=Id(7);leaf.header.page_uuid=Id(203);}
+        auto& dest=target?second_device:device;const auto size=target?sizes[q]:sizes[p];const Bytes blank(size);Bytes observed(size);
+        const auto stage=[&](u64 allowance){return db::StageNativeCatalogLeafFromOpenDevices(devices,CheckpointRef(current),inv.inventory.entries[0].identity,leaf,allowance);};
+        const auto no_write=[&](const auto& r){Check(!r.ok()&&!r.receipt&&!stage_writes&&!stage_syncs,"invalid selected allocation descriptor returns no receipt or writes");Check(dest.ReadAt(21*size,observed.data(),size).ok()&&observed==blank,"refused selected map leaves destination blank");};
+        for(unsigned bad=0;bad<7;++bad){directory=baseline;auto& binding=*directory.records[target].allocation_root;
+          if(bad==0)binding.sha256[0]^=1;if(bad==1)++binding.map_generation;if(bad==2)++binding.capacity_generation;
+          if(bad==3)++binding.page.page_generation;if(bad==4)binding.object_uuid=Id(178);if(bad==5)binding.page.page_number=23;
+          if(bad==6){directory.records[target].allocation_root.reset();if(!target)continue;}
+          persist();stage_writes=stage_syncs=0;no_write(stage(64*u64{sizes[p]}));}
+        directory=baseline;persist();stage_writes=stage_syncs=0;no_write(stage(1));
+        const auto staged=stage(64*u64{sizes[p]});
+        if(!staged.ok())std::cerr<<"directory stage target="<<target<<" profile="<<p<<" error="<<static_cast<int>(staged.error)<<" map="<<static_cast<int>(staged.allocation_error)<<'\n';
+        Check(staged.ok()&&stage_writes==1&&stage_syncs==1,"actual staging uses exact selected directory allocation map");
+        Check(dest.ReadAt(21*size,observed.data(),size).ok()&&observed==LeafOracle(leaf),"selected directory staging writes independent exact leaf image");
+        stage_writes=stage_syncs=0;Check(stage(64*u64{sizes[p]}).ok()&&!stage_writes&&stage_syncs==1,"selected directory staging exact retry");
+        if(p==0&&role==1){
+          byte warm=0;for(unsigned n=0;n<4097;++n)Check(device.ReadAt(0,&warm,1).ok()&&second_device.ReadAt(0,&warm,1).ok(),"warm selected directory staging telemetry");
+          reads=observed_allocations=observed_full_digests=0;track_reads=count_allocations=count_full_digests=true;
+          const auto measured=stage(64*u64{sizes[p]});track_reads=count_allocations=count_full_digests=false;
+          Check(measured.ok(),"measure selected directory retry fault positions");const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
+          const auto refused=[&](const auto& r){Check(!r.ok()&&!r.receipt&&!stage_writes,"selected directory fault publishes no receipt and preserves staged bytes");};
+          stage_writes=0;
+          for(unsigned n=1;n<=nr;++n){reads=0;read_fault=n;track_reads=true;const auto r=stage(64*u64{sizes[p]});track_reads=false;Check(!read_fault,"selected directory read fault consumed");refused(r);}
+          for(unsigned n=1;n<=nf;++n){full_digest_fault=n;const auto r=stage(64*u64{sizes[p]});Check(!full_digest_fault,"selected directory full hash fault consumed");refused(r);}
+          for(unsigned n=1;n<=5;++n){hash_fault=n;const auto r=stage(64*u64{sizes[p]});Check(!hash_fault,"selected directory multipart hash fault consumed");refused(r);}
+          unsigned long consumed=0;
+          for(unsigned long n=0;n<=na;++n){const auto loss=device.failed_io_latency_observations()+second_device.failed_io_latency_observations();
+            allocation_budget=n;const auto r=stage(64*u64{sizes[p]});const auto remaining=allocation_budget;allocation_budget=-1;
+            if(n<na){Check(remaining<0,"selected directory allocation fault consumed");++consumed;}
+            if(r.ok()){if(remaining<0)Check(device.failed_io_latency_observations()+second_device.failed_io_latency_observations()==loss+1,"only recorded optional telemetry failure can preserve directory staging success");}
+            else{refused(r);using L=db::NativeCatalogLeafStageError;Check(r.error==L::resource_exhausted||r.checkpoint_error==db::NativeCheckpointError::resource_exhausted||r.directory_error==page::NativeDirectoryError::resource_exhausted||r.allocation_error==page::NativeAllocationError::resource_exhausted||r.leaf_error==db::NativeCatalogLeafError::resource_exhausted,"selected directory allocation failure retains resource classification");}
+            if(n==na)Check(r.ok()&&remaining>=0,"selected directory allocation sweep terminal uninjected success");
+          }
+          Check(consumed==na&&dest.ReadAt(21*size,observed.data(),size).ok()&&observed==LeafOracle(leaf),"complete selected directory fault sweep preserves exact staged image");
+          std::cout<<"directory stage target="<<target<<" allocations="<<na<<" consumed="<<consumed<<" reads="<<nr<<" digests="<<nf<<std::endl;
+        }
+      }
+      Check(device.Close().ok()&&second_device.Close().ok(),"release selected directory staging fixture for independent process");
+      const auto child=::fork();Check(child>=0,"fork selected directory staging reader");
+      if(child==0){const auto profile=std::to_string(p);::execl("/proc/self/exe","directory-stage-probe","--directory-stage-probe",fixture.root.c_str(),profile.c_str(),nullptr);::_exit(125);}
+      int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable follows selected directory roots and verifies staged images");
+      continue;
+    }
+    if(history_only){
+      system.checkpoint_generation=1;system.checkpoint=selection.previous_checkpoint;
+      page::NativeHorizonRecord observation;observation.local_boundary=13;observation.owner_uuid=Id(172);
+      observation.checkpoint_object_uuid=initial.object_uuid;observation.checkpoint_generation=1;
+      observation.checkpoint=selection.previous_checkpoint;observation.horizon_uuid=Id(173);observation.timeline_uuid=Id(97);
+      horizon.total_records=1;horizon.records.push_back(observation);persist();
+      const auto system_read=[&](u64 limit){return db::VerifyCurrentNativeCheckpointSystemStateFromOpenDevices(Id(1),devices,CheckpointRef(current),limit);};
+      const auto horizon_read=[&](u64 limit){return db::VerifyCurrentNativeCheckpointHorizonFromOpenDevices(Id(1),devices,CheckpointRef(current),limit);};
+      // Selected admission 7P, one older checkpoint/inventory 2P, then
+      // system state P or horizon and retention 2P. No selected proof refund.
+      const u64 system_limit=10*u64{sizes[p]},horizon_limit=11*u64{sizes[p]};
+      const auto sr=system_read(system_limit);const auto hr=horizon_read(horizon_limit);
+      if(!sr.ok()||sr.retained_image_bytes!=system_limit||!hr.ok()||hr.retained_image_bytes!=horizon_limit)
+        std::cerr<<"selected history system="<<static_cast<int>(sr.error)<<" bytes="<<sr.retained_image_bytes
+          <<" horizon="<<static_cast<int>(hr.error)<<" bytes="<<hr.retained_image_bytes<<std::endl;
+      Check(sr.ok()&&sr.retained_image_bytes==system_limit&&sr.checkpoints.checkpoints.size()==2&&
+        sr.checkpoints.retained_image_bytes==9*u64{sizes[p]}&&sr.checkpoints.checkpoints.front().retained_image_bytes==7*u64{sizes[p]}&&
+        sr.checkpoints.checkpoints.back().checkpoint->header.page_number==19,"system history retains actual selected-root authority work");
+      Check(hr.ok()&&hr.retained_image_bytes==horizon_limit&&hr.checkpoints.checkpoints.size()==2&&
+        hr.checkpoints.retained_image_bytes==9*u64{sizes[p]}&&hr.checkpoints.checkpoints.front().retained_image_bytes==7*u64{sizes[p]}&&
+        hr.horizons.pages.front().root->records.front().checkpoint==selection.previous_checkpoint,"horizon history retains actual selected-root authority work");
+      const auto empty_system=[&](const auto& r){Check(!r.ok()&&!r.retained_image_bytes&&r.checkpoints.checkpoints.empty()&&
+        !r.checkpoints.retained_image_bytes&&!r.system_state.state&&r.system_state.bytes.empty(),"selected system failure exposes no prefix");};
+      const auto empty_horizon=[&](const auto& r){Check(!r.ok()&&!r.retained_image_bytes&&r.checkpoints.checkpoints.empty()&&
+        !r.checkpoints.retained_image_bytes&&r.horizons.pages.empty()&&r.retention.images.empty(),"selected horizon failure exposes no prefix");};
+      auto short_system=system_read(system_limit-1);empty_system(short_system);
+      Check(short_system.error==db::NativeCheckpointError::resource_exhausted||
+        (short_system.error==db::NativeCheckpointError::inventory_failure&&short_system.checkpoints.inventory_error==page::NativeInventoryError::resource_exhausted),"selected system exact allowance enforced");
+      auto short_horizon=horizon_read(horizon_limit-1);empty_horizon(short_horizon);
+      Check(short_horizon.error==db::NativeCheckpointError::resource_exhausted||
+        (short_horizon.error==db::NativeCheckpointError::retention_failure&&short_horizon.retention_error==page::NativeRetentionError::resource_exhausted),"selected horizon exact allowance enforced");
+      if(p==0&&role==1){
+        Bytes before(64*sizes[p]),after(before.size());
+        Check(device.ReadAt(0,before.data(),before.size()).ok(),"snapshot complete selected history fixture");
+        byte warm=0;for(unsigned n=0;n<4097;++n){Check(device.ReadAt(0,&warm,1).ok()&&second_device.ReadAt(0,&warm,1).ok(),"warm bounded optional read telemetry before measuring fault positions");}
+        const auto faults=[&](const auto& reader,const auto& no_prefix,u64 limit){
+          reads=observed_full_digests=observed_allocations=0;track_reads=count_full_digests=count_allocations=true;
+          const auto baseline=reader(limit);track_reads=count_full_digests=count_allocations=false;
+          Check(baseline.ok(),"selected history fault baseline succeeds");
+          const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
+          for(unsigned n=1;n<=nr;++n){reads=0;read_fault=n;track_reads=true;const auto value=reader(limit);track_reads=false;
+            Check(!read_fault,"selected history read failure consumed");no_prefix(value);}
+          for(unsigned n=1;n<=nf;++n){full_digest_fault=n;const auto value=reader(limit);
+            Check(!full_digest_fault,"selected history full digest failure consumed");no_prefix(value);}
+          for(unsigned mode=1;mode<=5;++mode){hash_fault=mode;const auto value=reader(limit);
+            Check(!hash_fault,"selected history multipart failure consumed");no_prefix(value);}
+          unsigned long consumed=0,positions=0;
+          for(unsigned long n=history_shard;n<=na;n+=history_stride){++positions;const auto loss=device.failed_io_latency_observations()+second_device.failed_io_latency_observations();
+            allocation_budget=n;const auto value=reader(limit);const auto remaining=allocation_budget;allocation_budget=-1;
+            if(remaining<0)++consumed;
+            if(value.ok()){Check(value.retained_image_bytes==limit,"selected history allocation success is complete");
+              if(remaining<0)Check(device.failed_io_latency_observations()+second_device.failed_io_latency_observations()==loss+1,"only recorded telemetry loss permits consumed allocation success");}
+            else{Check(remaining<0,"selected history allocation failure consumed");no_prefix(value);}
+            if(n==na)Check(value.ok(),"selected history allocation terminal success");}
+          Check(reader(limit).ok(),"selected history succeeds after every fault shard");
+          std::cout<<"selected history budget="<<limit<<" allocations="<<na<<" reads="<<nr<<" digests="<<nf
+            <<" shard="<<history_shard<<" stride="<<history_stride<<" positions="<<positions<<" consumed="<<consumed<<std::endl;
+        };
+        stage_writes=stage_syncs=0;faults(system_read,empty_system,system_limit);faults(horizon_read,empty_horizon,horizon_limit);
+        Check(!stage_writes&&!stage_syncs&&device.ReadAt(0,after.data(),after.size()).ok()&&after==before,"selected history failures preserve every primary byte without writes or barriers");
+      }
+      stage_writes=stage_syncs=0;
+      system.checkpoint->page_number=18;persist();stage_writes=stage_syncs=0;empty_system(system_read(system_limit));
+      Check(!stage_writes&&!stage_syncs,"unreachable system observation does not mutate files");
+      system.checkpoint=selection.previous_checkpoint;horizon.records.front().checkpoint->page_number=18;persist();stage_writes=stage_syncs=0;
+      empty_horizon(horizon_read(horizon_limit));Check(!stage_writes&&!stage_syncs,"unreachable horizon observation does not mutate files");
+      continue;
+    }
     if(inventory_staging){
-      using IE=db::NativeInventoryStageError;
       auto head=inv,tail=inv;head.header.page_number=23;head.header.page_generation=107;head.header.page_uuid=Id(204);head.inventory_generation=20;
       tail.header.page_number=24;tail.header.page_generation=108;tail.header.page_uuid=Id(205);tail.inventory_generation=20;
       page::NativeAllocationMap secondary_map;
@@ -3333,22 +3759,43 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
         secondary_map.map_generation=secondary_map.capacity_generation=1;secondary_map.total_pages=64;
         secondary_map.creator_transaction_uuid=Id(98);secondary_map.creator_local_transaction_id=17;secondary_map.states.assign(64,S::quarantined);
         secondary_map.states[0]=secondary_map.states[13]=S::allocated;
-        secondary_map.records.push_back({0,Id(220),Id(8),Id(7),Id(98),17,7,0,1});
-        secondary_map.records.push_back({13,Id(233),Id(202),Id(179),Id(98),17,103,0,3});
+        secondary_map.records.push_back({0,Id(220),Id(8),Id(7),Id(98),17,7,0,1,{}});
+        secondary_map.records.push_back({13,Id(233),Id(202),Id(179),Id(98),17,103,0,3,{}});
       }
       head.inventory.entries.pop_back();tail.inventory.entries.erase(tail.inventory.entries.begin());head.next=InventoryRef(tail);tail.previous=InventoryRef(head);
       std::vector<page::NativeTransactionInventoryPage> chain{head,tail};
       for(const auto& page:chain){const auto& h=page.header;auto& owning_map=h.filespace_uuid==Id(2)?map:secondary_map;owning_map.states[h.page_number]=S::reserved;
-        owning_map.records.push_back({h.page_number,Id(120+h.page_number),h.page_uuid,page.object_uuid,Id(162),13,h.page_generation,0,0x301});}
+        owning_map.records.push_back({h.page_number,Id(120+h.page_number),h.page_uuid,page.object_uuid,Id(162),13,h.page_generation,0,0x301,{}});}
       std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
       const auto persist_stage=[&](){persist();if(mixed_inventory){const auto mb=AllocationOracle(secondary_map);Check(second_device.WriteAt(13*sizes[q],mb.data(),mb.size()).ok()&&second_device.Sync().ok(),"persist mixed inventory reservation map");}};persist_stage();
-      const u64 stage_budget=mixed_inventory?std::max(8*sizes[p]+sizes[q],4*sizes[p]+3*sizes[q]):9*sizes[p];const Bytes blank(sizes[p],0),tail_blank(tail.header.page_size_bytes,0);const std::vector<Bytes> expected{InventoryOracle(head,13,13,13),InventoryOracle(tail,18,18,18)};
+      // Selected successor admission retains 7P: two selector images, both
+      // checkpoint/inventory pairs and the selected allocation map. Add the
+      // directory P, destination map, both candidate images and one scratch
+      // page. Mixed filespaces require the maximum of the two destination passes.
+      const u64 old_stage_budget=mixed_inventory?std::max(8*u64{sizes[p]}+sizes[q],4*u64{sizes[p]}+3*u64{sizes[q]}):9*u64{sizes[p]};
+      const u64 stage_budget=mixed_inventory?std::max(11*u64{sizes[p]}+sizes[q],9*u64{sizes[p]}+3*u64{sizes[q]}):12*u64{sizes[p]};const Bytes blank(sizes[p],0),tail_blank(tail.header.page_size_bytes,0);const std::vector<Bytes> expected{InventoryOracle(head,13,13,13),InventoryOracle(tail,18,18,18)};
       const auto put_tail=[&](const Bytes& b){auto& target=mixed_inventory?second_device:device;Check(target.WriteAt(24*u64{tail.header.page_size_bytes},b.data(),b.size()).ok()&&target.Sync().ok(),"persist inventory destination preimage");};
-      const auto reset=[&](){put(23,blank);put_tail(tail_blank);};
       const auto stage=[&](u64 limit){return db::StageNativeInventorySuccessorFromOpenDevices(devices,CheckpointRef(current),inv.inventory.entries.front().identity,chain,limit);};
-      const auto bytes=[&](unsigned slot){const bool second=mixed_inventory&&slot==24;const auto size=second?sizes[q]:sizes[p];auto& target=second?second_device:device;Bytes b(size);Check(target.ReadAt(slot*u64{size},b.data(),b.size()).ok(),"read staged inventory bytes");return b;};
+      const auto bytes=[&](unsigned slot){const bool second=mixed_inventory&&slot==24;const auto size=second?sizes[q]:sizes[p];auto& target=second?second_device:device;Bytes b(size);const auto io=target.ReadAt(slot*u64{size},b.data(),b.size());Check(io.ok()&&io.bytes_transferred==b.size(),"read complete staged inventory bytes");return b;};
+      // Inspect the actual destination on every reset. Most injected failures
+      // occur before mutation, so rewriting and synchronizing an already zero
+      // page adds no recovery coverage. Changed bytes still get a durable reset.
+      const auto reset=[&](){if(bytes(23)!=blank)put(23,blank);if(bytes(24)!=tail_blank)put_tail(tail_blank);};
       const auto no_receipts=[&](const auto& r){Check(!r.ok()&&r.receipts.empty(),"inventory staging failure has no successful prefix");};
-      reset();Check(stage(stage_budget).ok(),"cold inventory stage initializes transition consistency");
+      const auto resource_failure=[](const auto& r){return r.error==db::NativeInventoryStageError::resource_exhausted||r.checkpoint_error==db::NativeCheckpointError::resource_exhausted||r.directory_error==page::NativeDirectoryError::resource_exhausted||r.allocation_error==page::NativeAllocationError::resource_exhausted;};
+      auto dirty_head=blank,dirty_tail=tail_blank;dirty_head.front()=0xa5;dirty_tail.back()=0x5a;put(23,dirty_head);put_tail(dirty_tail);
+      stage_writes=stage_syncs=0;reset();Check(stage_writes==2&&stage_syncs==2&&bytes(23)==blank&&bytes(24)==tail_blank,"fixture reset durably restores both actual dirty destinations");
+      stage_writes=stage_syncs=0;reset();Check(!stage_writes&&!stage_syncs,"already blank actual destinations need no fixture rewrite");
+      reset();const auto selected_directory=db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),devices,CheckpointRef(current),stage_budget);
+      Check(selected_directory.ok()&&selected_directory.retained_image_bytes==8*u64{sizes[p]},"inventory staging retains selected successor and predecessor proof plus directory");
+      stage_writes=stage_syncs=0;const auto insufficient=stage(old_stage_budget);no_receipts(insufficient);
+      Check(resource_failure(insufficient)&&!stage_writes&&!stage_syncs&&bytes(23)==blank&&bytes(24)==tail_blank,"old inventory allowance refuses without a staged prefix or barriers");
+      const auto cold=stage(stage_budget);
+      if(!cold.ok())std::cerr<<"cold inventory stage error="<<int(cold.error)<<" cp="<<int(cold.checkpoint_error)<<" map="<<int(cold.allocation_error)<<" inv="<<int(cold.inventory_error)<<'\n';
+      Check(cold.ok(),"cold inventory stage initializes transition consistency");
+      if(p==0&&role==1&&!mixed_inventory){byte warm=0;for(unsigned n=0;n<4097;++n){
+        const auto a=device.ReadAt(0,&warm,1),b=second_device.ReadAt(0,&warm,1);
+        Check(a.ok()&&a.bytes_transferred==1&&b.ok()&&b.bytes_transferred==1,"warm bounded inventory telemetry before fault-site measurement");}}
       reset();reads=observed_allocations=observed_full_digests=0;stage_writes=stage_syncs=0;track_reads=count_allocations=count_full_digests=true;
       auto staged=stage(stage_budget);track_reads=count_allocations=count_full_digests=false;
       const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
@@ -3357,7 +3804,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       for(unsigned i=0;i<2;++i){const auto& receipt=staged.receipts[i];Check(bytes(23+i)==expected[i]&&receipt.page==InventoryRef(chain[i])&&receipt.page_uuid==chain[i].header.page_uuid&&receipt.inventory_uuid==Id(44)&&receipt.allocation_uuid==Id(143+i)&&receipt.transaction.transaction_uuid.value==Id(162)&&receipt.sha256==WholeRootHash(expected[i]),"ordered receipts match independently encoded actual inventory pages");}
       stage_writes=stage_syncs=0;Check(stage(stage_budget).ok()&&stage_writes==0&&stage_syncs==2,"idempotent complete inventory retry syncs both pages");
       Check(read(budget).checkpoint_inventory.inventory_generation==19&&bytes(14)==InventoryOracle(inv,13,13,13),"staging does not publish inventory or change old bytes");
-      reset();no_receipts(stage(stage_budget-1));Check(bytes(23)==blank&&bytes(24)==tail_blank,"inventory preflight budget refuses before writes");
+      reset();stage_writes=stage_syncs=0;const auto short_budget=stage(stage_budget-1);no_receipts(short_budget);Check(resource_failure(short_budget)&&!stage_writes&&!stage_syncs&&bytes(23)==blank&&bytes(24)==tail_blank,"one-byte-short complete inventory preflight budget refuses before writes");
       const auto original=chain;
       for(unsigned fault=0;fault<12;++fault){chain=original;
         if(fault==0)chain.back().previous.reset();if(fault==1)chain.back().inventory_generation++;if(fault==2)chain.back().object_uuid=Id(206);
@@ -3378,14 +3825,20 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       reservation_map=original_map;inv.inventory.entries.front().rollback_only=true;persist_stage();stage_writes=0;no_receipts(stage(stage_budget));Check(!stage_writes,"rollback-only inventory owner cannot stage");
       inv.inventory.entries.front().rollback_only=false;persist_stage();
       if(p==0&&role==1&&!mixed_inventory){
-        unsigned long allocation_sites=0;bool allocation_terminal=false;
-        for(unsigned long fault=0;fault<=na;++fault){reset();const auto loss=device.failed_io_latency_observations()+second_device.failed_io_latency_observations();
-          allocation_budget=fault;staged=stage(stage_budget);const auto remaining=allocation_budget;allocation_budget=-1;
-          if(staged.ok()){Check(staged.receipts.size()==2&&bytes(23)==expected[0]&&bytes(24)==expected[1],"inventory success wrote exact complete chain");
-            if(remaining<0){Check(device.failed_io_latency_observations()+second_device.failed_io_latency_observations()==loss+1,"only isolated recorded telemetry loss permits consumed allocation fault");continue;}
-            allocation_sites=fault;allocation_terminal=true;break;}
-          Check(remaining<0,"inventory allocation injection actually consumed");no_receipts(staged);}
-        Check(allocation_terminal,"inventory allocation sweep reached uninjected success");
+        if(inventory_allocation_shard>=0){unsigned long positions=0,consumed=0;
+          for(unsigned long fault=static_cast<unsigned>(inventory_allocation_shard);fault<=na;fault+=16){
+            reset();const auto loss=device.failed_io_latency_observations()+second_device.failed_io_latency_observations();++positions;
+            allocation_budget=fault;staged=stage(stage_budget);const auto remaining=allocation_budget;allocation_budget=-1;
+            if(remaining<0)++consumed;
+            if(staged.ok()){Check(staged.receipts.size()==2&&bytes(23)==expected[0]&&bytes(24)==expected[1],"inventory success wrote exact complete chain");
+              if(remaining<0)Check(device.failed_io_latency_observations()+second_device.failed_io_latency_observations()==loss+1,"only isolated recorded telemetry loss permits consumed allocation fault");}
+            else{Check(remaining<0,"inventory allocation injection actually consumed");no_receipts(staged);}
+            if(fault<na)Check(remaining<0,"every measured inventory allocation position reached");
+            else Check(staged.ok()&&remaining>=0,"inventory allocation terminal position succeeds without injection");
+          }
+          reset();Check(stage(stage_budget).ok()&&bytes(23)==expected[0]&&bytes(24)==expected[1],"inventory staging succeeds after every allocation shard");
+          std::cout<<"inventory stage allocations="<<na<<" shard="<<inventory_allocation_shard<<" stride=16 positions="<<positions<<" consumed="<<consumed<<std::endl;
+        }
         for(unsigned fault=1;fault<=nr;++fault){reset();reads=0;read_fault=fault;track_reads=true;staged=stage(stage_budget);track_reads=false;Check(!read_fault,"inventory read fault consumed");no_receipts(staged);}
         for(unsigned fault=1;fault<=nf;++fault){reset();full_digest_fault=fault;staged=stage(stage_budget);Check(!full_digest_fault,"inventory full hash fault consumed");no_receipts(staged);}
         for(unsigned mode=1;mode<=5;++mode){reset();hash_fault=mode;no_receipts(stage(stage_budget));Check(!hash_fault,"inventory multipart hash fault consumed");}
@@ -3400,7 +3853,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
         reset();stage_writes=stage_syncs=0;auto reversed=devices;std::reverse(reversed.begin(),reversed.end());std::atomic<unsigned> completed{0};
         std::thread one([&]{if(stage(stage_budget).ok())++completed;}),two([&]{if(db::StageNativeInventorySuccessorFromOpenDevices(reversed,CheckpointRef(current),inv.inventory.entries.front().identity,chain,stage_budget).ok())++completed;});
         one.join();two.join();Check(completed==2&&stage_writes==2&&stage_syncs==4,"opposite-order inventory batches serialize writes and exact retry");
-        std::cout<<"inventory stage allocation_sites="<<allocation_sites<<" measured_allocations="<<na<<" reads="<<nr<<" digests="<<nf<<std::endl;
+        std::cout<<"inventory stage measured_allocations="<<na<<" reads="<<nr<<" digests="<<nf<<" allocation_shard="<<inventory_allocation_shard<<std::endl;
       }
       if(mixed_inventory){
         reset();stage_write_fault=3;stage_write_fault_after=2;no_receipts(stage(stage_budget));Check(!stage_write_fault&&!stage_write_fault_after&&bytes(23)==expected[0]&&bytes(24)!=tail_blank&&bytes(24)!=expected[1],"mixed-filespace late partial write returns no prefix receipt");
@@ -3418,7 +3871,10 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
     Check(result.ok()&&result.selection->selection_generation==2&&result.checkpoint_inventory.checkpoint->header.page_number==36&&result.predecessor.checkpoint->header.page_number==19&&result.allocation.state_counts[0]==1&&result.retained_image_bytes==7*sizes[p],"actual bound selector and newer allocation counts");
     consumers(CheckpointRef(current),true);consumers(CheckpointRef(initial),false);empty(read(7*sizes[p]-1));
     Check(!page::ReadNativeAllocationChainFromOpenDevice(device,{Id(1),Id(2),Profile(p)},budget).ok(),"new map was not read from the stale bootstrap allocation address");
-    auto leaf=LeafExample(p);const auto staged=db::StageNativeCatalogLeafFromOpenDevices(devices,CheckpointRef(current),inv.inventory.entries[0].identity,leaf,budget);
+    auto leaf=LeafExample(p);stage_writes=stage_syncs=0;
+    const auto insufficient_leaf=db::StageNativeCatalogLeafFromOpenDevices(devices,CheckpointRef(current),inv.inventory.entries[0].identity,leaf,budget);
+    Check(!insufficient_leaf.ok()&&!insufficient_leaf.receipt&&!stage_writes&&!stage_syncs,"selected leaf cannot use an allowance omitting predecessor and selector work");
+    const auto staged=db::StageNativeCatalogLeafFromOpenDevices(devices,CheckpointRef(current),inv.inventory.entries[0].identity,leaf,11*u64{sizes[p]});
     Check(staged.ok(),"actual leaf staging follows selected map");Bytes actual(sizes[p]);Check(device.ReadAt(21*sizes[p],actual.data(),actual.size()).ok()&&actual==LeafOracle(leaf),"selected-map staging persists exact leaf");
     if(p==0&&role==1){
       const auto write_count=stage_writes;
@@ -3468,7 +3924,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       terminal.final_unix_epoch_millis=200;inv.inventory.entries.insert(inv.inventory.entries.begin()+1,terminal);
       const auto base=inv;
       preceding_inventory=base;preceding_inventory->header.page_number=22;preceding_inventory->header.page_uuid=Id(207);
-      map.states[22]=S::allocated;map.records.push_back({22,Id(208),Id(207),inv.object_uuid,Id(98),17,inv.header.page_generation,0,0x301});
+      map.states[22]=S::allocated;map.records.push_back({22,Id(208),Id(207),inv.object_uuid,Id(98),17,inv.header.page_generation,0,0x301,{}});
       std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
       const auto old_base=*preceding_inventory;
       const auto reset_history=[&](){inv=base;preceding_inventory=old_base;inventory_summary=preceding_summary={13,13,13};};
@@ -3574,6 +4030,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       second_zero=Example(q,2);second_zero.bootstrap.filespace_uuid=Id(7);second_zero.page_uuid=Id(8);second_zero.free_pages=second_zero.preallocated_pages=0;
       for(auto& r:second_zero.roots)r.filespace_uuid=Id(7);
       second_zero.roots[2].object_uuid=Id(179);
+      directory.records[1].bootstrap=second_zero.bootstrap;
       inventory_tail=inv;inventory_tail->header={sizes[q],0x301,Id(1),Id(7),Id(201),14,104,0,Profile(q)};
       inventory_tail->inventory.entries.erase(inventory_tail->inventory.entries.begin());inventory_tail->previous=InventoryRef(inv);
       inv.inventory.entries.pop_back();inv.next=InventoryRef(*inventory_tail);
@@ -3587,7 +4044,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
         control_map.records.push_back(r);}
       const auto store_controls=[&](const auto& map_image){persist();const auto mb=AllocationOracle(map_image);
         Check(second_device.WriteAt(13*sizes[q],mb.data(),mb.size()).ok()&&second_device.Sync().ok(),"persist continuation allocation authority");};
-      const u64 mixed_budget=7*sizes[p]+3*sizes[q];store_controls(control_map);
+      const u64 mixed_budget=8*sizes[p]+3*sizes[q];store_controls(control_map);
       reads=observed_allocations=observed_full_digests=0;track_reads=count_allocations=count_full_digests=true;
       auto admitted=read(mixed_budget);track_reads=count_allocations=count_full_digests=false;
       const auto mixed_reads=reads,mixed_digests=observed_full_digests;const auto mixed_allocations=observed_allocations;
@@ -3621,7 +4078,7 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
         if(fault==10)record.creator_transaction_uuid=Id(203);
         store_controls(changed);empty(read(mixed_budget));
       }
-      second_zero=old_second;inv=old_inv;inventory_tail.reset();
+      second_zero=old_second;directory.records[1].bootstrap=second_zero.bootstrap;inv=old_inv;inventory_tail.reset();
     }
     map=saved;persist();auto bad=SelectionOracle(selection);bad.back()^=1;put(31,bad);empty(read(budget));consumers(CheckpointRef(initial),false);persist();
     Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"independent read-only selector reopen");Check(read(budget).ok(),"actual bound selector survives reopen");consumers(CheckpointRef(current),true);
@@ -3632,6 +4089,47 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
   }
 }
 int main(int argc,char** argv) {
+  if(argc==4&&std::string_view(argv[1])=="--directory-graph-probe"){
+    try{const std::filesystem::path root=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3]));if(p>=5)return 2;const auto q=(p+1)%5;
+      disk::FileDevice first,second;if(!first.Open((root/"bound-selector").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((root/"bound-selector-secondary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 3;
+      const std::vector<disk::NativeFilespaceDevice> files{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+      const auto bound=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),files,Id(2),8*u64{sizes[p]}+3*u64{sizes[q]});if(!bound.ok())return 4;const auto& s=*bound.selection;
+      const auto r=db::ReadNativeManagementControlGraphFromOpenDevices(Id(1),files,Id(2),{s.checkpoint,s.checkpoint_object_uuid,s.checkpoint_sha256,s.checkpoint_generation,s.root_set_generation,s.timeline_uuid},14*u64{sizes[p]}+4*u64{sizes[q]});
+      return r.ok()&&r.verified_image_bytes==14*u64{sizes[p]}+4*u64{sizes[q]}&&r.publications.empty()&&r.allocations.empty()?0:5;
+    }catch(...){return 6;}}
+  if(argc==2&&std::string_view(argv[1])=="--directory-graph-only"){
+    try{CanonicalBoundCheckpointSelection(false,false,false,0,1,-1,false,false,true);std::cout<<"directory immutable graph checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==4&&std::string_view(argv[1])=="--directory-controls-probe"){
+    try{const std::filesystem::path root=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3]));if(p>=5)return 2;const auto q=(p+1)%5;
+      disk::FileDevice first,second;if(!first.Open((root/"bound-selector").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((root/"bound-selector-secondary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 3;
+      const auto r=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},Id(2),8*u64{sizes[p]}+3*u64{sizes[q]});
+      return r.ok()&&r.retained_image_bytes==8*u64{sizes[p]}+3*u64{sizes[q]}&&r.selection->selection_generation==2&&r.checkpoint_inventory.inventory_pages.size()==2&&r.predecessor.inventory_pages.size()==2&&r.checkpoint_inventory.inventory_pages.back().header.filespace_uuid==Id(7)?0:4;
+    }catch(...){return 5;}}
+  if(argc==2&&std::string_view(argv[1])=="--directory-controls-only"){
+    try{CanonicalBoundCheckpointSelection(false,false,false,0,1,-1,false,true);std::cout<<"directory selected controls checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==2&&std::string_view(argv[1])=="--checkpoint-directory-allocation-only"){
+    try{CanonicalCheckpointDirectory(true);std::cout<<"extended directory chain checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==4&&std::string_view(argv[1])=="--directory-stage-probe"){
+    try{const std::filesystem::path root=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3]));if(p>=5)return 2;const auto q=(p+1)%5;
+      disk::FileDevice first,second;if(!first.Open((root/"bound-selector").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((root/"bound-selector-secondary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 3;
+      const std::vector<disk::NativeFilespaceDevice> files{{Id(2),Profile(p),&first},{Id(7),Profile(q),&second}};
+      const auto directory=db::VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(Id(1),files,{9,0x300,Id(2),36,110,Profile(p),Id(49)},64*u64{sizes[p]});
+      if(!directory.ok()||directory.directory.pages.size()!=1||directory.directory.pages.front().directory->records.size()!=2)return 4;
+      for(unsigned target=0;target<2;++target){const auto& record=directory.directory.pages.front().directory->records[target];if(!record.allocation_root)return 5;
+        const auto& r=*record.allocation_root;const auto profile=target?q:p;const auto fs=Id(target?7:2);auto& file=target?second:first;
+        if(r.page!=disk::NativePageReference{fs,target?22u:35u,104,Profile(profile)}||r.object_uuid!=Id(target?179:43)||r.map_generation!=(target?3u:2u)||r.capacity_generation!=(target?2u:1u))return 6;
+        const auto map=page::ReadNativeAllocationChainAtRootFromOpenDevice(file,{Id(1),fs,Profile(profile)},{3,3,fs,r.page.page_number,104,Profile(profile),r.object_uuid},sizes[profile]);
+        if(!map.ok()||WholeRootHash(map.pages.front().bytes)!=r.sha256||map.pages.front().map->map_generation!=r.map_generation||map.pages.front().map->capacity_generation!=r.capacity_generation)return 7;
+        auto leaf=LeafExample(profile);if(target){leaf.header.filespace_uuid=Id(7);leaf.header.page_uuid=Id(203);}Bytes bytes(sizes[profile]);const auto io=file.ReadAt(21*u64{sizes[profile]},bytes.data(),bytes.size());
+        if(!io.ok()||io.bytes_transferred!=bytes.size()||bytes!=LeafOracle(leaf))return 8;
+      }return 0;
+    }catch(...){return 9;}}
+  if(argc==2&&std::string_view(argv[1])=="--directory-stage-only"){
+    try{CanonicalBoundCheckpointSelection(false,false,false,0,1,-1,true);std::cout<<"directory selected staging checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--checkpoint-owner-only"){
     try {CanonicalCheckpoints();CanonicalCheckpointFiles();CanonicalCheckpointInventoryPair();
       std::cout<<"checkpoint owner checks="<<checks<<" failures=0\n";return 0;}
@@ -3650,6 +4148,13 @@ int main(int argc,char** argv) {
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--inventory-stage-only"){
     try{CanonicalBoundCheckpointSelection(true);std::cout<<"inventory stage checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==3&&std::string_view(argv[1])=="--inventory-stage-allocation-shard"){
+    const std::string_view value=argv[2];int shard=-1;
+    if(value.size()==1&&value[0]>='0'&&value[0]<='9')shard=value[0]-'0';
+    else if(value.size()==2&&value[0]=='1'&&value[1]>='0'&&value[1]<='5')shard=10+value[1]-'0';
+    if(shard<0)return 2;
+    try{CanonicalBoundCheckpointSelection(true,false,false,0,1,shard);std::cout<<"inventory allocation shard checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==4&&std::string_view(argv[1])=="--inventory-stage-probe"){
     const std::filesystem::path root=argv[2];const auto p=static_cast<unsigned>(std::stoul(argv[3]));if(p>=5)return 2;
@@ -3695,6 +4200,12 @@ int main(int argc,char** argv) {
   if(argc==2&&std::string_view(argv[1])=="--bound-selector-only"){
     try{CanonicalBoundCheckpointSelection();std::cout<<"bound selector checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==2&&std::string_view(argv[1])=="--bound-history-only"){
+    try{CanonicalBoundCheckpointSelection(false,false,true);std::cout<<"bound history checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==3&&std::string_view(argv[1])=="--bound-history-shard"&&std::string_view(argv[2]).size()==1&&argv[2][0]>='0'&&argv[2][0]<='7'){
+    try{CanonicalBoundCheckpointSelection(false,false,true,static_cast<unsigned>(argv[2][0]-'0'),8);std::cout<<"bound history checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--catalog-version-stage-only"){
     try{CanonicalCatalogVersionStaging();std::cout<<"catalog version stage checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
@@ -3712,6 +4223,9 @@ int main(int argc,char** argv) {
     try { CanonicalCheckpointDirectory();std::cout<<"checkpoint directory checks="<<checks<<" failures=0\n";return 0; }
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
   }
+  if(argc==2&&std::string_view(argv[1])=="--directory-allocation-only"){
+    try{CanonicalDirectoryAllocationBindings();std::cout<<"directory allocation binding checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--policy-roots-only") {
     try{CanonicalPolicyRoots();std::cout<<"policy-root checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
@@ -3819,6 +4333,7 @@ int main(int argc,char** argv) {
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }
+  if(argc!=1){std::cerr<<"FAIL unknown test mode or invalid argument count\n";return 2;}
   try { CheckpointCatalogRelations(); std::cout<<"checkpoint_catalog_checks="<<checks<<std::endl; NativeCatalogRelationBindings(); NativeBtreeTrees(); NativeBtreePages(); CanonicalCheckpointCatalogRoots(); CanonicalCheckpointHistory(); CanonicalCheckpoints(); CanonicalCheckpointFiles(); CanonicalCheckpointInventoryPair(); CanonicalInventoryImages(); CanonicalInventoryChains(); Codecs(); Files(); CatalogRoots(); CatalogRootFiles(); CatalogRootRanges(); CatalogLeaves(); CatalogLeafFiles();
     std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }

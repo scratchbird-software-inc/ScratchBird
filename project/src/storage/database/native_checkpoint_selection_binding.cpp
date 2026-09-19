@@ -140,14 +140,51 @@ NativeBoundCheckpointSelection ReadNativeBoundCheckpointSelectionFromOpenDevices
       const auto& old=*result.predecessor.checkpoint;required.push_back({old.header,old.object_uuid});
       required.insert(required.end(),result.predecessor.inventory_pages.begin(),result.predecessor.inventory_pages.end());
     }
+    page::NativeFilespaceDirectoryChainResult control_directory;
+    if(std::any_of(required.begin(),required.end(),[&](const auto& r){return r.header.filespace_uuid!=primary_uuid;})){
+      const auto root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==3;});
+      if(root==cp.roots.end())return Fail(E::checkpoint_binding_mismatch);
+      const disk::FilespaceRootReference directory{5,root->page_type,root->page.filespace_uuid,root->page.page_number,
+        root->page.page_generation,root->page.page_size_profile_uuid,root->object_uuid};
+      control_directory=page::ReadNativeFilespaceDirectoryFromOpenDevices(database_uuid,devices,directory,budget-result.retained_image_bytes);
+      if(!control_directory.ok()){using D=page::NativeDirectoryError;const auto error=control_directory.error;
+        return Fail(error==D::resource_exhausted?E::resource_exhausted:error==D::hash_failure?E::hash_failure:
+          error==D::io_failure?E::io_failure:E::checkpoint_binding_mismatch);}
+      const auto hash=core::hash::ComputeSha256Digest(control_directory.pages.front().bytes);
+      if(!hash.ok())return Fail(E::hash_failure);
+      if(hash.digest!=root->sha256)return Fail(E::checkpoint_binding_mismatch);
+      const auto& creator=*control_directory.pages.front().directory;
+      if(creator.creator_operation_uuid.is_nil()){
+        if(!transaction_creator(creator.creator_transaction_uuid,creator.creator_local_transaction_id,true))return Fail(E::creator_mismatch);
+      }else if(!operation_proof||!MatchesNativeManagementPublishedDirectory(*operation_proof,control_directory,hash.digest))return Fail(E::creator_mismatch);
+      result.retained_image_bytes+=control_directory.retained_image_bytes;
+      for(const auto& image:control_directory.pages)for(const auto& entry:image.directory->records){
+        if(entry.bootstrap.filespace_uuid!=primary_uuid||!entry.allocation_root)continue;
+        const auto& r=*entry.allocation_root;const auto& map=*result.allocation.pages.front().map;
+        if(r.page!=target->page||r.object_uuid!=target->object_uuid||r.sha256!=target->sha256||
+            r.map_generation!=map.map_generation||r.capacity_generation!=map.capacity_generation||entry.total_pages!=map.total_pages)
+          return Fail(E::allocation_binding_mismatch);
+      }
+    }
     for(const auto& file:devices){
       if(std::none_of(required.begin(),required.end(),[&](const auto& r){return r.header.filespace_uuid==file.filespace_uuid;}))continue;
       page::NativeAllocationChainResult secondary;
       const auto* maps=&result.allocation;
       if(file.filespace_uuid!=primary_uuid){
-        secondary=page::ReadNativeAllocationChainFromOpenDevice(*file.device,
-          {database_uuid,file.filespace_uuid,file.page_size_profile_uuid},budget-result.retained_image_bytes);
+        const page::NativeFilespaceDirectoryRecord* member=nullptr;
+        for(const auto& image:control_directory.pages)for(const auto& entry:image.directory->records)
+          if(entry.bootstrap.filespace_uuid==file.filespace_uuid)member=&entry;
+        if(!member)return Fail(E::allocation_binding_mismatch);
+        const disk::FilespaceBootstrapBinding secondary_binding{database_uuid,file.filespace_uuid,file.page_size_profile_uuid};
+        if(member->allocation_root){const auto& r=*member->allocation_root;
+          const disk::FilespaceRootReference selected{3,3,r.page.filespace_uuid,r.page.page_number,r.page.page_generation,r.page.page_size_profile_uuid,r.object_uuid};
+          secondary=page::ReadNativeAllocationChainAtRootFromOpenDevice(*file.device,secondary_binding,selected,budget-result.retained_image_bytes);
+        }else secondary=page::ReadNativeAllocationChainFromOpenDevice(*file.device,secondary_binding,budget-result.retained_image_bytes);
         if(!secondary.ok())return AllocationFailure(secondary.error);
+        if(member->allocation_root){const auto& r=*member->allocation_root;const auto& map=*secondary.pages.front().map;
+          const auto hash=core::hash::ComputeSha256Digest(secondary.pages.front().bytes);if(!hash.ok())return Fail(E::hash_failure);
+          if(hash.digest!=r.sha256||map.map_generation!=r.map_generation||map.capacity_generation!=r.capacity_generation||
+              map.total_pages!=member->total_pages)return Fail(E::allocation_binding_mismatch);}
         result.retained_image_bytes+=secondary.retained_image_bytes;
         maps=&secondary;
         for(const auto& image:maps->pages){const auto& map=*image.map;

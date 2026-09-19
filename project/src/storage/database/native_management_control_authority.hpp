@@ -13,6 +13,7 @@ struct NativeManagementPublishedCheckpoint {
   disk::NativePageReference page;
   Uuid object_uuid;
   std::array<byte,32> sha256{};
+  NativeCheckpointRootReference directory_root{};
 };
 struct NativeManagementControlGraph {
   NativeManagementControlAuthorityError error=NativeManagementControlAuthorityError::invalid_request;
@@ -38,6 +39,10 @@ NativeManagementControlAuthority ReadNativeManagementControlAuthorityFromOpenDev
   const Uuid& primary,u64 maximum_verification_image_bytes) noexcept;
 bool MatchesNativeManagementPublishedCheckpoint(const NativeManagementControlGraph&,
   const NativeCheckpointRoot&,const std::array<byte,32>& stored_sha256) noexcept;
+// Matches an already-read chain against original immutable publication entries.
+// This does not read devices, complete a graph, or grant selected authority.
+bool MatchesNativeManagementPublishedDirectory(const NativeManagementControlGraph&,
+  const page::NativeFilespaceDirectoryChainResult&,const std::array<byte,32>& stored_head_sha256) noexcept;
 bool MatchesNativeManagementControlAllocation(const NativeManagementControlGraph&,
   const Uuid& filespace,const page::NativeAllocationRecord&,page::NativeAllocationState) noexcept;
 bool MatchesNativeManagementControlMap(const NativeManagementControlGraph&,

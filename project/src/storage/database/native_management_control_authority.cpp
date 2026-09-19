@@ -48,6 +48,14 @@ struct Context {
     }else out=page::ReadNativeAllocationChainFromOpenDevice(*f.device,binding,budget-used);
     MapError(out.error);Charge(out.retained_image_bytes);if(ref)Require(Hash(out.pages.front().bytes)==ref->sha256,E::binding_mismatch);return out;
   }
+  page::NativeFilespaceDirectoryChainResult Directory(const NativeCheckpointRoot& cp){
+    const auto& root=Root(cp,3);const disk::FilespaceRootReference r{5,root.page_type,root.page.filespace_uuid,
+      root.page.page_number,root.page.page_generation,root.page.page_size_profile_uuid,root.object_uuid};
+    auto out=page::ReadNativeFilespaceDirectoryFromOpenDevices(database,files,r,budget-used);
+    if(!out.ok()){using D=page::NativeDirectoryError;throw out.error==D::resource_exhausted?E::resource_exhausted:
+      out.error==D::hash_failure?E::hash_failure:out.error==D::io_failure?E::io_failure:E::binding_mismatch;}
+    Charge(out.retained_image_bytes);Require(Hash(out.pages.front().bytes)==root.sha256,E::binding_mismatch);return out;
+  }
   page::NativeTransactionInventoryChainResult Inventory(const NativeCheckpointRoot& cp){
     const auto& root=Root(cp,1);const disk::FilespaceRootReference r{4,root.page_type,root.page.filespace_uuid,root.page.page_number,root.page.page_generation,root.page.page_size_profile_uuid,root.object_uuid};
     auto out=page::ReadNativeTransactionInventoryChainFromOpenDevices(database,files,r,budget-used);
@@ -77,23 +85,64 @@ page::NativeTransactionInventoryChainResult Controls(Context& c,const Checkpoint
   if(cp.root.creator_operation_uuid.is_nil())Transaction(inventory.inventory,cp.root.creator_transaction_uuid,cp.root.creator_local_transaction_id,true);
   else Require(MatchesNativeManagementPublishedCheckpoint(proof,cp.root,cp.sha),E::creator_mismatch);
   Owners(maps,inventory.inventory,proof);
+  std::set<Uuid> allocation_ids,page_ids;
+  const auto unique=[&](const page::NativeAllocationChainResult& chain){for(const auto& image:chain.pages)for(const auto& r:image.map->records){
+    Require(allocation_ids.insert(r.allocation_uuid).second,E::binding_mismatch);
+    if(!r.page_uuid.is_nil())Require(page_ids.insert(r.page_uuid).second,E::binding_mismatch);}};
+  unique(maps);
   std::vector<NativeInventoryPageBinding> required{{cp.root.header,cp.root.object_uuid}};
   for(const auto& image:inventory.pages)required.push_back({image.page->header,image.page->object_uuid});
-  for(const auto& file:c.files){if(std::none_of(required.begin(),required.end(),[&](const auto& v){return v.header.filespace_uuid==file.filespace_uuid;}))continue;
-    page::NativeAllocationChainResult other;const auto* chain=&maps;if(file.filespace_uuid!=c.primary){other=c.Maps(file.filespace_uuid);Owners(other,inventory.inventory,proof);chain=&other;}
+  auto directory=c.Directory(cp.root);const auto& creator=*directory.pages.front().directory;
+  if(creator.creator_operation_uuid.is_nil())Transaction(inventory.inventory,creator.creator_transaction_uuid,creator.creator_local_transaction_id,true);
+  else{
+    Require(MatchesNativeManagementPublishedDirectory(proof,directory,Root(cp.root,3).sha256),E::creator_mismatch);
+    for(const auto& image:directory.pages)required.push_back({image.directory->header,image.directory->object_uuid});
+  }
+    for(const auto& image:directory.pages)for(const auto& entry:image.directory->records){if(entry.bootstrap.filespace_uuid!=c.primary||!entry.allocation_root)continue;
+      const auto& r=*entry.allocation_root;const auto& root=Root(cp.root,4);const auto& map=*maps.pages.front().map;
+      Require(r.page==root.page&&r.object_uuid==root.object_uuid&&r.sha256==root.sha256&&
+        r.map_generation==map.map_generation&&r.capacity_generation==map.capacity_generation&&entry.total_pages==map.total_pages,E::binding_mismatch);}
+  std::size_t retained_allocations=0;
+  for(const auto& file:c.files){if(std::none_of(required.begin(),required.end(),[&](const auto& v){return v.header.filespace_uuid==file.filespace_uuid;})&&
+      std::none_of(proof.allocations.begin(),proof.allocations.end(),[&](const auto& entry){return entry.first.first==file.filespace_uuid;}))continue;
+    page::NativeAllocationChainResult other;const auto* chain=&maps;if(file.filespace_uuid!=c.primary){
+      const page::NativeFilespaceDirectoryRecord* member=nullptr;
+      for(const auto& image:directory.pages)for(const auto& entry:image.directory->records)if(entry.bootstrap.filespace_uuid==file.filespace_uuid)member=&entry;
+      Require(member,E::binding_mismatch);
+      if(member->allocation_root){const auto& r=*member->allocation_root;const NativeCheckpointRootReference root{4,3,r.page,r.object_uuid,r.sha256};
+        other=c.Maps(file.filespace_uuid,&root);const auto& map=*other.pages.front().map;
+        Require(map.map_generation==r.map_generation&&map.capacity_generation==r.capacity_generation&&map.total_pages==member->total_pages,E::binding_mismatch);
+      }else other=c.Maps(file.filespace_uuid);
+      Owners(other,inventory.inventory,proof);unique(other);chain=&other;}
     for(const auto& target:required)if(target.header.filespace_uuid==file.filespace_uuid){const auto& r=Allocated(*chain,target.header,target.object_uuid);
       if(r.creator_operation_uuid.is_nil())Transaction(inventory.inventory,r.creator_transaction_uuid,r.creator_local_transaction_id,true);
       else Require(MatchesNativeManagementControlAllocation(proof,file.filespace_uuid,r,State::allocated),E::creator_mismatch);}
+    for(const auto& [key,record]:proof.allocations){if(key.first!=file.filespace_uuid)continue;auto expected=chain->pages.front().map->header;
+      expected.page_number=record.page_number;expected.page_uuid=record.page_uuid;expected.page_generation=record.page_generation;expected.page_type=record.page_type;
+      Require(Allocated(*chain,expected,record.owner_uuid)==record,E::binding_mismatch);++retained_allocations;}
   }
-  for(const auto& [key,record]:proof.allocations){Require(key.first==c.primary,E::binding_mismatch);const auto& h=maps.pages.front().map->header;
-    auto expected=h;expected.page_number=record.page_number;expected.page_uuid=record.page_uuid;expected.page_generation=record.page_generation;expected.page_type=record.page_type;
-    Require(Allocated(maps,expected,record.owner_uuid)==record,E::binding_mismatch);}
+  Require(retained_allocations==proof.allocations.size(),E::binding_mismatch);
   return inventory;
 }
 Pages Images(const page::NativeAllocationChainResult& maps){Pages out;out.reserve(maps.pages.size());for(const auto& p:maps.pages)out.push_back(p.bytes);return out;}
 }
 bool MatchesNativeManagementPublishedCheckpoint(const NativeManagementControlGraph& proof,const NativeCheckpointRoot& cp,const std::array<byte,32>& sha) noexcept {
   const auto p=proof.publications.find(cp.creator_operation_uuid);return p!=proof.publications.end()&&p->second.page==Self(cp.header)&&p->second.object_uuid==cp.object_uuid&&p->second.sha256==sha&&cp.creator_transaction_uuid.is_nil()&&!cp.creator_local_transaction_id;
+}
+bool MatchesNativeManagementPublishedDirectory(const NativeManagementControlGraph& proof,const page::NativeFilespaceDirectoryChainResult& chain,const std::array<byte,32>& sha) noexcept {
+  if(!chain.ok()||!chain.pages.front().ok())return false;
+  const auto& head=*chain.pages.front().directory;const auto operation=head.creator_operation_uuid;
+  if(!core::uuid::IsEngineIdentityUuid(operation))return false;
+  const auto p=proof.publications.find(operation);if(p==proof.publications.end())return false;
+  const auto& root=p->second.directory_root;
+  if(root.role!=3||root.page_type!=9||root.page!=Self(head.header)||root.object_uuid!=head.object_uuid||root.sha256!=sha)return false;
+  for(const auto& image:chain.pages){if(!image.ok())return false;const auto& d=*image.directory;const auto& h=d.header;
+    if(d.creator_operation_uuid!=operation||!d.creator_transaction_uuid.is_nil()||d.creator_local_transaction_id||h.page_type!=9)return false;
+    const auto a=proof.allocations.find({h.filespace_uuid,h.page_number});if(a==proof.allocations.end())return false;const auto& r=a->second;
+    if(r.page_number!=h.page_number||r.page_uuid!=h.page_uuid||r.page_generation!=h.page_generation||r.page_type!=9||r.owner_uuid!=d.object_uuid||
+       r.creator_operation_uuid!=operation||!r.creator_transaction_uuid.is_nil()||r.creator_local_transaction_id)return false;
+  }
+  return true;
 }
 bool MatchesNativeManagementControlAllocation(const NativeManagementControlGraph& proof,const Uuid& fs,const page::NativeAllocationRecord& r,State state) noexcept {
   const auto p=proof.allocations.find({fs,r.page_number});return state==State::allocated&&p!=proof.allocations.end()&&p->second==r&&!r.creator_operation_uuid.is_nil();
@@ -132,7 +181,7 @@ NativeManagementControlAuthority ReadControlGraph(const Uuid& database,const std
       if(p.intent.recovery_profile==2){for(const auto& raw:before_inventory.pages)c.Charge(4,raw.bytes.size());for(const auto& raw:entry.control_inventory_images)c.Charge(4,raw.size());before_inventory_bytes.reserve(before_inventory.pages.size());for(const auto& raw:before_inventory.pages)before_inventory_bytes.push_back(raw.bytes);expected_inventory=&entry.control_inventory_images;}
       const auto delta=ValidateNativeManagementControlAllocation(base.bytes,target.bytes,plan.bytes,extent.pages,before_bytes,after_bytes,budget,bundle.pages,before_inventory_bytes);
       if(delta!=NativeManagementControlAllocationError::none)throw delta==NativeManagementControlAllocationError::hash_failure?E::hash_failure:delta==NativeManagementControlAllocationError::resource_exhausted?E::resource_exhausted:delta==NativeManagementControlAllocationError::cluster_requires_authority?E::cluster_requires_authority:delta==NativeManagementControlAllocationError::encrypted_requires_authority?E::encrypted_requires_authority:E::binding_mismatch;
-      Require(result.publications.emplace(p.operation_uuid,NativeManagementPublishedCheckpoint{p.target_checkpoint,p.target_checkpoint_object_uuid,entry.checkpoint_sha256}).second,E::binding_mismatch);
+      Require(result.publications.emplace(p.operation_uuid,NativeManagementPublishedCheckpoint{p.target_checkpoint,p.target_checkpoint_object_uuid,entry.checkpoint_sha256,Root(target.root,3)}).second,E::binding_mismatch);
       for(const auto& image:after.pages)for(const auto& record:image.map->records)if(record.creator_operation_uuid==p.operation_uuid)Require(result.allocations.emplace(std::make_pair(primary,record.page_number),record).second,E::binding_mismatch);
       Controls(c,target,after,result,expected_inventory);
     }

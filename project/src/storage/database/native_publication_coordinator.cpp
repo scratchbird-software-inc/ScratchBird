@@ -249,12 +249,12 @@ NativePublicationReservation ResumeNativePublicationGenerationOnOpenDevices(cons
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
    catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
 }
-NativePublicationInspection AbandonNativeMetadataPublicationOnOpenDevices(
+static NativePublicationInspection AbandonNativeControlPublicationOnOpenDevices(
     const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,
     const NativePublicationSnapshot& expected,const Uuid& operation,const NativePublicationIntent& intent,
-    const Uuid& resolution,u64 budget) noexcept {
+    const Uuid& resolution,u16 profile,u64 budget) noexcept {
   try {
-    Require(V7(operation)&&V7(resolution)&&resolution!=operation&&intent.recovery_profile==1&&
+    Require(V7(operation)&&V7(resolution)&&resolution!=operation&&intent.recovery_profile==profile&&
       !expected.watermark.abandonment&&expected.watermark.operation_uuid==operation&&
       expected.watermark.intent&&*expected.watermark.intent==intent,E::invalid_request);
     const auto file=std::find_if(devices.begin(),devices.end(),[&](const auto& f){return f.filespace_uuid==primary;});
@@ -284,6 +284,18 @@ NativePublicationInspection AbandonNativeMetadataPublicationOnOpenDevices(
     return {E::none,std::move(final->snapshot)};
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
    catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+}
+NativePublicationInspection AbandonNativeMetadataPublicationOnOpenDevices(
+    const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,
+    const NativePublicationSnapshot& expected,const Uuid& operation,const NativePublicationIntent& intent,
+    const Uuid& resolution,u64 budget) noexcept {
+  return AbandonNativeControlPublicationOnOpenDevices(database,devices,primary,expected,operation,intent,resolution,1,budget);
+}
+NativePublicationInspection AbandonNativeInventoryPublicationOnOpenDevices(
+    const Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,const Uuid& primary,
+    const NativePublicationSnapshot& expected,const Uuid& operation,const NativePublicationIntent& intent,
+    const Uuid& resolution,u64 budget) noexcept {
+  return AbandonNativeControlPublicationOnOpenDevices(database,devices,primary,expected,operation,intent,resolution,2,budget);
 }
 NativePublicationInspection InstallNativeManagementPublicationOnLease(NativePublicationLease& lease,
     const NativePublicationPlan& plan,const std::vector<byte>& checkpoint,
@@ -384,7 +396,8 @@ auto ControlRef(const disk::NativeCommonPageHeader& h){return disk::NativePageRe
 u64 BundleAllowance(const NativeManagementControlBundleRoot& r,u64 size,u64 budget){
   Require(budget>=2*size,E::resource_exhausted);u64 total=2*size;
   Require(r.page_count<=(budget-total)/size,E::resource_exhausted);total+=r.page_count*size;
-  Require(r.map_count<=(budget-total)/(4*size),E::resource_exhausted);return total+4*r.map_count*size;
+  Require(r.map_count<=(budget-total)/(4*size),E::resource_exhausted);total+=4*r.map_count*size;
+  Require(r.inventory_count<=(budget-total)/(4*size),E::resource_exhausted);return total+4*r.inventory_count*size;
 }
 u64 ExtentAllowance(const NativeManagementExtentRoot& r,u64 size,u64 budget){
   Require(budget>=2*size,E::resource_exhausted);u64 total=2*size;
@@ -402,6 +415,7 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
     Require(profile&&profile->page_size_bytes==plan.header.page_size_bytes,E::invalid_request);const u64 size=profile->page_size_bytes;
     u64 allowance=0;const auto charge=[&](u64 count,u64 unit){Require(count<=(budget-allowance)/unit,E::resource_exhausted);allowance+=count*unit;};
     charge(20,size);charge(plan.management_extent->page_count,4*size);charge(plan.management_extent->aggregate_bytes,4);charge(plan.control_bundle->page_count,4*size);charge(plan.control_bundle->map_count,10*size);
+    charge(plan.control_bundle->inventory_count,14*size);
     // Reject inconsistent caller lengths before copying caller-owned images.
     Require(supplied_checkpoint.size()==size&&supplied_extent.size()==plan.management_extent->page_count&&supplied_bundle.size()==plan.control_bundle->page_count,E::invalid_request);
     for(const auto& bytes:supplied_extent)Require(bytes.size()==size,E::invalid_request);
@@ -418,13 +432,23 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
     Require(c->bound.allocation.pages.size()==reconstruction.allocation_images.size(),E::allocation_mismatch);
     const auto base=EncodeNativeCheckpointRoot(*c->bound.checkpoint_inventory.checkpoint);ControlCheckpointError(base.error);Require(ControlHash(base.bytes)==c->bound.checkpoint_inventory.checkpoint_sha256,E::binding_mismatch);
     Pages before_maps;before_maps.reserve(c->bound.allocation.pages.size());for(const auto& p:c->bound.allocation.pages)before_maps.push_back(p.bytes);
-    const auto delta=ValidateNativeManagementControlAllocation(base.bytes,checkpoint,image.bytes,extent,before_maps,reconstruction.allocation_images,budget,bundle);
-    if(delta!=NativeManagementControlAllocationError::none)throw delta==NativeManagementControlAllocationError::resource_exhausted?E::resource_exhausted:delta==NativeManagementControlAllocationError::hash_failure?E::hash_failure:delta==NativeManagementControlAllocationError::cluster_requires_authority?E::cluster_requires_authority:E::allocation_mismatch;
-    struct Artifact {u64 page=0;Bytes bytes,before;};std::vector<Artifact> artifacts;artifacts.reserve(2+extent.size()+bundle.size()+reconstruction.allocation_images.size());
+    Pages before_inventory;
+    if(plan.intent.recovery_profile==2){charge(c->bound.retained_image_bytes,1);const auto& cp=*c->bound.checkpoint_inventory.checkpoint;
+      const auto root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==1;});Require(root!=cp.roots.end(),E::binding_mismatch);
+      const disk::FilespaceRootReference ref{4,root->page_type,root->page.filespace_uuid,root->page.page_number,root->page.page_generation,root->page.page_size_profile_uuid,root->object_uuid};
+      auto actual=page::ReadNativeTransactionInventoryChainFromOpenDevices(plan.header.database_uuid,c->devices,ref,budget-allowance);
+      if(!actual.ok())throw actual.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:actual.error==page::NativeInventoryError::hash_failure?E::hash_failure:actual.error==page::NativeInventoryError::io_failure?E::io_failure:actual.error==page::NativeInventoryError::encrypted_requires_crypto_authority?E::encrypted_requires_authority:E::allocation_mismatch;
+      charge(actual.retained_image_bytes,1);for(const auto& raw:actual.pages)charge(raw.bytes.size(),4);before_inventory.reserve(actual.pages.size());for(auto& raw:actual.pages)before_inventory.push_back(std::move(raw.bytes));
+    }
+    const auto delta=ValidateNativeManagementControlAllocation(base.bytes,checkpoint,image.bytes,extent,before_maps,reconstruction.allocation_images,budget,bundle,before_inventory);
+    if(delta!=NativeManagementControlAllocationError::none)throw delta==NativeManagementControlAllocationError::resource_exhausted?E::resource_exhausted:delta==NativeManagementControlAllocationError::hash_failure?E::hash_failure:delta==NativeManagementControlAllocationError::cluster_requires_authority?E::cluster_requires_authority:delta==NativeManagementControlAllocationError::encrypted_requires_authority?E::encrypted_requires_authority:E::allocation_mismatch;
+    struct Artifact {u64 page=0;Bytes bytes,before;};std::vector<Artifact> artifacts;artifacts.reserve(2+extent.size()+bundle.size()+reconstruction.allocation_images.size()+reconstruction.inventory_images.size());
     artifacts.push_back({plan.header.page_number,std::move(image.bytes),{}});const std::size_t extent_start=artifacts.size();
     for(std::size_t i=0;i<extent.size();++i)artifacts.push_back({plan.management_extent->first.page_number+i,std::move(extent[i]),{}});
     const std::size_t bundle_start=artifacts.size();
     for(std::size_t i=0;i<bundle.size();++i)artifacts.push_back({plan.control_bundle->first.page_number+i,std::move(bundle[i]),{}});
+    const std::size_t inventory_start=artifacts.size();
+    for(auto& raw:reconstruction.inventory_images){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(h.ok(),E::image_failure);artifacts.push_back({h.header->page_number,std::move(raw),{}});}
     const std::size_t map_start=artifacts.size();
     for(auto& raw:reconstruction.allocation_images){const auto h=disk::DecodeNativeCommonPageHeader(raw.data(),128);Require(h.ok(),E::image_failure);artifacts.push_back({h.header->page_number,std::move(raw),{}});}const std::size_t checkpoint_start=artifacts.size();
     artifacts.push_back({plan.target_checkpoint.page_number,std::move(checkpoint),{}});Bytes scratch(size);
@@ -444,7 +468,7 @@ NativePublicationInspection InstallNativeManagementControlGraphOnLease(NativePub
         if(scratch!=target.bytes){const auto io=c->primary->WriteAt(target.page*size,target.bytes.data(),target.bytes.size());Require(io.ok()&&io.bytes_transferred==target.bytes.size(),E::io_failure);}}
       Require(c->primary->Sync().ok(),E::io_failure);for(std::size_t n=first;n<end;++n){read(artifacts[n].page,scratch);Require(scratch==artifacts[n].bytes,E::readback_mismatch);}};
     lease.impl_->installation_ambiguous=true;Publish(*c,images,scratch);
-    install(0,extent_start);install(extent_start,bundle_start);install(bundle_start,map_start);install(map_start,checkpoint_start);install(checkpoint_start,artifacts.size());
+    install(0,extent_start);install(extent_start,bundle_start);install(bundle_start,inventory_start);if(inventory_start!=map_start)install(inventory_start,map_start);install(map_start,checkpoint_start);install(checkpoint_start,artifacts.size());
     c->bytes=std::move(images);lease.impl_->snapshot=snapshot;lease.impl_->context=std::move(c);lease.impl_->installation_ambiguous=false;return {E::none,std::move(snapshot)};
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
 }
@@ -465,7 +489,7 @@ NativePublicationInspection ResumeNativeManagementControlGraphOnLease(NativePubl
     ControlExtentError(extent.error);
     Require(extent.root==plan.management_extent,E::binding_mismatch);
     auto contents=ReadNativeManagementControlBundleFromOpenDevice(file,*plan.control_bundle,plan.header.database_uuid,plan.bootstrap_uuid,bundle_allowance);ControlBundleError(contents.error);
-    auto bundle=EncodeNativeManagementControlBundle(contents.allocation_images,plan.header.database_uuid,plan.bootstrap_uuid,plan.control_bundle->object_uuid,plan.operation_uuid,contents.page_headers,bundle_allowance);ControlBundleError(bundle.error);Require(bundle.root==plan.control_bundle,E::binding_mismatch);
+    auto bundle=EncodeNativeManagementControlBundle(contents.allocation_images,plan.header.database_uuid,plan.bootstrap_uuid,plan.control_bundle->object_uuid,plan.operation_uuid,contents.page_headers,bundle_allowance,contents.inventory_images);ControlBundleError(bundle.error);Require(bundle.root==plan.control_bundle,E::binding_mismatch);
     std::optional<page::NativeAllocationMap> first;std::optional<page::NativeAllocationRecord> target_record;
     for(const auto& b:contents.allocation_images){auto map=page::DecodeNativeAllocationMap(b);if(!map.ok())throw map.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:map.error==page::NativeAllocationError::hash_failure?E::hash_failure:E::allocation_mismatch;
       const auto& m=*map.map;const u64 n=plan.target_checkpoint.page_number;if(n>=m.first_page&&n-m.first_page<m.states.size()){const auto r=std::lower_bound(m.records.begin(),m.records.end(),n,[](const auto& r,u64 v){return r.page_number<v;});Require(m.states[n-m.first_page]==page::NativeAllocationState::allocated&&r!=m.records.end()&&r->page_number==n,E::allocation_mismatch);target_record=*r;}
@@ -474,6 +498,10 @@ NativePublicationInspection ResumeNativeManagementControlGraphOnLease(NativePubl
     Require(first&&target_record&&target_record->page_type==0x300&&target_record->owner_uuid==plan.target_checkpoint_object_uuid&&target_record->creator_operation_uuid==plan.operation_uuid&&target_record->creator_transaction_uuid.is_nil()&&!target_record->creator_local_transaction_id&&target_record->page_generation==plan.reserved_generation,E::allocation_mismatch);
     auto cp=*context.bound.checkpoint_inventory.checkpoint;cp.header=plan.header;cp.header.page_type=0x300;cp.header.page_number=plan.target_checkpoint.page_number;cp.header.page_generation=plan.target_checkpoint.page_generation;cp.header.page_uuid=target_record->page_uuid;cp.object_uuid=plan.target_checkpoint_object_uuid;cp.creator_transaction_uuid={};cp.creator_local_transaction_id=0;cp.creator_operation_uuid=plan.operation_uuid;cp.checkpoint_generation=plan.reserved_generation;cp.root_set_generation=plan.target_root_set_generation;cp.predecessor=plan.base_checkpoint;cp.predecessor_sha256=plan.base_checkpoint_sha256;
     auto allocation=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==4;});Require(allocation!=cp.roots.end(),E::allocation_mismatch);*allocation={4,3,ControlRef(first->header),first->object_uuid,ControlHash(contents.allocation_images.front())};
+    if(plan.intent.recovery_profile==2){Require(!contents.inventory_images.empty(),E::binding_mismatch);const auto decoded=page::DecodeNativeTransactionInventoryPage(contents.inventory_images.front());
+      if(!decoded.ok())throw decoded.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:decoded.error==page::NativeInventoryError::hash_failure?E::hash_failure:E::allocation_mismatch;
+      const auto& candidate=*decoded.page;auto root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==1;});Require(root!=cp.roots.end(),E::binding_mismatch);*root={1,0x301,ControlRef(candidate.header),candidate.object_uuid,ControlHash(contents.inventory_images.front())};cp.selected_local_transaction_id=candidate.inventory.next_local_transaction_id-1;
+    }
     const NativeCheckpointRootReference head{16,0x500,ControlRef(plan.header),plan.object_uuid,image.sha256};auto history=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==16;});if(history==cp.roots.end())cp.roots.push_back(head);else *history=head;
     const auto target=EncodeNativeCheckpointRoot(cp);ControlCheckpointError(target.error);ControlPlanError(BindNativePublicationPlanToLease(plan,lease,target.bytes));
     return InstallNativeManagementControlGraphOnLease(lease,plan,target.bytes,extent.pages,bundle.pages,budget-allowance);

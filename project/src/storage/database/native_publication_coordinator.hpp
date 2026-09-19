@@ -67,6 +67,14 @@ NativePublicationInspection AbandonNativeMetadataPublicationOnOpenDevices(
   const Uuid& primary,const NativePublicationSnapshot& expected_pending,
   const Uuid& original_attempt,const NativePublicationIntent& expected_intent,
   const Uuid& resolution_uuid,u64 maximum_verification_image_bytes) noexcept;
+// Resolves only an unselected profile2 inventory/control candidate. Preserves
+// the selected inventory, including durable starting allocations and counters.
+// This is not transaction rollback/finality, page reclamation or BEGIN success.
+NativePublicationInspection AbandonNativeInventoryPublicationOnOpenDevices(
+  const Uuid& database,const std::vector<disk::NativeFilespaceDevice>&,
+  const Uuid& primary,const NativePublicationSnapshot& expected_pending,
+  const Uuid& original_attempt,const NativePublicationIntent& expected_intent,
+  const Uuid& resolution_uuid,u64 maximum_verification_image_bytes) noexcept;
 // Actual bootstrap, allocation, inventory and checkpoint binding; no mutation.
 NativePublicationInspection InspectNativePublicationGenerationOnOpenDevices(
   const Uuid&,const std::vector<disk::NativeFilespaceDevice>&,const Uuid&,u64) noexcept;

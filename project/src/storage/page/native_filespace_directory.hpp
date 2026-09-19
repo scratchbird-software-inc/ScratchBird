@@ -11,6 +11,13 @@ namespace scratchbird::storage::page {
 using scratchbird::core::platform::Uuid;
 using scratchbird::core::platform::byte;
 using scratchbird::core::platform::u64;
+struct NativeFilespaceAllocationRoot {
+  disk::NativePageReference page;
+  Uuid object_uuid;
+  std::array<byte,32> sha256{};
+  u64 map_generation=0,capacity_generation=0;
+  bool operator==(const NativeFilespaceAllocationRoot&) const = default;
+};
 struct NativeFilespaceDirectoryRecord {
   disk::FilespaceBootstrap bootstrap;
   Uuid locator_uuid;
@@ -20,6 +27,7 @@ struct NativeFilespaceDirectoryRecord {
   u64 total_pages = 0;
   u64 verification_epoch = 0;
   std::optional<disk::NativePageReference> operation;
+  std::optional<NativeFilespaceAllocationRoot> allocation_root{};
 };
 struct NativeFilespaceDirectory {
   disk::NativeCommonPageHeader header;
@@ -32,6 +40,7 @@ struct NativeFilespaceDirectory {
   std::optional<disk::NativePageReference> next;
   std::array<byte,32> next_sha256{};
   std::vector<NativeFilespaceDirectoryRecord> records;
+  Uuid creator_operation_uuid{};
 };
 enum class NativeDirectoryError {
   none, invalid_header, invalid_family, invalid_record, invalid_reference,

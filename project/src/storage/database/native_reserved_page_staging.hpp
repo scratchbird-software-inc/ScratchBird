@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "physical_mga_cow_store.hpp"
+#include "native_management_control_authority.hpp"
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
 #include "uuid.hpp"
@@ -57,10 +58,11 @@ std::optional<NativeReservedPage> PrepareNativeReservedPage(
     if(!authority.ok()){failure.error=E::checkpoint_failure;failure.checkpoint_error=authority.error;failure.directory_error=authority.directory_error;failure.inventory_error=authority.checkpoint_inventory.inventory_error;return {};}
     const auto& pair=authority.checkpoint_inventory;const auto& cp=*pair.checkpoint;
     if(cp.flags&4)return fail(E::cluster_requires_authority);
-    bool member=false;
+    const page::NativeFilespaceDirectoryRecord* member=nullptr;
     for(const auto& image:authority.directory.pages)for(const auto& entry:image.directory->records)
-      if(entry.bootstrap.filespace_uuid==h.filespace_uuid){member=entry.bootstrap.filespace_role<32&&(allowed_roles&(u32{1}<<entry.bootstrap.filespace_role))!=0&&entry.bootstrap.page_size_bytes==h.page_size_bytes&&h.page_number<entry.total_pages;}
-    if(!member)return fail(E::invalid_destination);
+      if(entry.bootstrap.filespace_uuid==h.filespace_uuid)member=&entry;
+    if(!member||member->bootstrap.filespace_role>=32||!(allowed_roles&(u32{1}<<member->bootstrap.filespace_role))||
+        member->bootstrap.page_size_bytes!=h.page_size_bytes||h.page_number>=member->total_pages)return fail(E::invalid_destination);
     if(h.page_uuid==cp.header.page_uuid)return fail(E::reservation_mismatch);
     for(const auto& image:authority.directory.pages){if(h.page_uuid==image.directory->header.page_uuid)return fail(E::reservation_mismatch);
       for(const auto& entry:image.directory->records)if(h.page_uuid==entry.page_zero_uuid)return fail(E::reservation_mismatch);}
@@ -70,41 +72,82 @@ std::optional<NativeReservedPage> PrepareNativeReservedPage(
     if(actor.entry.rollback_only)return fail(E::creator_rollback_only);
     const disk::FilespaceBootstrapBinding target_binding{h.database_uuid,h.filespace_uuid,h.page_size_profile_uuid};
     const auto target_zero=disk::ReadFilespacePageZeroFromOpenDevice(*target->device,&target_binding);
-    if(!target_zero.ok())return fail(E::invalid_destination);
+    if(!target_zero.ok()){using Z=disk::FilespacePageZeroError;
+      return fail(target_zero.error==Z::resource_exhausted?E::resource_exhausted:
+        target_zero.error==Z::hash_provider_failure?E::hash_failure:
+        target_zero.error==Z::io_failure?E::io_failure:E::invalid_destination);
+    }
     if(target_zero.record->bootstrap.flags&disk::FilespaceBootstrapFlag::payload_encrypted)return fail(E::header_requires_authority);
     const bool selected_primary=std::any_of(target_zero.record->roots.begin(),target_zero.record->roots.end(),[](const auto& r){return r.kind==18;});
     const auto selected_root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==4;});
     if(selected_primary&&(selected_root==cp.roots.end()||selected_root->page.filespace_uuid!=h.filespace_uuid))return fail(E::root_mismatch);
+    const auto& explicit_root=member->allocation_root;
+    const bool primary_map=selected_primary||h.filespace_uuid==checkpoint.filespace_uuid;
+    if(explicit_root&&primary_map&&(selected_root==cp.roots.end()||selected_root->page!=explicit_root->page||
+        selected_root->object_uuid!=explicit_root->object_uuid||selected_root->sha256!=explicit_root->sha256))return fail(E::root_mismatch);
+    if(authority.retained_image_bytes>budget)return fail(E::resource_exhausted);
     page::NativeAllocationChainResult allocation;
-    if(selected_primary){const auto& r=*selected_root;const disk::FilespaceRootReference ref{3,r.page_type,r.page.filespace_uuid,r.page.page_number,r.page.page_generation,r.page.page_size_profile_uuid,r.object_uuid};
+    if(explicit_root){const auto& r=*explicit_root;
+      const disk::FilespaceRootReference ref{3,3,r.page.filespace_uuid,r.page.page_number,r.page.page_generation,r.page.page_size_profile_uuid,r.object_uuid};
+      allocation=page::ReadNativeAllocationChainAtRootFromOpenDevice(*target->device,target_binding,ref,budget-authority.retained_image_bytes);
+    }else if(selected_primary){const auto& r=*selected_root;const disk::FilespaceRootReference ref{3,r.page_type,r.page.filespace_uuid,r.page.page_number,r.page.page_generation,r.page.page_size_profile_uuid,r.object_uuid};
       allocation=page::ReadNativeAllocationChainAtRootFromOpenDevice(*target->device,target_binding,ref,budget-authority.retained_image_bytes);
     }else allocation=page::ReadNativeAllocationChainFromOpenDevice(*target->device,target_binding,budget-authority.retained_image_bytes);
     if(!allocation.ok()){failure.error=E::allocation_failure;failure.allocation_error=allocation.error;return {};}
-    if(selected_primary||h.filespace_uuid==checkpoint.filespace_uuid){const auto& map=*allocation.pages.front().map;
-      const auto root=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& value){return value.role==4;});
+    if(primary_map||explicit_root){const auto& map=*allocation.pages.front().map;
       const disk::NativePageReference ref{h.filespace_uuid,map.header.page_number,map.header.page_generation,map.header.page_size_profile_uuid};
-      if(root==cp.roots.end()||root->page!=ref||root->object_uuid!=map.object_uuid)return fail(E::root_mismatch);
+      if(primary_map&&(selected_root==cp.roots.end()||selected_root->page!=ref||selected_root->object_uuid!=map.object_uuid))return fail(E::root_mismatch);
+      if(explicit_root&&(explicit_root->page!=ref||explicit_root->object_uuid!=map.object_uuid||
+          explicit_root->map_generation!=map.map_generation||explicit_root->capacity_generation!=map.capacity_generation||
+          member->total_pages!=map.total_pages))return fail(E::root_mismatch);
       const auto digest=hash::ComputeSha256Digest(allocation.pages.front().bytes);if(!digest.ok())return fail(E::hash_failure);
-      if(digest.digest!=root->sha256)return fail(E::root_mismatch);
+      if((primary_map&&digest.digest!=selected_root->sha256)||(explicit_root&&digest.digest!=explicit_root->sha256))return fail(E::root_mismatch);
+    }
+    if(authority.retained_image_bytes>budget||allocation.retained_image_bytes>budget-authority.retained_image_bytes)
+      return fail(E::resource_exhausted);
+    u64 retained=authority.retained_image_bytes+allocation.retained_image_bytes;
+    std::optional<NativeManagementControlAuthority> operation_proof;
+    const bool operation_owned=std::any_of(allocation.pages.begin(),allocation.pages.end(),[](const auto& image){
+      return !image.map->creator_operation_uuid.is_nil()||
+        std::any_of(image.map->records.begin(),image.map->records.end(),[](const auto& record){return !record.creator_operation_uuid.is_nil();});
+    });
+    if(operation_owned){
+      if(retained==budget)return fail(E::resource_exhausted);
+      auto proof=ReadNativeManagementControlAuthorityFromOpenDevices(h.database_uuid,devices,cp.header.filespace_uuid,budget-retained);
+      if(!proof.ok()){using P=NativeManagementControlAuthorityError;
+        return fail(proof.error==P::resource_exhausted?E::resource_exhausted:
+          proof.error==P::hash_failure?E::hash_failure:proof.error==P::io_failure?E::io_failure:
+          proof.error==P::cluster_requires_authority?E::cluster_requires_authority:
+          proof.error==P::encrypted_requires_authority?E::header_requires_authority:E::map_creator_mismatch);
+      }
+      const disk::NativePageReference selected{cp.header.filespace_uuid,cp.header.page_number,cp.header.page_generation,cp.header.page_size_profile_uuid};
+      if(proof.selection->checkpoint!=selected||proof.selection->checkpoint_sha256!=pair.checkpoint_sha256)
+        return fail(E::map_creator_mismatch);
+      if(proof.verified_image_bytes>budget-retained)return fail(E::resource_exhausted);
+      retained+=proof.verified_image_bytes;operation_proof=std::move(proof);
     }
     const page::NativeAllocationRecord* reservation=nullptr;
     std::set<Uuid> allocation_ids,page_ids;
     for(const auto& image:allocation.pages){const auto& map=*image.map;
-      const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(map.creator_local_transaction_id));
-      if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=map.creator_transaction_uuid||creator.entry.identity.scope!=mga::TransactionScope::local_node)return fail(E::map_creator_mismatch);
-      if(!mga::HasCommittedInventoryOutcome(creator.entry))return fail(E::map_creator_not_committed);
+      if(map.creator_operation_uuid.is_nil()){
+        const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(map.creator_local_transaction_id));
+        if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=map.creator_transaction_uuid||creator.entry.identity.scope!=mga::TransactionScope::local_node)return fail(E::map_creator_mismatch);
+        if(!mga::HasCommittedInventoryOutcome(creator.entry))return fail(E::map_creator_not_committed);
+      }else if(!operation_proof||!MatchesNativeManagementControlMap(*operation_proof,map))return fail(E::map_creator_mismatch);
       for(const auto& record:map.records){
         if(!allocation_ids.insert(record.allocation_uuid).second||(!record.page_uuid.is_nil()&&!page_ids.insert(record.page_uuid).second))return fail(E::reservation_mismatch);
-        const auto original=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(record.creator_local_transaction_id));
-        if(!original.ok()||original.entry.identity.transaction_uuid.value!=record.creator_transaction_uuid||original.entry.identity.scope!=mga::TransactionScope::local_node)return fail(E::map_creator_mismatch);
+        if(record.creator_operation_uuid.is_nil()){
+          const auto original=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(record.creator_local_transaction_id));
+          if(!original.ok()||original.entry.identity.transaction_uuid.value!=record.creator_transaction_uuid||original.entry.identity.scope!=mga::TransactionScope::local_node)return fail(E::map_creator_mismatch);
+        }else if(!operation_proof||!MatchesNativeManagementControlAllocation(*operation_proof,h.filespace_uuid,record,map.states[record.page_number-map.first_page]))return fail(E::map_creator_mismatch);
         if(record.page_number==h.page_number&&map.states[record.page_number-map.first_page]==page::NativeAllocationState::reserved)reservation=&record;
       }
     }
     if(!reservation||reservation->page_uuid!=h.page_uuid||reservation->page_generation!=h.page_generation||reservation->page_type!=h.page_type||
-        reservation->owner_uuid!=object_uuid||reservation->creator_transaction_uuid!=owner.transaction_uuid.value||reservation->creator_local_transaction_id!=owner.local_id.value)return fail(E::reservation_mismatch);
+        reservation->owner_uuid!=object_uuid||!reservation->creator_operation_uuid.is_nil()||reservation->creator_transaction_uuid!=owner.transaction_uuid.value||reservation->creator_local_transaction_id!=owner.local_id.value)return fail(E::reservation_mismatch);
 
   prepared.target=target->device;prepared.reservation=*reservation;
-  prepared.retained_image_bytes=authority.retained_image_bytes+allocation.retained_image_bytes;
+  prepared.retained_image_bytes=retained;
   prepared.authority=std::move(authority);prepared.allocation=std::move(allocation);
   return prepared;
 }
@@ -138,4 +181,3 @@ TResult WriteNativeReservedPageImage(NativeReservedPage& prepared,
   result.error=E::none;result.receipt=receipt;return result;
 }
 } // namespace scratchbird::storage::database::detail
-

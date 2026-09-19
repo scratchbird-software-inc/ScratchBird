@@ -1010,7 +1010,12 @@ CurrentCheckpointInventory ResolveCurrentCheckpointInventory(
     disk::NativePageReference{requested.filespace_uuid,requested.page_number,requested.page_generation,requested.page_size_profile_uuid}!=s.checkpoint){
     result.pair.error=NativeCheckpointError::binding_mismatch;return result;
   }
-  result.pair=std::move(selected.checkpoint_inventory);result.selector_bound=true;return result;
+  result.pair=std::move(selected.checkpoint_inventory);
+  // Selection admission also read predecessors, allocation maps and exact
+  // operation lineage. Its downstream consumers must charge that complete
+  // work, not just the retained checkpoint/inventory subset moved above.
+  result.pair.retained_image_bytes=selected.retained_image_bytes;
+  result.selector_bound=true;return result;
 }
 }
 
@@ -1070,22 +1075,52 @@ NativeCheckpointAllocationResult VerifyCurrentNativeCheckpointAllocationFromOpen
     const auto digest=hash::ComputeSha256Digest(allocation.pages.front().bytes);
     if(!digest.ok())return fail(Error::hash_failure);
     if(digest.digest!=target->sha256)return fail(Error::invalid_integrity);
+    if(pair.retained_image_bytes>maximum_retained_image_bytes||allocation.retained_image_bytes>maximum_retained_image_bytes-pair.retained_image_bytes)
+      return fail(Error::resource_exhausted);
+    u64 retained=pair.retained_image_bytes+allocation.retained_image_bytes;
+    std::optional<NativeManagementControlAuthority> operation_proof;
+    const bool operation_map=std::any_of(allocation.pages.begin(),allocation.pages.end(),[](const auto& image){return !image.map->creator_operation_uuid.is_nil();});
+    const bool operation_owned=operation_map||std::any_of(allocation.pages.begin(),allocation.pages.end(),[](const auto& image){
+      return std::any_of(image.map->records.begin(),image.map->records.end(),
+        [](const auto& record){return !record.creator_operation_uuid.is_nil();});
+    });
+    if(operation_owned){
+      if(retained==maximum_retained_image_bytes)return fail(Error::resource_exhausted);
+      auto proof=ReadNativeManagementControlAuthorityFromOpenDevices(database_uuid,locked.ordered,
+        pair.checkpoint->header.filespace_uuid,maximum_retained_image_bytes-retained);
+      if(!proof.ok()){using P=NativeManagementControlAuthorityError;
+        return fail(proof.error==P::resource_exhausted?Error::resource_exhausted:
+          proof.error==P::hash_failure?Error::hash_failure:proof.error==P::io_failure?Error::io_failure:
+          proof.error==P::encrypted_requires_authority?Error::encrypted_requires_crypto_authority:
+          proof.error==P::cluster_requires_authority?Error::cluster_requires_authority:
+          operation_map?Error::allocation_creator_mismatch:Error::allocation_record_creator_mismatch);
+      }
+      const auto& h=pair.checkpoint->header;
+      if(proof.selection->checkpoint!=disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid}||
+        proof.selection->checkpoint_sha256!=pair.checkpoint_sha256)return fail(Error::binding_mismatch);
+      if(proof.verified_image_bytes>maximum_retained_image_bytes-retained)return fail(Error::resource_exhausted);
+      retained+=proof.verified_image_bytes;operation_proof=std::move(proof);
+    }
     for(const auto& image:allocation.pages) {
       const auto& map=*image.map;
-      const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(map.creator_local_transaction_id));
-      if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=map.creator_transaction_uuid||
-          (!(pair.checkpoint->flags&4)&&creator.entry.identity.scope!=mga::TransactionScope::local_node))
-        return fail(Error::allocation_creator_mismatch);
-      if(!mga::HasCommittedInventoryOutcome(creator.entry))return fail(Error::allocation_creator_not_committed);
+      if(map.creator_operation_uuid.is_nil()){
+        const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(map.creator_local_transaction_id));
+        if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=map.creator_transaction_uuid||
+            (!(pair.checkpoint->flags&4)&&creator.entry.identity.scope!=mga::TransactionScope::local_node))
+          return fail(Error::allocation_creator_mismatch);
+        if(!mga::HasCommittedInventoryOutcome(creator.entry))return fail(Error::allocation_creator_not_committed);
+      }else if(!operation_proof||!MatchesNativeManagementControlMap(*operation_proof,map))return fail(Error::allocation_creator_mismatch);
       for(const auto& record:map.records) {
-        const auto original=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(record.creator_local_transaction_id));
-        if(!original.ok()||original.entry.identity.transaction_uuid.value!=record.creator_transaction_uuid||
-            (!(pair.checkpoint->flags&4)&&original.entry.identity.scope!=mga::TransactionScope::local_node))
-          return fail(Error::allocation_record_creator_mismatch);
+        if(record.creator_operation_uuid.is_nil()){
+          const auto original=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(record.creator_local_transaction_id));
+          if(!original.ok()||original.entry.identity.transaction_uuid.value!=record.creator_transaction_uuid||
+              (!(pair.checkpoint->flags&4)&&original.entry.identity.scope!=mga::TransactionScope::local_node))
+            return fail(Error::allocation_record_creator_mismatch);
+        }else if(!operation_proof||!MatchesNativeManagementControlAllocation(*operation_proof,map.header.filespace_uuid,record,map.states[record.page_number-map.first_page]))return fail(Error::allocation_record_creator_mismatch);
       }
     }
     NativeCheckpointAllocationResult result;result.error=Error::none;
-    result.retained_image_bytes=pair.retained_image_bytes+allocation.retained_image_bytes;
+    result.retained_image_bytes=retained;
     result.checkpoint_inventory=std::move(pair);result.allocation=std::move(allocation);return result;
   }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
    catch(const std::length_error&){return fail(Error::resource_exhausted);}
@@ -1139,26 +1174,48 @@ NativeCheckpointDirectoryResult VerifyCurrentNativeCheckpointDirectoryFromOpenDe
     const auto digest=hash::ComputeSha256Digest(directory.pages.front().bytes);
     if(!digest.ok())return fail(Error::hash_failure);
     if(digest.digest!=target->sha256)return fail(Error::invalid_integrity);
+    if(pair.retained_image_bytes>maximum_retained_image_bytes||directory.retained_image_bytes>maximum_retained_image_bytes-pair.retained_image_bytes)
+      return fail(Error::resource_exhausted);
+    u64 retained=pair.retained_image_bytes+directory.retained_image_bytes;
     const auto& root=*directory.pages.front().directory;
-    const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(root.creator_local_transaction_id));
-    if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=root.creator_transaction_uuid||
-        (!(pair.checkpoint->flags&4)&&creator.entry.identity.scope!=mga::TransactionScope::local_node))
-      return fail(Error::directory_creator_mismatch);
-    if(!mga::HasCommittedInventoryOutcome(creator.entry))return fail(Error::directory_creator_not_committed);
+    if(root.creator_operation_uuid.is_nil()){
+      const auto creator=mga::LookupLocalTransaction(pair.inventory,mga::MakeLocalTransactionId(root.creator_local_transaction_id));
+      if(!creator.ok()||creator.entry.identity.transaction_uuid.value!=root.creator_transaction_uuid||
+          (!(pair.checkpoint->flags&4)&&creator.entry.identity.scope!=mga::TransactionScope::local_node))
+        return fail(Error::directory_creator_mismatch);
+      if(!mga::HasCommittedInventoryOutcome(creator.entry))return fail(Error::directory_creator_not_committed);
+    }else{
+      if(retained==maximum_retained_image_bytes)return fail(Error::resource_exhausted);
+      const auto proof=ReadNativeManagementControlAuthorityFromOpenDevices(database_uuid,locked.ordered,
+        pair.checkpoint->header.filespace_uuid,maximum_retained_image_bytes-retained);
+      if(!proof.ok()){using P=NativeManagementControlAuthorityError;
+        return fail(proof.error==P::resource_exhausted?Error::resource_exhausted:
+          proof.error==P::hash_failure?Error::hash_failure:proof.error==P::io_failure?Error::io_failure:
+          proof.error==P::encrypted_requires_authority?Error::encrypted_requires_crypto_authority:
+          proof.error==P::cluster_requires_authority?Error::cluster_requires_authority:Error::directory_creator_mismatch);
+      }
+      const auto& h=pair.checkpoint->header;
+      if(proof.selection->checkpoint!=disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid}||
+         proof.selection->checkpoint_sha256!=pair.checkpoint_sha256)return fail(Error::binding_mismatch);
+      if(proof.verified_image_bytes>maximum_retained_image_bytes-retained)return fail(Error::resource_exhausted);
+      retained+=proof.verified_image_bytes;
+      if(!MatchesNativeManagementPublishedDirectory(proof,directory,digest.digest))return fail(Error::directory_creator_mismatch);
+    }
     NativeCheckpointDirectoryResult result;result.error=Error::none;
-    result.retained_image_bytes=pair.retained_image_bytes+directory.retained_image_bytes;
+    result.retained_image_bytes=retained;
     result.checkpoint_inventory=std::move(pair);result.directory=std::move(directory);return result;
   }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
    catch(const std::length_error&){return fail(Error::resource_exhausted);}
    catch(...){return fail(Error::io_failure);}
 }
 
-NativeCheckpointHistoryResult VerifyNativeCheckpointHistoryFromOpenDevices(
+static NativeCheckpointHistoryResult ReadNativeCheckpointHistoryFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
     const scratchbird::storage::disk::FilespaceRootReference& head,
     const scratchbird::storage::disk::FilespaceRootReference& terminal,
-    u64 maximum_retained_image_bytes) noexcept {
+    u64 maximum_retained_image_bytes,
+    std::optional<NativeCheckpointInventoryResult> admitted_head) noexcept {
   using namespace native_checkpoint;
   const auto fail=[](Error error){NativeCheckpointHistoryResult r;r.error=error;return r;};
   const auto page_ref=[](const disk::FilespaceRootReference& r){return disk::NativePageReference{r.filespace_uuid,r.page_number,r.page_generation,r.page_size_profile_uuid};};
@@ -1166,15 +1223,27 @@ NativeCheckpointHistoryResult VerifyNativeCheckpointHistoryFromOpenDevices(
     if(!V7(database_uuid)||!V7(head.object_uuid)||head.object_uuid!=terminal.object_uuid
       ||head.kind!=9||terminal.kind!=9||head.page_type!=0x300||terminal.page_type!=0x300
       ||!RefValid(page_ref(head))||!RefValid(page_ref(terminal))||!maximum_retained_image_bytes)return fail(Error::invalid_reference);
+    if(admitted_head){
+      if(!admitted_head->ok()||!admitted_head->checkpoint)return fail(Error::binding_mismatch);
+      const auto& cp=*admitted_head->checkpoint;
+      const disk::NativePageReference actual{cp.header.filespace_uuid,cp.header.page_number,cp.header.page_generation,cp.header.page_size_profile_uuid};
+      if(cp.header.database_uuid!=database_uuid||actual!=page_ref(head)||cp.object_uuid!=head.object_uuid)
+        return fail(Error::binding_mismatch);
+    }
     auto locked=LockFilespaces(devices);if(locked.error!=Error::none)return fail(locked.error);
     NativeCheckpointHistoryResult result;auto next=head;
     std::set<std::pair<Uuid,u64>> slots;std::set<Uuid> page_ids;
     for(;;) {
       if(result.retained_image_bytes>=maximum_retained_image_bytes)return fail(Error::resource_exhausted);
       if(!slots.emplace(next.filespace_uuid,next.page_number).second)return fail(Error::history_mismatch);
-      auto pair=VerifyNativeCheckpointInventoryFromOpenDevices(database_uuid,locked.ordered,next,
+      // Only current-root consumers can supply this already admitted head.
+      // Its charge includes selector and control proof work, not just the
+      // checkpoint/inventory images retained by the raw-root history reader.
+      auto pair=admitted_head?std::move(*admitted_head):VerifyNativeCheckpointInventoryFromOpenDevices(database_uuid,locked.ordered,next,
         maximum_retained_image_bytes-result.retained_image_bytes);
+      admitted_head.reset();
       if(!pair.ok()){auto error=fail(pair.error);error.inventory_error=pair.inventory_error;return error;}
+      if(pair.retained_image_bytes>maximum_retained_image_bytes-result.retained_image_bytes)return fail(Error::resource_exhausted);
       const auto& older=*pair.checkpoint;
       if(!page_ids.insert(older.header.page_uuid).second)return fail(Error::history_mismatch);
       if(!result.checkpoints.empty()) {
@@ -1202,6 +1271,15 @@ NativeCheckpointHistoryResult VerifyNativeCheckpointHistoryFromOpenDevices(
   }catch(const std::bad_alloc&){return fail(Error::resource_exhausted);}
    catch(const std::length_error&){return fail(Error::resource_exhausted);}
    catch(...){return fail(Error::io_failure);}
+}
+
+NativeCheckpointHistoryResult VerifyNativeCheckpointHistoryFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
+    const scratchbird::storage::disk::FilespaceRootReference& head,
+    const scratchbird::storage::disk::FilespaceRootReference& terminal,
+    u64 maximum_retained_image_bytes) noexcept {
+  return ReadNativeCheckpointHistoryFromOpenDevices(database_uuid,devices,head,terminal,maximum_retained_image_bytes,{});
 }
 
 NativeCheckpointSystemStateResult VerifyCurrentNativeCheckpointSystemStateFromOpenDevices(
@@ -1255,8 +1333,7 @@ NativeCheckpointSystemStateResult VerifyCurrentNativeCheckpointSystemStateFromOp
       if(same(observed,checkpoint)){if(s.checkpoint_generation!=pair.checkpoint->checkpoint_generation)return fail(Error::system_state_observation_mismatch);}
       else {
         if(s.checkpoint_object_uuid!=pair.checkpoint->object_uuid||s.checkpoint_generation>=pair.checkpoint->checkpoint_generation)return fail(Error::system_state_observation_mismatch);
-        pair=NativeCheckpointInventoryResult{};
-        history=VerifyNativeCheckpointHistoryFromOpenDevices(database_uuid,locked.ordered,checkpoint,observed,budget-state.bytes.size());
+        history=ReadNativeCheckpointHistoryFromOpenDevices(database_uuid,locked.ordered,checkpoint,observed,budget-state.bytes.size(),std::move(pair));
         if(!history.ok()){auto r=fail(history.error);r.checkpoints.error=history.error;r.checkpoints.inventory_error=history.inventory_error;return r;}
         if(history.checkpoints.back().checkpoint->checkpoint_generation!=s.checkpoint_generation)return fail(Error::system_state_observation_mismatch);
       }
@@ -1310,7 +1387,7 @@ NativeCheckpointHorizonResult VerifyCurrentNativeCheckpointHorizonFromOpenDevice
       if(record.checkpoint_generation<oldest_generation){const auto& r=*record.checkpoint;oldest_generation=record.checkpoint_generation;oldest=disk::FilespaceRootReference{9,0x300,r.filespace_uuid,r.page_number,r.page_generation,r.page_size_profile_uuid,record.checkpoint_object_uuid};}
     }
     NativeCheckpointHistoryResult history;
-    if(oldest){pair=NativeCheckpointInventoryResult{};history=VerifyNativeCheckpointHistoryFromOpenDevices(database_uuid,locked.ordered,checkpoint,*oldest,budget-horizons.retained_image_bytes);
+    if(oldest){history=ReadNativeCheckpointHistoryFromOpenDevices(database_uuid,locked.ordered,checkpoint,*oldest,budget-horizons.retained_image_bytes,std::move(pair));
       if(!history.ok()){auto r=fail(history.error);r.checkpoints.error=history.error;r.checkpoints.inventory_error=history.inventory_error;return r;}}
     else{history.error=Error::none;history.retained_image_bytes=pair.retained_image_bytes;history.checkpoints.push_back(std::move(pair));}
     std::map<u64,const NativeCheckpointRoot*> observed;std::set<Uuid> checkpoint_ids;

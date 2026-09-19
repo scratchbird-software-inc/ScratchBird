@@ -401,7 +401,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND sbsql_sblr_alignment_filespace_page_zero --inventory-stage-only)
   set_tests_properties(sbsql_sblr_alignment_native_inventory_successor_staging PROPERTIES
     LABELS "sbsql_sblr_alignment;native_inventory;actual_staging;binary_UUID;not_SQL_E2E"
-    TIMEOUT 900 RUN_SERIAL TRUE)
+    TIMEOUT 900 RUN_SERIAL TRUE FIXTURES_REQUIRED native_inventory_staging_allocations)
+  foreach(inventory_allocation_shard RANGE 0 15)
+    add_test(NAME sbsql_sblr_alignment_native_inventory_successor_staging_allocations_${inventory_allocation_shard}
+      COMMAND sbsql_sblr_alignment_filespace_page_zero --inventory-stage-allocation-shard ${inventory_allocation_shard})
+    set_tests_properties(sbsql_sblr_alignment_native_inventory_successor_staging_allocations_${inventory_allocation_shard} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_inventory;actual_staging;binary_UUID;allocation_faults;not_SQL_E2E"
+      TIMEOUT 300 FIXTURES_SETUP native_inventory_staging_allocations)
+  endforeach()
   add_test(NAME sbsql_sblr_alignment_native_btree_staging
     COMMAND sbsql_sblr_alignment_filespace_page_zero --btree-stage-only)
   set_tests_properties(sbsql_sblr_alignment_native_btree_staging PROPERTIES
@@ -412,6 +419,32 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "sbsql_sblr_alignment;native_catalog;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   add_test(NAME sbsql_sblr_alignment_bound_checkpoint_selection
     COMMAND sbsql_sblr_alignment_filespace_page_zero --bound-selector-only)
+  add_test(NAME sbsql_sblr_alignment_directory_selected_staging
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --directory-stage-only)
+  set_tests_properties(sbsql_sblr_alignment_directory_selected_staging PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_directory;mixed_filespaces;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
+  add_test(NAME sbsql_sblr_alignment_directory_allocation_chains
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-directory-allocation-only)
+  set_tests_properties(sbsql_sblr_alignment_directory_allocation_chains PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_directory;mixed_filespaces;actual_chain;binary_UUID;not_SQL_E2E" TIMEOUT 120)
+  add_test(NAME sbsql_sblr_alignment_directory_selected_controls
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --directory-controls-only)
+  set_tests_properties(sbsql_sblr_alignment_directory_selected_controls PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_directory;mixed_filespaces;actual_binding;binary_UUID;not_SQL_E2E" TIMEOUT 120)
+  add_test(NAME sbsql_sblr_alignment_directory_immutable_control_graph
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --directory-graph-only)
+  set_tests_properties(sbsql_sblr_alignment_directory_immutable_control_graph PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_directory;mixed_filespaces;immutable_graph;binary_UUID;not_SQL_E2E" TIMEOUT 120)
+  add_test(NAME sbsql_sblr_alignment_bound_checkpoint_history
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --bound-history-only)
+  set_tests_properties(sbsql_sblr_alignment_bound_checkpoint_history PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_checkpoint_selection;actual_binding;binary_UUID;not_SQL_E2E" TIMEOUT 120)
+  foreach(history_shard RANGE 0 7)
+    add_test(NAME sbsql_sblr_alignment_bound_checkpoint_history_faults_${history_shard}
+      COMMAND sbsql_sblr_alignment_filespace_page_zero --bound-history-shard ${history_shard})
+    set_tests_properties(sbsql_sblr_alignment_bound_checkpoint_history_faults_${history_shard} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_checkpoint_selection;actual_binding;binary_UUID;fault_injection;not_SQL_E2E" TIMEOUT 120)
+  endforeach()
   add_test(NAME sbsql_sblr_alignment_checkpoint_operation_lineage
     COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-owner-only)
   set_tests_properties(sbsql_sblr_alignment_checkpoint_operation_lineage PROPERTIES
@@ -436,6 +469,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "sbsql_sblr_alignment;native_system_state;checkpoint;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   add_test(NAME sbsql_sblr_alignment_checkpoint_directory
     COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-directory-only)
+  add_test(NAME sbsql_sblr_alignment_directory_allocation_binding
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --directory-allocation-only)
+  set_tests_properties(sbsql_sblr_alignment_directory_allocation_binding PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_filespace_directory;binary_UUID;allocation_root;image_only;not_SQL_E2E" TIMEOUT 120)
   set_tests_properties(sbsql_sblr_alignment_checkpoint_directory PROPERTIES
     LABELS "sbsql_sblr_alignment;native_filespace_directory;checkpoint;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   add_test(NAME sbsql_sblr_alignment_policy_roots
@@ -454,6 +491,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
     "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")
   add_test(NAME sbsql_sblr_alignment_filespace_page_zero COMMAND sbsql_sblr_alignment_filespace_page_zero)
+  add_test(NAME sbsql_sblr_alignment_filespace_page_zero_unknown_mode
+    COMMAND sbsql_sblr_alignment_filespace_page_zero --unknown-mode-for-admission-test)
+  set_tests_properties(sbsql_sblr_alignment_filespace_page_zero_unknown_mode PROPERTIES
+    WILL_FAIL TRUE TIMEOUT 5 LABELS "sbsql_sblr_alignment;test_harness;unknown_mode_rejection;not_SQL_E2E")
   set_tests_properties(sbsql_sblr_alignment_filespace_page_zero PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-00;component_regression;canonical_page_zero;canonical_catalog_root;binary_uuid;node_ownership"
     TIMEOUT 300)
@@ -8457,6 +8498,110 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME sbsql_sblr_alignment_native_management_control_bundle COMMAND sbsql_sblr_alignment_native_management_control_bundle)
   set_tests_properties(sbsql_sblr_alignment_native_management_control_bundle PROPERTIES
     LABELS "sbsql_sblr_alignment;native_management_control_bundle;binary_UUID;actual_read;not_SQL_E2E" TIMEOUT 300)
+  add_test(NAME sbsql_sblr_alignment_native_inventory_publication
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-publication)
+  set_tests_properties(sbsql_sblr_alignment_native_inventory_publication PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_inventory_publication;binary_UUID;actual_write;not_SQL_E2E" TIMEOUT 300)
+  add_test(NAME sbsql_sblr_alignment_native_inventory_publication_mixed
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-publication-mixed)
+  set_tests_properties(sbsql_sblr_alignment_native_inventory_publication_mixed PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_inventory_publication;mixed_filespace;actual_write;not_SQL_E2E" TIMEOUT 300)
+  add_test(NAME sbsql_sblr_alignment_native_inventory_resolution
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-resolution)
+  set_tests_properties(sbsql_sblr_alignment_native_inventory_resolution PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_inventory_publication;pending_resolution;actual_write;not_SQL_E2E" TIMEOUT 300)
+  add_test(NAME sbsql_sblr_alignment_native_inventory_resolution_requests
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-resolution-requests)
+  set_tests_properties(sbsql_sblr_alignment_native_inventory_resolution_requests PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_inventory_publication;pending_resolution;request_CAS;not_SQL_E2E" TIMEOUT 300)
+  add_test(NAME sbsql_sblr_alignment_native_inventory_staging_admission
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-staging-admission)
+  set_tests_properties(sbsql_sblr_alignment_native_inventory_staging_admission PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_inventory_publication;staging_admission;not_SQL_E2E" TIMEOUT 300)
+  foreach(inventory_consumer RANGE 0 1)
+    foreach(consumer_fault RANGE 0 2)
+      if(consumer_fault EQUAL 2)
+        set(consumer_last_shard 127)
+      elseif(consumer_fault EQUAL 1)
+        set(consumer_last_shard 39)
+      else()
+        set(consumer_last_shard 7)
+      endif()
+      foreach(consumer_shard RANGE 0 ${consumer_last_shard})
+        add_test(NAME sbsql_sblr_alignment_native_inventory_consumer_faults_${inventory_consumer}_${consumer_fault}_${consumer_shard}
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-consumer-faults ${inventory_consumer} ${consumer_fault} ${consumer_shard})
+        set_tests_properties(sbsql_sblr_alignment_native_inventory_consumer_faults_${inventory_consumer}_${consumer_fault}_${consumer_shard} PROPERTIES
+          LABELS "sbsql_sblr_alignment;native_inventory_publication;allocation_authority;backend_faults;not_SQL_E2E" TIMEOUT 300)
+      endforeach()
+    endforeach()
+  endforeach()
+  add_test(NAME sbsql_sblr_alignment_native_inventory_publication_cold
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-publication-cold)
+  set_tests_properties(sbsql_sblr_alignment_native_inventory_publication_cold PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_inventory_publication;cold_recovery;not_SQL_E2E" TIMEOUT 300)
+  foreach(inventory_stage RANGE 0 1)
+    foreach(inventory_fault RANGE 0 3)
+      if(inventory_fault EQUAL 2)
+        if(inventory_stage EQUAL 1)
+          set(inventory_last_shard 31)
+        else()
+          set(inventory_last_shard 7)
+        endif()
+      elseif(inventory_fault EQUAL 1)
+        set(inventory_last_shard 4)
+      else()
+        set(inventory_last_shard 0)
+      endif()
+      foreach(inventory_shard RANGE 0 ${inventory_last_shard})
+        add_test(NAME sbsql_sblr_alignment_native_inventory_install_faults_${inventory_stage}_${inventory_fault}_${inventory_shard}
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-install-faults ${inventory_stage} ${inventory_fault} ${inventory_shard})
+        set_tests_properties(sbsql_sblr_alignment_native_inventory_install_faults_${inventory_stage}_${inventory_fault}_${inventory_shard} PROPERTIES
+          LABELS "sbsql_sblr_alignment;native_inventory_publication;failure_injection;not_SQL_E2E" TIMEOUT 300)
+      endforeach()
+    endforeach()
+  endforeach()
+  foreach(inventory_stage RANGE 0 1)
+    foreach(inventory_fault RANGE 0 2)
+      if(inventory_fault EQUAL 2)
+        if(inventory_stage EQUAL 1)
+          set(inventory_last_shard 63)
+        else()
+          set(inventory_last_shard 15)
+        endif()
+      elseif(inventory_fault EQUAL 1)
+        set(inventory_last_shard 4)
+      else()
+        set(inventory_last_shard 0)
+      endif()
+      foreach(inventory_shard RANGE 0 ${inventory_last_shard})
+        add_test(NAME sbsql_sblr_alignment_native_inventory_reconstruction_faults_${inventory_stage}_${inventory_fault}_${inventory_shard}
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-reconstruction-faults ${inventory_stage} ${inventory_fault} ${inventory_shard})
+        set_tests_properties(sbsql_sblr_alignment_native_inventory_reconstruction_faults_${inventory_stage}_${inventory_fault}_${inventory_shard} PROPERTIES
+          LABELS "sbsql_sblr_alignment;native_inventory_publication;cold_recovery;failure_injection;not_SQL_E2E" TIMEOUT 300)
+      endforeach()
+    endforeach()
+  endforeach()
+  foreach(inventory_stage RANGE 0 1)
+    foreach(inventory_fault RANGE 0 4)
+      if(inventory_fault EQUAL 2)
+        if(inventory_stage EQUAL 1)
+          set(inventory_last_shard 31)
+        else()
+          set(inventory_last_shard 7)
+        endif()
+      elseif(inventory_fault EQUAL 1)
+        set(inventory_last_shard 4)
+      else()
+        set(inventory_last_shard 0)
+      endif()
+      foreach(inventory_shard RANGE 0 ${inventory_last_shard})
+        add_test(NAME sbsql_sblr_alignment_native_inventory_resolution_faults_${inventory_stage}_${inventory_fault}_${inventory_shard}
+          COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-resolution-faults ${inventory_stage} ${inventory_fault} ${inventory_shard})
+        set_tests_properties(sbsql_sblr_alignment_native_inventory_resolution_faults_${inventory_stage}_${inventory_fault}_${inventory_shard} PROPERTIES
+          LABELS "sbsql_sblr_alignment;native_inventory_publication;pending_resolution;failure_injection;not_SQL_E2E" TIMEOUT 300)
+      endforeach()
+    endforeach()
+  endforeach()
   foreach(inventory_route RANGE 0 1)
     foreach(inventory_shard RANGE 0 3)
       add_test(NAME sbsql_sblr_alignment_native_inventory_history_allocations_${inventory_route}_${inventory_shard}
