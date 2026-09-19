@@ -46,6 +46,11 @@ class NativePublicationLease {
   friend NativePublicationInspection InstallNativeManagementPublicationOnLease(
     NativePublicationLease&,const NativePublicationPlan&,const std::vector<byte>&,
     const std::vector<std::vector<byte>>&,u64) noexcept;
+  friend NativePublicationInspection InstallNativeManagementControlGraphOnLease(
+    NativePublicationLease&,const NativePublicationPlan&,const std::vector<byte>&,
+    const std::vector<std::vector<byte>>&,const std::vector<std::vector<byte>>&,u64) noexcept;
+  friend NativePublicationInspection ResumeNativeManagementControlGraphOnLease(
+    NativePublicationLease&,u64) noexcept;
 };
 struct NativePublicationReservation {
   NativePublicationError error=NativePublicationError::invalid_request;
@@ -85,4 +90,14 @@ NativePublicationInspection InstallNativePublicationPlanOnLease(
 NativePublicationInspection InstallNativeManagementPublicationOnLease(
   NativePublicationLease&,const NativePublicationPlan&,const std::vector<byte>& target_checkpoint,
   const std::vector<std::vector<byte>>& extent_pages,u64 maximum_retained_image_bytes) noexcept;
+// Installs and verifies the complete version3 plan/extent/bundle/maps/checkpoint.
+// Does not change checkpoint selectors or confer kernel/client authority.
+NativePublicationInspection InstallNativeManagementControlGraphOnLease(
+  NativePublicationLease&,const NativePublicationPlan&,const std::vector<byte>& target_checkpoint,
+  const std::vector<std::vector<byte>>& extent_pages,const std::vector<std::vector<byte>>& bundle_pages,
+  u64 maximum_retained_image_bytes) noexcept;
+// Reconstructs from an intact actual anchored plan/extent/bundle and bound base.
+// Missing input leaves the pending intent intact; no guessed UUIDs or success.
+NativePublicationInspection ResumeNativeManagementControlGraphOnLease(
+  NativePublicationLease&,u64 maximum_retained_image_bytes) noexcept;
 } // namespace scratchbird::storage::database
