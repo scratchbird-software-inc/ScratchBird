@@ -9,6 +9,7 @@
 #include "filespace_lifecycle.hpp"
 #include "temp_workspace_lifecycle.hpp"
 #include "uuid.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -176,6 +177,8 @@ void TestFilespaceRegistryManifest(const std::filesystem::path& root) {
 memory::TempWorkspacePolicy TempPolicy(const std::filesystem::path& root) {
   memory::TempWorkspacePolicy policy;
   policy.policy_name = "eler013_temp_workspace";
+  policy.database_uuid = scratchbird::tests::FixtureUuid(13, 1);
+  policy.engine_uuid = scratchbird::tests::FixtureUuid(13, 2);
   policy.manifest_generation = 13;
   policy.manifest_writer_identity = "eler013-manifest-writer";
   policy.root_path = root;
@@ -189,25 +192,28 @@ memory::TempWorkspacePolicy TempPolicy(const std::filesystem::path& root) {
   return policy;
 }
 
-memory::TempWorkspaceAllocationRequest TempRequest(std::string suffix) {
+memory::TempWorkspaceAllocationRequest TempRequest(std::uint32_t ordinal) {
+  using scratchbird::tests::FixtureUuid;
   memory::TempWorkspaceAllocationRequest request;
-  request.owner.temp_object_uuid = "temp-" + suffix;
-  request.owner.database_id = "database-a";
-  request.owner.engine_id = "engine-a";
-  request.owner.session_id = "session-a";
-  request.owner.transaction_id = "txn-a";
-  request.owner.statement_id = "stmt-a";
-  request.owner.operation_id = "op-a";
+  request.owner.temp_object_uuid = FixtureUuid(0x1300, ordinal);
+  request.owner.database_id = FixtureUuid(13, 1);
+  request.owner.engine_id = FixtureUuid(13, 2);
+  request.owner.session_id = FixtureUuid(13, 3);
+  request.owner.transaction_id = FixtureUuid(13, 4);
+  request.owner.statement_id = FixtureUuid(13, 5);
+  request.owner.operation_id = FixtureUuid(13, 6);
   request.owner.policy_generation = 7;
   request.owner.security_generation = 9;
-  request.owner.resource_budget_reference = "budget-a";
+  request.owner.resource_budget_reference = FixtureUuid(13, 7);
+  request.owner.snapshot_boundary = FixtureUuid(13, 8);
+  request.owner.metadata_boundary = FixtureUuid(13, 9);
   request.bytes = 128;
   request.purpose = "ELER-013 durable temp workspace manifest proof";
   return request;
 }
 
 std::filesystem::path TempManifestPath(const std::filesystem::path& root) {
-  return root / ".scratchbird_temp_workspace_manifest.v2";
+  return root / ".scratchbird_temp_workspace_manifest.v3";
 }
 
 void TestTempWorkspaceManifest(const std::filesystem::path& root) {
@@ -215,7 +221,7 @@ void TestTempWorkspaceManifest(const std::filesystem::path& root) {
   const auto policy = TempPolicy(temp_root);
   {
     memory::TempWorkspaceLifecycleManager manager(policy);
-    auto first = manager.AllocateSpillFile(TempRequest("first"));
+    auto first = manager.AllocateSpillFile(TempRequest(1));
     Require(first.ok() && first.record.has_value(), "temp workspace first allocation failed");
 
     const auto manifest_path = TempManifestPath(temp_root);
@@ -227,11 +233,28 @@ void TestTempWorkspaceManifest(const std::filesystem::path& root) {
             "temp workspace manifest checksum algorithm missing");
     Require(manifest.find("eler013-manifest-writer") != std::string::npos,
             "temp workspace manifest writer identity missing");
-    Require(manifest.find("record_v1") != std::string::npos,
-            "temp workspace manifest record missing");
+    Require(manifest.starts_with("SB_TEMP_WORKSPACE_MANIFEST_V3\n"),
+            "temp workspace binary manifest version missing");
+    const auto metadata_start = manifest.find('\n') + 1;
+    const auto body_start = manifest.find('\n', metadata_start) + 1;
+    Require(body_start > metadata_start && manifest.size() >= body_start + 40,
+            "temp workspace binary manifest body missing");
+    const auto read_u64 = [&manifest](std::size_t offset) {
+      std::uint64_t value = 0;
+      for (unsigned i = 0; i < 8; ++i)
+        value |= std::uint64_t(static_cast<unsigned char>(manifest[offset + i])) << (8 * i);
+      return value;
+    };
+    Require(read_u64(body_start) == 1 && read_u64(body_start + 16) == 3,
+            "temp workspace binary record count/version mismatch");
+    const auto expected = TempRequest(1).owner.temp_object_uuid;
+    Require(manifest.compare(body_start + 24, expected.bytes.size(),
+                             reinterpret_cast<const char*>(expected.bytes.data()),
+                             expected.bytes.size()) == 0,
+            "temp workspace record did not retain binary object identity");
 
     WriteFile(manifest_path.string() + ".tmp", "stale-temp");
-    auto second = manager.AllocateSpillFile(TempRequest("second"));
+    auto second = manager.AllocateSpillFile(TempRequest(2));
     Require(second.ok() && second.record.has_value(), "temp workspace second allocation failed");
     Require(!std::filesystem::exists(manifest_path.string() + ".tmp"),
             "temp workspace stale manifest temp survived persist");

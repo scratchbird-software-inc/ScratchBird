@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -75,9 +76,10 @@ memory::MemoryAccountingSnapshot Snapshot() {
   snapshot.leak_candidate_count = 1;
   snapshot.page_buffer_current_bytes = 2048;
   snapshot.arena_current_bytes = 4096;
-  snapshot.contexts.push_back({"query", "query-secret-token-raw", 4096, 8192, 8, 4, 1, 4});
-  snapshot.contexts.push_back({"session", "session-normal", 2048, 4096, 5, 3, 1, 2});
-  snapshot.contexts.push_back({"page_cache", "page-cache-hot", 1024, 2048, 4, 4, 0, 0});
+  // Deliberately untrusted legacy labels exercise redaction, not identity binding.
+  snapshot.contexts.push_back({"query", "query-secret-token-raw", std::nullopt, 4096, 8192, 8, 4, 1, 4});
+  snapshot.contexts.push_back({"session", "session-normal", std::nullopt, 2048, 4096, 5, 3, 1, 2});
+  snapshot.contexts.push_back({"page_cache", "page-cache-hot", std::nullopt, 1024, 2048, 4, 4, 0, 0});
   snapshot.categories.push_back({memory::MemoryCategory::executor_query_reserved,
                                  4096, 8192, 8, 4, 1, 4});
   snapshot.categories.push_back({memory::MemoryCategory::page_buffer,

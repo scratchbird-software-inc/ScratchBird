@@ -8,6 +8,7 @@
 
 #include "memory.hpp"
 #include "temp_workspace_lifecycle.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -21,6 +22,7 @@
 namespace {
 
 namespace memory = scratchbird::core::memory;
+using scratchbird::tests::FixtureUuid;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -51,11 +53,11 @@ memory::MemoryTag TagFor(int thread_id, int iteration) {
   memory::MemoryTag tag;
   tag.category = memory::MemoryCategory::executor_query_reserved;
   tag.lifetime = memory::MemoryLifetime::statement;
-  tag.owner = "memory_soak_thread_" + std::to_string(thread_id);
-  tag.context_id = "memory_soak_context_" + std::to_string(thread_id);
-  tag.session_id = "session-" + std::to_string(thread_id);
-  tag.statement_id = "statement-" + std::to_string(iteration);
-  tag.query_id = "query-" + std::to_string(thread_id);
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::owner] = FixtureUuid(0x301, thread_id).bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::context] = FixtureUuid(0x302, thread_id).bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::session] = FixtureUuid(0x303, thread_id).bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::statement] = FixtureUuid(0x304, iteration).bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::query] = FixtureUuid(0x305, thread_id).bytes;
   tag.purpose = "MMCH_MEMORY_SANITIZER_SOAK_CONCURRENCY";
   return tag;
 }
@@ -111,6 +113,8 @@ int main() {
                     "scratchbird_mmch_soak_workspace";
   std::filesystem::remove_all(root);
   memory::TempWorkspacePolicy temp_policy;
+  temp_policy.database_uuid = FixtureUuid(0x306, 5);
+  temp_policy.engine_uuid = FixtureUuid(0x306, 6);
   temp_policy.root_path = root;
   temp_policy.filespace_quota_bytes = 1024 * 1024;
   temp_policy.session_quota_bytes = 1024 * 1024;
@@ -120,10 +124,15 @@ int main() {
   memory::TempWorkspaceLifecycleManager temp_manager(temp_policy);
   memory::TempWorkspaceAllocationRequest request;
   request.bytes = 4096;
-  request.owner.temp_object_uuid = "018f4f4c-3333-7333-8333-333333333333";
-  request.owner.session_id = "session-soak";
-  request.owner.statement_id = "statement-soak";
-  request.owner.operation_id = "operation-soak";
+  request.owner.temp_object_uuid = FixtureUuid(0x306, 1);
+  request.owner.session_id = FixtureUuid(0x306, 2);
+  request.owner.statement_id = FixtureUuid(0x306, 3);
+  request.owner.operation_id = FixtureUuid(0x306, 4);
+  request.owner.database_id = FixtureUuid(0x306, 5);
+  request.owner.engine_id = FixtureUuid(0x306, 6);
+  request.owner.resource_budget_reference = FixtureUuid(0x306, 7);
+  request.owner.snapshot_boundary = FixtureUuid(0x306, 8);
+  request.owner.metadata_boundary = FixtureUuid(0x306, 9);
   request.purpose = "MMCH_MEMORY_SANITIZER_SOAK_CONCURRENCY";
   auto allocation = temp_manager.AllocateSpillFile(request);
   Require(allocation.ok(), "temp workspace allocation failed during soak gate");

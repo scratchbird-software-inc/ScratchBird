@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <optional>
 #include <string_view>
 
 namespace {
@@ -39,7 +40,8 @@ int main() {
   request.snapshot.allocation_count = 12;
   request.snapshot.deallocation_count = 10;
   request.snapshot.failure_count = 1;
-  request.snapshot.contexts.push_back({"query", "query-secret-token", 4096, 8192, 4, 2, 1, 2});
+  // Untrusted label is a redaction canary, not an engine identity.
+  request.snapshot.contexts.push_back({"query", "query-secret-token", std::nullopt, 4096, 8192, 4, 2, 1, 2});
   request.snapshot.categories.push_back({memory::MemoryCategory::executor_query_reserved,
                                          4096, 8192, 4, 2, 1, 2});
   request.diagnostics.push_back(platform::MakeDiagnostic(

@@ -12,6 +12,7 @@
 // PUBLIC_CLUSTER_PROVIDER_HANDSHAKE_GATE
 
 #include "cluster_provider/cluster_provider.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -106,9 +107,9 @@ api::EngineRequestContext EngineContext() {
   api::EngineRequestContext context;
   context.security_context_present = true;
   context.cluster_authority_available = true;
-  context.database_uuid.canonical = "database:public-cluster-handshake-pcr102";
-  context.cluster_uuid.canonical = "cluster:public-cluster-handshake-pcr102";
-  context.principal_uuid.canonical = "principal:public-cluster-handshake-pcr102";
+  context.database_uuid = scratchbird::tests::FixtureUuid(102, 1);
+  context.cluster_uuid = scratchbird::tests::FixtureUuid(102, 2);
+  context.principal_uuid = scratchbird::tests::FixtureUuid(102, 3);
   context.trace_tags.push_back("public_cluster_provider_handshake_gate");
   return context;
 }

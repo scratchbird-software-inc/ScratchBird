@@ -11,6 +11,7 @@
 #include "operator_typed_arena_work_area.hpp"
 #include "optimizer_typed_arena_work_area.hpp"
 #include "query_memory_arena.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -27,6 +28,7 @@ namespace {
 namespace exec = scratchbird::engine::executor;
 namespace memory = scratchbird::core::memory;
 namespace opt = scratchbird::engine::optimizer;
+using scratchbird::tests::FixtureUuid;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -68,24 +70,27 @@ memory::MemoryTag Tag(std::string purpose) {
   tag.purpose = std::move(purpose);
   tag.category = memory::MemoryCategory::executor_query_reserved;
   tag.lifetime = memory::MemoryLifetime::arena;
-  tag.owner = "public_query_bump_region_arena_gate";
-  tag.context_id = "public-query-bump-region";
-  tag.session_id = "session-public-query-bump-region";
-  tag.transaction_id = "transaction-public-query-bump-region";
-  tag.statement_id = "statement-public-query-bump-region";
-  tag.query_id = "query-public-query-bump-region";
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::owner] = FixtureUuid(0x200, 1).bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::context] = FixtureUuid(0x200, 2).bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::session] = FixtureUuid(0x200, 3).bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::transaction] = FixtureUuid(0x200, 4).bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::statement] = FixtureUuid(0x200, 5).bytes;
+  tag.binary_ownership[memory::MemoryBinaryScopeKind::query] = FixtureUuid(0x200, 6).bytes;
   return tag;
 }
 
-memory::QueryMemoryContext QueryContext(std::string suffix) {
+memory::QueryMemoryContext QueryContext() {
   memory::QueryMemoryContext context;
-  context.engine_id = "public-engine";
-  context.database_id = "public-db";
-  context.session_id = "session-" + suffix;
-  context.transaction_id = "transaction-" + suffix;
-  context.statement_id = "statement-" + suffix;
-  context.query_id = "query-" + suffix;
-  context.operation_id = "operator-" + suffix;
+  context.engine_id = FixtureUuid(0x201, 1);
+  context.database_id = FixtureUuid(0x201, 2);
+  context.session_id = FixtureUuid(0x201, 3);
+  context.transaction_id = FixtureUuid(0x201, 4);
+  context.statement_id = FixtureUuid(0x201, 5);
+  context.query_id = FixtureUuid(0x201, 6);
+  context.operation_id = FixtureUuid(0x201, 7);
+  context.snapshot_boundary = FixtureUuid(0x201, 9);
+  context.metadata_boundary = FixtureUuid(0x201, 10);
+  context.resource_budget_reference = FixtureUuid(0x201, 11);
   return context;
 }
 
@@ -146,12 +151,12 @@ void RawArenaUsesChunkedBumpAllocationAndRejectsEscapedPointers() {
 void QueryHeapGrantsUseBumpBackingAndResetByChunks() {
   memory::BoundedAllocator allocator(Policy());
   memory::HierarchicalMemoryBudgetLedger ledger;
-  memory::UnifiedMemorySpillBudgetLedger unified("public-query-bump-region", 16 * 1024);
+  memory::UnifiedMemorySpillBudgetLedger unified(FixtureUuid(0x201, 8), 16 * 1024);
   memory::QueryMemoryArena arena(
-      QueryContext("bump"), QueryLimits(), &allocator, nullptr, &unified, &ledger);
+      QueryContext(), QueryLimits(), &allocator, nullptr, &unified, &ledger);
 
   const auto before = allocator.Snapshot();
-  std::vector<std::string> grant_ids;
+  std::vector<memory::QueryMemoryUuid> grant_ids;
   for (int i = 0; i < 32; ++i) {
     memory::QueryMemoryGrantRequest request;
     request.family = i % 2 == 0 ? memory::QueryMemoryFamily::relational
@@ -173,10 +178,15 @@ void QueryHeapGrantsUseBumpBackingAndResetByChunks() {
           "query bump arena allocated one backing block per grant");
   Require(arena.Snapshot().current_bytes == 32 * 64,
           "query arena logical current bytes after grants changed");
-  Require(ledger.Snapshot().current_bytes == 32 * 64,
-          "query arena hierarchical ledger bytes after grants changed");
-  Require(unified.Snapshot().total_bytes == 32 * 64,
-          "query arena unified budget bytes after grants changed");
+  const auto retained = arena.Snapshot().retained_heap_bytes;
+  Require(retained >= 32 * 64 && retained <= 16 * 1024,
+          "query backing outside admitted capacity bounds");
+  Require(retained == after_grants.current_bytes - before.current_bytes,
+          "query retained capacity does not match actual backing allocations");
+  Require(ledger.Snapshot().current_bytes == retained,
+          "query hierarchical ledger did not charge retained backing");
+  Require(unified.Snapshot().total_bytes == retained,
+          "query unified budget did not charge retained backing");
 
   const auto first_release = arena.Release(grant_ids.front());
   Require(first_release.ok(), "first query bump grant release failed");
@@ -187,6 +197,10 @@ void QueryHeapGrantsUseBumpBackingAndResetByChunks() {
           "query bump backing chunks were released before the last heap grant");
   Require(arena.Snapshot().current_bytes == 31 * 64,
           "query arena logical bytes after first release changed");
+  Require(ledger.Snapshot().current_bytes == retained &&
+              unified.Snapshot().total_bytes == retained &&
+              arena.Snapshot().retained_heap_bytes == retained,
+          "logical release prematurely returned physical backing credits");
 
   for (std::size_t i = 1; i < grant_ids.size(); ++i) {
     const auto released = arena.Release(grant_ids[i]);

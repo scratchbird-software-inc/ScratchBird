@@ -9,6 +9,7 @@
 // CEIC-018 focused validation for secure temp spill creation and CEIC-011
 // reservation integration.
 #include "temp_workspace_lifecycle.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <chrono>
@@ -107,8 +108,8 @@ memory::HierarchicalMemoryBudgetProvenance RuntimeProvenance() {
 }
 
 memory::HierarchicalMemoryScopeRef Scope(memory::HierarchicalMemoryScopeKind kind,
-                                         std::string id) {
-  return {kind, std::move(id)};
+                                         memory::TempWorkspaceUuid id) {
+  return {kind, {}, id.bytes};
 }
 
 void SetBudget(memory::HierarchicalMemoryBudgetLedger* ledger,
@@ -129,6 +130,8 @@ memory::TempWorkspacePolicy Policy(
     std::uint64_t quota = 1024 * 1024) {
   memory::TempWorkspacePolicy policy;
   policy.policy_name = "CEIC-018";
+  policy.database_uuid = scratchbird::tests::FixtureUuid(18, 1);
+  policy.engine_uuid = scratchbird::tests::FixtureUuid(18, 2);
   policy.root_path = root;
   policy.filespace_quota_bytes = quota;
   policy.session_quota_bytes = quota;
@@ -149,30 +152,31 @@ memory::TempWorkspacePolicy Policy(
   return policy;
 }
 
-memory::TempWorkspaceOwner Owner(std::string suffix) {
+memory::TempWorkspaceOwner Owner(std::uint32_t ordinal) {
+  using scratchbird::tests::FixtureUuid;
   memory::TempWorkspaceOwner owner;
-  owner.temp_object_uuid = "ceic018-" + std::move(suffix);
-  owner.database_id = "database-ceic018";
-  owner.engine_id = "engine-ceic018";
-  owner.session_id = "session-ceic018";
-  owner.transaction_id = "txn-ceic018";
-  owner.statement_id = "stmt-ceic018";
-  owner.operation_id = "op-ceic018";
+  owner.temp_object_uuid = FixtureUuid(0x1800, ordinal);
+  owner.database_id = FixtureUuid(18, 1);
+  owner.engine_id = FixtureUuid(18, 2);
+  owner.session_id = FixtureUuid(18, 3);
+  owner.transaction_id = FixtureUuid(18, 4);
+  owner.statement_id = FixtureUuid(18, 5);
+  owner.operation_id = FixtureUuid(18, 6);
   owner.policy_generation = 18;
   owner.security_generation = 180;
-  owner.snapshot_boundary = "mga-snapshot-not-temp-authority";
-  owner.metadata_boundary = "metadata-boundary-not-recovery-authority";
-  owner.resource_budget_reference = "ceic-011-ledger";
+  owner.snapshot_boundary = FixtureUuid(18, 7);
+  owner.metadata_boundary = FixtureUuid(18, 8);
+  owner.resource_budget_reference = FixtureUuid(18, 9);
   return owner;
 }
 
 memory::TempWorkspaceAllocationRequest Request(
-    std::string suffix,
+    std::uint32_t ordinal,
     std::uint64_t bytes = 4096,
     memory::TempWorkspaceLifetime lifetime =
         memory::TempWorkspaceLifetime::statement_lifetime) {
   memory::TempWorkspaceAllocationRequest request;
-  request.owner = Owner(std::move(suffix));
+  request.owner = Owner(ordinal);
   request.lifetime = lifetime;
   request.bytes = bytes;
   request.purpose = "CEIC-018 secure temp spill reservation gate";
@@ -244,7 +248,10 @@ void SecureRandomExclusiveCreateAndPermissions() {
   std::set<std::string> tokens;
   std::vector<std::filesystem::path> paths;
   for (int i = 0; i < 8; ++i) {
-    auto allocated = manager.AllocateSpillFile(Request("secure-" + std::to_string(i), 2048));
+    auto allocated = manager.AllocateSpillFile(Request(100 + i, 2048));
+    if (!allocated.ok()) {
+      std::cerr << "allocation diagnostic=" << allocated.diagnostic.diagnostic_code << '\n';
+    }
     Require(allocated.ok() && allocated.record.has_value(),
             "CEIC-018 secure spill allocation failed");
     const auto& record = *allocated.record;
@@ -313,7 +320,7 @@ void PrecreatedTargetsAndSymlinkRootsFailClosed() {
 
   memory::HierarchicalMemoryBudgetLedger ledger;
   memory::TempWorkspaceLifecycleManager manager(Policy(root, memory::TempWorkspaceDiskReservationMode::sparse_file, &ledger));
-  auto allocated = manager.AllocateSpillFile(Request("precreated", 1024));
+  auto allocated = manager.AllocateSpillFile(Request(1, 1024));
   Require(allocated.ok() && allocated.record.has_value(),
           "CEIC-018 random allocation failed near precreated target");
   Require(allocated.record->path != old_predictable,
@@ -342,7 +349,7 @@ void PrecreatedTargetsAndSymlinkRootsFailClosed() {
   Require(::symlink(real_root.c_str(), symlink_root.c_str()) == 0,
           "CEIC-018 failed to create symlink root probe");
   memory::TempWorkspaceLifecycleManager symlink_manager(Policy(symlink_root, memory::TempWorkspaceDiskReservationMode::sparse_file, &ledger));
-  auto refused = symlink_manager.AllocateSpillFile(Request("symlink-root", 1024));
+  auto refused = symlink_manager.AllocateSpillFile(Request(2, 1024));
   Require(!refused.ok() && !refused.record.has_value(),
           "CEIC-018 accepted symlink workspace root");
   Require(refused.diagnostic.diagnostic_code == "TEMP_WORKSPACE.ROOT_UNSAFE",
@@ -362,7 +369,7 @@ void ReservationModesAndQuotaRefusals() {
     memory::HierarchicalMemoryBudgetLedger ledger;
     memory::TempWorkspaceLifecycleManager manager(
         Policy(root, memory::TempWorkspaceDiskReservationMode::logical_quota_only, &ledger));
-    auto allocated = manager.AllocateSpillFile(Request("logical", 4096));
+    auto allocated = manager.AllocateSpillFile(Request(3, 4096));
     Require(allocated.ok() && allocated.record.has_value(),
             "CEIC-018 logical allocation failed");
     const auto& evidence = allocated.record->disk_reservation_evidence;
@@ -381,7 +388,7 @@ void ReservationModesAndQuotaRefusals() {
     memory::HierarchicalMemoryBudgetLedger ledger;
     memory::TempWorkspaceLifecycleManager manager(
         Policy(root, memory::TempWorkspaceDiskReservationMode::sparse_file, &ledger));
-    auto allocated = manager.AllocateSpillFile(Request("sparse", 8192));
+    auto allocated = manager.AllocateSpillFile(Request(4, 8192));
     Require(allocated.ok() && allocated.record.has_value(),
             "CEIC-018 sparse allocation failed");
     const auto& evidence = allocated.record->disk_reservation_evidence;
@@ -401,7 +408,7 @@ void ReservationModesAndQuotaRefusals() {
     memory::HierarchicalMemoryBudgetLedger ledger;
     memory::TempWorkspaceLifecycleManager manager(
         Policy(root, memory::TempWorkspaceDiskReservationMode::physical_preallocate, &ledger));
-    auto allocated = manager.AllocateSpillFile(Request("physical", 4096));
+    auto allocated = manager.AllocateSpillFile(Request(5, 4096));
     Require(allocated.ok() && allocated.record.has_value(),
             "CEIC-018 physical preallocation failed");
     const auto& evidence = allocated.record->disk_reservation_evidence;
@@ -426,7 +433,7 @@ void ReservationModesAndQuotaRefusals() {
                &ledger,
                std::numeric_limits<std::uint64_t>::max()));
     auto refused = manager.AllocateSpillFile(
-        Request("physical-fail", std::numeric_limits<std::uint64_t>::max()));
+        Request(6, std::numeric_limits<std::uint64_t>::max()));
     Require(!refused.ok() && !refused.record.has_value(),
             "CEIC-018 impossible physical reservation succeeded");
     Require(refused.diagnostic.diagnostic_code == "TEMP_WORKSPACE.SPILL_RESERVE_FAILED",
@@ -444,7 +451,7 @@ void ReservationModesAndQuotaRefusals() {
     memory::HierarchicalMemoryBudgetLedger ledger;
     memory::TempWorkspaceLifecycleManager internal_quota_manager(
         Policy(root, memory::TempWorkspaceDiskReservationMode::sparse_file, &ledger, 1024));
-    auto refused = internal_quota_manager.AllocateSpillFile(Request("internal-quota", 2048));
+    auto refused = internal_quota_manager.AllocateSpillFile(Request(7, 2048));
     Require(!refused.ok() && refused.diagnostic.diagnostic_code == "TEMP_WORKSPACE.QUOTA_DENIED",
             "CEIC-018 internal quota refusal failed");
     Require(ledger.Snapshot().current_bytes == 0,
@@ -455,10 +462,10 @@ void ReservationModesAndQuotaRefusals() {
   {
     const auto root = MakeTempDir("sb_ceic018_ledger_quota");
     memory::HierarchicalMemoryBudgetLedger ledger;
-    SetBudget(&ledger, Scope(memory::HierarchicalMemoryScopeKind::process, "engine-ceic018"), 1024);
+    SetBudget(&ledger, Scope(memory::HierarchicalMemoryScopeKind::process, Owner(8).engine_id), 1024);
     memory::TempWorkspaceLifecycleManager manager(
         Policy(root, memory::TempWorkspaceDiskReservationMode::sparse_file, &ledger));
-    auto refused = manager.AllocateSpillFile(Request("ledger-quota", 2048));
+    auto refused = manager.AllocateSpillFile(Request(8, 2048));
     Require(!refused.ok(), "CEIC-018 CEIC-011 quota refusal succeeded");
     Require(refused.diagnostic.diagnostic_code == "SB-MEMORY-BUDGET-HARD-LIMIT-REFUSED",
             "CEIC-018 CEIC-011 quota diagnostic changed");
@@ -476,7 +483,7 @@ void ReservationModesAndQuotaRefusals() {
     policy.require_ceic_011_reservation = true;
     policy.reservation_ledger = nullptr;
     memory::TempWorkspaceLifecycleManager manager(policy);
-    auto refused = manager.AllocateSpillFile(Request("missing-ledger", 1024));
+    auto refused = manager.AllocateSpillFile(Request(9, 1024));
     Require(!refused.ok() &&
                 refused.diagnostic.diagnostic_code ==
                     "TEMP_WORKSPACE.CEIC011_RESERVATION_REQUIRED",
@@ -492,28 +499,28 @@ void CleanupScopesReleaseLedger() {
   memory::TempWorkspaceLifecycleManager manager(Policy(root, memory::TempWorkspaceDiskReservationMode::sparse_file, &ledger));
 
   auto commit = manager.AllocateSpillFile(
-      Request("commit", 1024, memory::TempWorkspaceLifetime::transaction_lifetime));
+      Request(10, 1024, memory::TempWorkspaceLifetime::transaction_lifetime));
   auto operation = manager.AllocateSpillFile(
-      Request("operation", 1024, memory::TempWorkspaceLifetime::operation_lifetime));
+      Request(11, 1024, memory::TempWorkspaceLifetime::operation_lifetime));
   auto shutdown = manager.AllocateSpillFile(
-      Request("shutdown", 1024, memory::TempWorkspaceLifetime::session_lifetime));
+      Request(12, 1024, memory::TempWorkspaceLifetime::session_lifetime));
   Require(commit.ok() && operation.ok() && shutdown.ok(),
           "CEIC-018 cleanup setup allocation failed");
   Require(ledger.Snapshot().current_bytes == 3072,
           "CEIC-018 cleanup setup ledger bytes mismatch");
 
   auto bad_commit = manager.CleanupOnCommit(
-      "txn-ceic018", memory::TempTransactionOutcomeEvidence::rolled_back);
+      Owner(10).transaction_id, memory::TempTransactionOutcomeEvidence::rolled_back);
   Require(!bad_commit.ok() && bad_commit.refused_count != 0,
           "CEIC-018 commit cleanup accepted rollback evidence");
   Require(ledger.Snapshot().current_bytes == 3072,
           "CEIC-018 bad commit evidence released ledger bytes");
 
   auto commit_cleaned = manager.CleanupOnCommit(
-      "txn-ceic018", memory::TempTransactionOutcomeEvidence::committed);
+      Owner(10).transaction_id, memory::TempTransactionOutcomeEvidence::committed);
   Require(commit_cleaned.ok() && commit_cleaned.cleaned_count == 1,
           "CEIC-018 commit cleanup failed");
-  auto operation_cleaned = manager.CleanupOperation("op-ceic018");
+  auto operation_cleaned = manager.CleanupOperation(Owner(11).operation_id);
   Require(operation_cleaned.ok() && operation_cleaned.cleaned_count == 1,
           "CEIC-018 operation cleanup failed");
   auto shutdown_cleaned = manager.CleanupOnShutdown();
@@ -532,37 +539,50 @@ void RecoveryClassificationIsDeterministic() {
   {
     memory::TempWorkspaceLifecycleManager manager(Policy(root, memory::TempWorkspaceDiskReservationMode::sparse_file, &ledger));
     auto ordinary = manager.AllocateSpillFile(
-        Request("ordinary", 128, memory::TempWorkspaceLifetime::statement_lifetime));
+        Request(13, 128, memory::TempWorkspaceLifetime::statement_lifetime));
     auto resumable_request =
-        Request("resumable", 128, memory::TempWorkspaceLifetime::operation_lifetime);
+        Request(14, 128, memory::TempWorkspaceLifetime::operation_lifetime);
     resumable_request.durable_operation_owned = true;
     resumable_request.recovery_resume_supported = true;
     auto resumable = manager.AllocateSpillFile(std::move(resumable_request));
     auto resume_required_request =
-        Request("resume-required", 128, memory::TempWorkspaceLifetime::recovery_lifetime);
+        Request(15, 128, memory::TempWorkspaceLifetime::recovery_lifetime);
     resume_required_request.recovery_resume_supported = true;
     auto resume_required = manager.AllocateSpillFile(std::move(resume_required_request));
     auto legal_request =
-        Request("legal", 128, memory::TempWorkspaceLifetime::session_lifetime);
+        Request(16, 128, memory::TempWorkspaceLifetime::session_lifetime);
     legal_request.legal_hold = true;
     auto legal = manager.AllocateSpillFile(std::move(legal_request));
     auto admin_request =
-        Request("admin", 128, memory::TempWorkspaceLifetime::administrator_review_lifetime);
+        Request(17, 128, memory::TempWorkspaceLifetime::administrator_review_lifetime);
     admin_request.administrator_review_required = true;
     auto admin = manager.AllocateSpillFile(std::move(admin_request));
     Require(ordinary.ok() && resumable.ok() && resume_required.ok() && legal.ok() && admin.ok(),
             "CEIC-018 recovery setup allocation failed");
   }
 
-  memory::TempWorkspaceLifecycleManager reopened(Policy(root));
+  // Persisted reservation bits are not a live ledger. Recovery must reacquire
+  // the actual charges, and must refuse if its required ledger is absent.
+  {
+    memory::TempWorkspaceLifecycleManager missing_ledger(Policy(root));
+    Require(missing_ledger.ActiveRecords().empty(),
+            "CEIC-018 recovery admitted records without the required ledger");
+  }
+  memory::HierarchicalMemoryBudgetLedger recovered_ledger;
+  memory::TempWorkspaceLifecycleManager reopened(
+      Policy(root, memory::TempWorkspaceDiskReservationMode::sparse_file, &recovered_ledger));
   Require(reopened.ActiveRecords().size() == 5,
           "CEIC-018 recovery manifest reload count mismatch");
+  Require(recovered_ledger.Snapshot().current_bytes == 5 * 128,
+          "CEIC-018 recovery did not reacquire actual reservation charges");
   memory::TempWorkspaceRecoveryEvidence leaked;
   leaked.leaked_after_crash = true;
   auto first_cleanup = reopened.CleanupRecoverySafe(leaked);
   Require(!first_cleanup.ok() && first_cleanup.cleaned_count == 1 &&
               first_cleanup.refused_count == 4,
           "CEIC-018 leaked cleanup classification mismatch");
+  Require(recovered_ledger.Snapshot().current_bytes == 4 * 128,
+          "CEIC-018 recovery cleanup released protected owners' charges");
 
   const auto records = reopened.ActiveRecords();
   std::string durable_id;
@@ -613,7 +633,7 @@ void AuthorityAndClusterBoundariesFailClosed() {
   const auto root = MakeTempDir("sb_ceic018_authority");
   memory::HierarchicalMemoryBudgetLedger ledger;
   memory::TempWorkspaceLifecycleManager manager(Policy(root, memory::TempWorkspaceDiskReservationMode::sparse_file, &ledger));
-  auto request = Request("cluster", 1024);
+  auto request = Request(18, 1024);
   request.cluster_temp_workspace_requested = true;
   auto refused = manager.AllocateSpillFile(std::move(request));
   Require(!refused.ok() &&
@@ -621,7 +641,7 @@ void AuthorityAndClusterBoundariesFailClosed() {
           "CEIC-018 cluster temp request did not fail closed");
   RequireAuthorityDiagnostic(refused.diagnostic, "cluster boundary");
 
-  auto allocated = manager.AllocateSpillFile(Request("authority", 1024));
+  auto allocated = manager.AllocateSpillFile(Request(19, 1024));
   Require(allocated.ok() && allocated.record.has_value(),
           "CEIC-018 authority allocation failed");
   const auto& record = *allocated.record;

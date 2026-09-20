@@ -9,6 +9,7 @@
 #include "memory.hpp"
 #include "query_memory_arena.hpp"
 #include "temp_workspace_lifecycle.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstdlib>
 #include <filesystem>
@@ -20,6 +21,7 @@
 namespace {
 
 namespace mem = scratchbird::core::memory;
+using scratchbird::tests::FixtureUuid;
 
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -63,13 +65,16 @@ mem::AllocationPolicy AllocationPolicy() {
 
 mem::QueryMemoryContext Context() {
   mem::QueryMemoryContext context;
-  context.query_id = "mmch031-query";
-  context.statement_id = "mmch031-statement";
-  context.session_id = "mmch031-session";
-  context.transaction_id = "mmch031-transaction";
-  context.database_id = "mmch031-database";
-  context.engine_id = "mmch031-engine";
-  context.operation_id = "mmch031-operation";
+  context.query_id = FixtureUuid(31, 1);
+  context.statement_id = FixtureUuid(31, 2);
+  context.session_id = FixtureUuid(31, 3);
+  context.transaction_id = FixtureUuid(31, 4);
+  context.database_id = FixtureUuid(31, 5);
+  context.engine_id = FixtureUuid(31, 6);
+  context.operation_id = FixtureUuid(31, 7);
+  context.snapshot_boundary = FixtureUuid(31, 10);
+  context.metadata_boundary = FixtureUuid(31, 11);
+  context.resource_budget_reference = FixtureUuid(31, 12);
   context.engine_mga_authoritative = true;
   return context;
 }
@@ -77,7 +82,8 @@ mem::QueryMemoryContext Context() {
 mem::QueryMemoryArenaLimits ArenaLimits() {
   mem::QueryMemoryArenaLimits limits;
   limits.hard_limit_bytes = 200;
-  limits.soft_limit_bytes = 80;
+  // Cap the initial physical chunk at exactly the first 60-byte payload.
+  limits.soft_limit_bytes = 60;
   limits.family_limit_bytes = 200;
   limits.query_limit_bytes = 200;
   limits.spill_limit_bytes = 200;
@@ -88,6 +94,8 @@ mem::QueryMemoryArenaLimits ArenaLimits() {
 mem::TempWorkspacePolicy TempPolicy(const std::filesystem::path& root) {
   mem::TempWorkspacePolicy policy;
   policy.policy_name = "mmch031_temp_workspace";
+  policy.database_uuid = Context().database_id;
+  policy.engine_uuid = Context().engine_id;
   policy.root_path = root;
   policy.filespace_quota_bytes = 200;
   policy.session_quota_bytes = 200;
@@ -100,12 +108,12 @@ mem::TempWorkspacePolicy TempPolicy(const std::filesystem::path& root) {
 }
 
 mem::UnifiedMemorySpillBudgetRequest UnifiedRequest(
-    std::string operation_id,
+    std::uint32_t operation_ordinal,
     mem::UnifiedMemorySpillBudgetKind kind,
     std::uint64_t bytes) {
   mem::UnifiedMemorySpillBudgetRequest request;
-  request.operation_id = std::move(operation_id);
-  request.owner_scope = "mmch031-query";
+  request.operation_id = FixtureUuid(0x3101, operation_ordinal);
+  request.owner_scope = Context().query_id;
   request.kind = kind;
   request.bytes = bytes;
   return request;
@@ -123,10 +131,10 @@ mem::QueryMemoryGrantRequest GrantRequest(std::uint64_t bytes,
 }
 
 void DirectUnifiedLedger() {
-  mem::UnifiedMemorySpillBudgetLedger ledger("mmch031-direct-ledger", 100);
+  mem::UnifiedMemorySpillBudgetLedger ledger(FixtureUuid(31, 8), 100);
 
   auto heap = ledger.Reserve(UnifiedRequest(
-      "heap-grant",
+      1,
       mem::UnifiedMemorySpillBudgetKind::heap,
       60));
   Require(heap.ok() && heap.reservation_created,
@@ -136,7 +144,7 @@ void DirectUnifiedLedger() {
   RequireUnifiedAuthorityEvidence(heap.evidence);
 
   auto spill = ledger.Reserve(UnifiedRequest(
-      "spill-grant",
+      2,
       mem::UnifiedMemorySpillBudgetKind::spill,
       30));
   Require(spill.ok() && spill.reservation_created,
@@ -146,7 +154,7 @@ void DirectUnifiedLedger() {
           "MMCH-031 direct mixed heap/spill accounting mismatch");
 
   auto denied = ledger.Reserve(UnifiedRequest(
-      "mixed-over-budget",
+      3,
       mem::UnifiedMemorySpillBudgetKind::heap,
       20));
   Require(!denied.ok() && denied.fail_closed,
@@ -166,13 +174,13 @@ void DirectUnifiedLedger() {
           "MMCH-031 heap release disturbed spill accounting");
 
   auto after_release = ledger.Reserve(UnifiedRequest(
-      "heap-after-release",
+      4,
       mem::UnifiedMemorySpillBudgetKind::heap,
       20));
   Require(after_release.ok() && after_release.reservation_created,
           "MMCH-031 reserve after release failed");
 
-  auto owner_cleanup = ledger.ReleaseOwnerReservations("mmch031-query");
+  auto owner_cleanup = ledger.ReleaseOwnerReservations(Context().query_id);
   Require(owner_cleanup.ok() && owner_cleanup.released,
           "MMCH-031 owner cleanup failed");
   Require(owner_cleanup.snapshot.total_bytes == 0 &&
@@ -187,13 +195,17 @@ void QueryArenaUnifiedBudget() {
 
   mem::BoundedAllocator allocator(AllocationPolicy());
   mem::TempWorkspaceLifecycleManager temp(TempPolicy(root));
-  mem::UnifiedMemorySpillBudgetLedger ledger("mmch031-arena-ledger", 100);
+  mem::UnifiedMemorySpillBudgetLedger ledger(FixtureUuid(31, 9), 100);
   mem::QueryMemoryArena arena(Context(), ArenaLimits(), &allocator, &temp, &ledger);
 
   auto heap60 = arena.Grant(GrantRequest(60, false, "heap60"));
-  Require(heap60.ok() && heap60.grant.has_value() &&
-              !heap60.grant->unified_budget_reservation_id.empty(),
-          "MMCH-031 arena heap grant did not reserve unified budget");
+  Require(heap60.ok() && heap60.grant.has_value(),
+          "MMCH-031 arena heap grant failed");
+  Require(heap60.grant->unified_budget_reservation_id.is_nil() &&
+              arena.Snapshot().retained_heap_bytes == 60 &&
+              ledger.Snapshot().heap_bytes == 60 &&
+              ledger.Snapshot().active_reservation_count == 1,
+          "MMCH-031 heap capacity must own the reservation independently of its logical grant");
   Require(heap60.counters.current_bytes == 60,
           "MMCH-031 arena heap current bytes mismatch");
   RequireUnifiedAuthorityEvidence(heap60.evidence);
@@ -201,7 +213,7 @@ void QueryArenaUnifiedBudget() {
   auto spill30 = arena.Grant(GrantRequest(30, true, "spill30"));
   Require(spill30.ok() && spill30.grant.has_value() &&
               spill30.grant->spilled &&
-              !spill30.grant->unified_budget_reservation_id.empty(),
+              !spill30.grant->unified_budget_reservation_id.is_nil(),
           "MMCH-031 arena spill grant did not reserve unified budget");
   Require(temp.Snapshot().active_bytes == 30,
           "MMCH-031 temp workspace did not reserve spill bytes");
@@ -210,11 +222,11 @@ void QueryArenaUnifiedBudget() {
           "MMCH-031 arena unified ledger did not account heap and spill");
   RequireUnifiedAuthorityEvidence(spill30.evidence);
 
-  auto denied20 = arena.Grant(GrantRequest(20, false, "heap20-denied"));
+  auto denied20 = arena.Grant(GrantRequest(20, true, "spill20-denied"));
   Require(!denied20.ok() && denied20.fail_closed,
           "MMCH-031 mixed heap/spill budget bypass was accepted");
   Require(denied20.diagnostic.diagnostic_code ==
-              "SB_QUERY_MEMORY_ARENA.UNIFIED_BUDGET_DENIED",
+              "SB_UNIFIED_MEMORY_SPILL_BUDGET.LIMIT_EXCEEDED",
           "MMCH-031 arena denial diagnostic changed");
   Require(ledger.Snapshot().total_bytes == 90,
           "MMCH-031 denied arena grant changed unified budget");
@@ -225,15 +237,20 @@ void QueryArenaUnifiedBudget() {
   Require(ledger.Snapshot().heap_bytes == 0 &&
               ledger.Snapshot().spill_bytes == 30,
           "MMCH-031 arena heap release did not release unified budget");
-  RequireUnifiedAuthorityEvidence(released60.evidence);
+  Require(arena.Snapshot().retained_heap_bytes == 0 &&
+              allocator.Snapshot().current_bytes == 0 &&
+              ledger.Snapshot().active_reservation_count == 1,
+          "MMCH-031 last heap release did not retire physical capacity while preserving the spill owner");
 
   auto heap20 = arena.Grant(GrantRequest(20, false, "heap20-after-release"));
   Require(heap20.ok() && heap20.grant.has_value() &&
-              !heap20.grant->unified_budget_reservation_id.empty(),
+              heap20.grant->unified_budget_reservation_id.is_nil(),
           "MMCH-031 heap grant after release failed");
-  Require(ledger.Snapshot().heap_bytes == 20 &&
+  const auto retained = arena.Snapshot().retained_heap_bytes;
+  Require(arena.Snapshot().current_bytes == 20 && retained >= 20 && retained <= 60 &&
+              ledger.Snapshot().heap_bytes == retained &&
               ledger.Snapshot().spill_bytes == 30 &&
-              ledger.Snapshot().total_bytes == 50,
+              ledger.Snapshot().total_bytes == retained + 30,
           "MMCH-031 heap grant after release accounting mismatch");
 
   auto release_spill = arena.Release(spill30.grant->grant_id);

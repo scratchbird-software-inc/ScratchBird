@@ -10,6 +10,7 @@
 #include "memory.hpp"
 #include "query_memory_arena.hpp"
 #include "temp_workspace_lifecycle.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <cstddef>
 #include <cstdlib>
@@ -20,6 +21,7 @@
 namespace {
 
 namespace memory = scratchbird::core::memory;
+using scratchbird::tests::FixtureUuid;
 
 bool Expect(bool condition, const char* message) {
   if (!condition) {
@@ -48,15 +50,18 @@ memory::AllocationPolicy AllocatorPolicy(memory::u64 limit = 1024 * 1024) {
   return policy;
 }
 
-memory::QueryMemoryContext Context(const char* suffix) {
+memory::QueryMemoryContext Context(std::uint32_t scenario) {
   memory::QueryMemoryContext context;
-  context.engine_id = "public-engine";
-  context.database_id = "public-db";
-  context.session_id = std::string("session-") + suffix;
-  context.transaction_id = std::string("transaction-") + suffix;
-  context.statement_id = std::string("statement-") + suffix;
-  context.query_id = std::string("query-") + suffix;
-  context.operation_id = std::string("operator-") + suffix;
+  context.engine_id = FixtureUuid(0x100, 1);
+  context.database_id = FixtureUuid(0x100, 2);
+  context.session_id = FixtureUuid(0x101, scenario);
+  context.transaction_id = FixtureUuid(0x102, scenario);
+  context.statement_id = FixtureUuid(0x103, scenario);
+  context.query_id = FixtureUuid(0x104, scenario);
+  context.operation_id = FixtureUuid(0x105, scenario);
+  context.snapshot_boundary = FixtureUuid(0x107, scenario);
+  context.metadata_boundary = FixtureUuid(0x108, scenario);
+  context.resource_budget_reference = FixtureUuid(0x109, scenario);
   return context;
 }
 
@@ -75,8 +80,8 @@ memory::QueryMemoryArenaLimits Limits() {
 bool HeapGrantReleaseReconcilesLedger() {
   memory::BoundedAllocator allocator(AllocatorPolicy());
   memory::HierarchicalMemoryBudgetLedger ledger;
-  memory::UnifiedMemorySpillBudgetLedger unified("heap-release", 4096);
-  memory::QueryMemoryArena arena(Context("heap"), Limits(), &allocator, nullptr, &unified, &ledger);
+  memory::UnifiedMemorySpillBudgetLedger unified(FixtureUuid(0x106, 1), 4096);
+  memory::QueryMemoryArena arena(Context(1), Limits(), &allocator, nullptr, &unified, &ledger);
 
   memory::QueryMemoryGrantRequest request;
   request.family = memory::QueryMemoryFamily::relational;
@@ -88,7 +93,11 @@ bool HeapGrantReleaseReconcilesLedger() {
   ok = Expect(grant.grant.has_value(), "heap grant should return a grant token") && ok;
 
   const auto after_grant = ledger.Snapshot();
-  ok = ExpectEq(after_grant.current_bytes, 512, "ledger current bytes after heap grant") && ok;
+  const auto retained = arena.Snapshot().retained_heap_bytes;
+  ok = Expect(retained >= 512 && retained <= 4096, "heap backing outside admitted bounds") && ok;
+  ok = ExpectEq(after_grant.current_bytes, retained, "ledger must charge retained heap capacity") && ok;
+  ok = ExpectEq(allocator.Snapshot().current_bytes, retained, "physical allocation must match retained heap capacity") && ok;
+  ok = ExpectEq(unified.Snapshot().total_bytes, retained, "unified ledger must charge retained heap capacity") && ok;
   ok = ExpectEq(after_grant.reserved_bytes, 0, "ledger reserved bytes after heap commit") && ok;
   ok = ExpectEq(after_grant.active_allocation_count, 1, "ledger active allocations after heap grant") && ok;
   ok = ExpectEq(arena.Snapshot().current_bytes, 512, "arena current bytes after heap grant") && ok;
@@ -107,8 +116,8 @@ bool HeapGrantReleaseReconcilesLedger() {
 bool CancelRollsBackLedgerReservations() {
   memory::BoundedAllocator allocator(AllocatorPolicy());
   memory::HierarchicalMemoryBudgetLedger ledger;
-  memory::UnifiedMemorySpillBudgetLedger unified("cancel", 4096);
-  memory::QueryMemoryArena arena(Context("cancel"), Limits(), &allocator, nullptr, &unified, &ledger);
+  memory::UnifiedMemorySpillBudgetLedger unified(FixtureUuid(0x106, 2), 4096);
+  memory::QueryMemoryArena arena(Context(2), Limits(), &allocator, nullptr, &unified, &ledger);
 
   memory::QueryMemoryGrantRequest first;
   first.family = memory::QueryMemoryFamily::relational;
@@ -124,7 +133,11 @@ bool CancelRollsBackLedgerReservations() {
   bool ok = true;
   ok = Expect(grant_first.ok(), "first cancel grant should succeed") && ok;
   ok = Expect(grant_second.ok(), "second cancel grant should succeed") && ok;
-  ok = ExpectEq(ledger.Snapshot().current_bytes, 384, "ledger current bytes before cancel") && ok;
+  ok = ExpectEq(arena.Snapshot().current_bytes, 384, "logical payload bytes before cancel") && ok;
+  const auto retained = arena.Snapshot().retained_heap_bytes;
+  ok = Expect(retained >= 384 && retained <= 4096, "cancel backing outside admitted bounds") && ok;
+  ok = ExpectEq(ledger.Snapshot().current_bytes, retained, "ledger retained capacity before cancel") && ok;
+  ok = ExpectEq(unified.Snapshot().total_bytes, retained, "unified retained capacity before cancel") && ok;
 
   const auto cancel = arena.Cancel("public_query_memory_reservation_gate");
   ok = Expect(cancel.ok(), "arena cancel should succeed") && ok;
@@ -142,10 +155,12 @@ bool SpillReleaseReconcilesLedger(const std::filesystem::path& temp_root) {
 
   memory::BoundedAllocator allocator(AllocatorPolicy());
   memory::HierarchicalMemoryBudgetLedger ledger;
-  memory::UnifiedMemorySpillBudgetLedger unified("spill", 4096);
+  memory::UnifiedMemorySpillBudgetLedger unified(FixtureUuid(0x106, 3), 4096);
 
   memory::TempWorkspacePolicy temp_policy;
   temp_policy.policy_name = "public_query_memory_reservation_spill";
+  temp_policy.database_uuid = Context(3).database_id;
+  temp_policy.engine_uuid = Context(3).engine_id;
   temp_policy.root_path = temp_root;
   temp_policy.filespace_quota_bytes = 4096;
   temp_policy.session_quota_bytes = 4096;
@@ -157,7 +172,7 @@ bool SpillReleaseReconcilesLedger(const std::filesystem::path& temp_root) {
   auto limits = Limits();
   limits.soft_limit_bytes = 128;
   limits.allow_spill = true;
-  memory::QueryMemoryArena arena(Context("spill"), limits, &allocator, &temp_workspace, &unified, &ledger);
+  memory::QueryMemoryArena arena(Context(3), limits, &allocator, &temp_workspace, &unified, &ledger);
 
   memory::QueryMemoryGrantRequest request;
   request.family = memory::QueryMemoryFamily::relational;
@@ -187,8 +202,8 @@ bool SpillReleaseReconcilesLedger(const std::filesystem::path& temp_root) {
 bool AllocatorFailureRollsBackLedger() {
   memory::BoundedAllocator allocator(AllocatorPolicy(64));
   memory::HierarchicalMemoryBudgetLedger ledger;
-  memory::UnifiedMemorySpillBudgetLedger unified("allocator-failure", 4096);
-  memory::QueryMemoryArena arena(Context("allocator_failure"), Limits(), &allocator, nullptr, &unified, &ledger);
+  memory::UnifiedMemorySpillBudgetLedger unified(FixtureUuid(0x106, 4), 4096);
+  memory::QueryMemoryArena arena(Context(4), Limits(), &allocator, nullptr, &unified, &ledger);
 
   memory::QueryMemoryGrantRequest request;
   request.family = memory::QueryMemoryFamily::relational;

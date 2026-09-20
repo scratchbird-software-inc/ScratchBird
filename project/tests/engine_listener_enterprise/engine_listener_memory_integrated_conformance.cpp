@@ -12,6 +12,7 @@
 #include "memory_support_bundle.hpp"
 #include "query_memory_arena.hpp"
 #include "temp_workspace_lifecycle.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -137,15 +138,19 @@ memory::MemoryTag Tag(std::string purpose, std::string context_id) {
   return tag;
 }
 
-memory::QueryMemoryContext QueryContext(std::string suffix) {
+memory::QueryMemoryContext QueryContext(std::uint32_t ordinal) {
+  using scratchbird::tests::FixtureUuid;
   memory::QueryMemoryContext context;
-  context.engine_id = "eler050-engine";
-  context.database_id = "eler050-db";
-  context.session_id = "eler050-session-" + suffix;
-  context.transaction_id = "eler050-transaction-" + suffix;
-  context.statement_id = "eler050-statement-" + suffix;
-  context.query_id = "eler050-query-" + suffix;
-  context.operation_id = "eler050-operation-" + suffix;
+  context.engine_id = FixtureUuid(50, 1);
+  context.database_id = FixtureUuid(50, 2);
+  context.session_id = FixtureUuid(0x5001, ordinal);
+  context.transaction_id = FixtureUuid(0x5002, ordinal);
+  context.statement_id = FixtureUuid(0x5003, ordinal);
+  context.query_id = FixtureUuid(0x5004, ordinal);
+  context.operation_id = FixtureUuid(0x5005, ordinal);
+  context.snapshot_boundary = FixtureUuid(0x5006, ordinal);
+  context.metadata_boundary = FixtureUuid(0x5007, ordinal);
+  context.resource_budget_reference = FixtureUuid(0x5008, ordinal);
   context.engine_mga_authoritative = true;
   return context;
 }
@@ -165,6 +170,8 @@ memory::QueryMemoryArenaLimits QueryLimits(bool allow_spill) {
 memory::TempWorkspacePolicy TempPolicy(const std::filesystem::path& root) {
   memory::TempWorkspacePolicy policy;
   policy.policy_name = "engine_listener_memory_integrated_temp";
+  policy.database_uuid = QueryContext(3).database_id;
+  policy.engine_uuid = QueryContext(3).engine_id;
   policy.root_path = root;
   policy.filespace_quota_bytes = 8192;
   policy.session_quota_bytes = 8192;
@@ -224,9 +231,9 @@ void ConfigureProductionDefaultManager() {
 void ProveQueryReservationIntegration(const std::filesystem::path& temp_root) {
   auto* allocator = memory::DefaultMemoryManager().allocator();
   memory::HierarchicalMemoryBudgetLedger ledger;
-  memory::UnifiedMemorySpillBudgetLedger unified("eler050-query", 8192);
+  memory::UnifiedMemorySpillBudgetLedger unified(scratchbird::tests::FixtureUuid(50, 3), 8192);
 
-  memory::QueryMemoryArena missing_ledger(QueryContext("missing-ledger"),
+  memory::QueryMemoryArena missing_ledger(QueryContext(1),
                                           QueryLimits(false),
                                           allocator,
                                           nullptr,
@@ -240,7 +247,7 @@ void ProveQueryReservationIntegration(const std::filesystem::path& temp_root) {
               "SB_QUERY_MEMORY_ARENA.HIERARCHICAL_RESERVATION_REQUIRED",
           "ELER-050 query arena missing-ledger diagnostic drifted");
 
-  memory::QueryMemoryArena heap_arena(QueryContext("heap"),
+  memory::QueryMemoryArena heap_arena(QueryContext(2),
                                       QueryLimits(false),
                                       allocator,
                                       nullptr,
@@ -250,8 +257,13 @@ void ProveQueryReservationIntegration(const std::filesystem::path& temp_root) {
       memory::QueryMemoryFamily::relational, 1024, false, "heap_grant"));
   Require(heap.ok() && heap.grant.has_value(),
           "ELER-050 reservation-backed heap grant failed");
-  Require(ledger.Snapshot().current_bytes == 1024,
-          "ELER-050 hierarchical ledger did not commit heap grant");
+  const auto retained = heap_arena.Snapshot().retained_heap_bytes;
+  Require(heap_arena.Snapshot().current_bytes == 1024 &&
+              retained >= 1024 && retained <= 8192,
+          "ELER-050 heap payload/backing outside admitted bounds");
+  Require(ledger.Snapshot().current_bytes == retained &&
+              unified.Snapshot().total_bytes == retained,
+          "ELER-050 ledgers did not commit retained heap backing");
   const auto heap_release = heap_arena.Release(heap.grant->grant_id);
   Require(heap_release.ok(), "ELER-050 heap grant release failed");
   Require(ledger.Snapshot().current_bytes == 0 &&
@@ -261,7 +273,7 @@ void ProveQueryReservationIntegration(const std::filesystem::path& temp_root) {
   const auto spill_root = temp_root / "query_spill";
   std::filesystem::remove_all(spill_root);
   memory::TempWorkspaceLifecycleManager temp_workspace(TempPolicy(spill_root));
-  memory::QueryMemoryArena spill_arena(QueryContext("spill"),
+  memory::QueryMemoryArena spill_arena(QueryContext(3),
                                        QueryLimits(true),
                                        allocator,
                                        &temp_workspace,
@@ -282,7 +294,7 @@ void ProveQueryReservationIntegration(const std::filesystem::path& temp_root) {
           "ELER-050 spill grant release did not reconcile all budgets");
   std::filesystem::remove_all(spill_root);
 
-  auto unsafe_context = QueryContext("unsafe");
+  auto unsafe_context = QueryContext(4);
   unsafe_context.parser_or_reference_finality_or_visibility_authority = true;
   memory::QueryMemoryArena unsafe_arena(unsafe_context,
                                         QueryLimits(false),
