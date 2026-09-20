@@ -13,12 +13,17 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <future>
+#include <latch>
 #include <limits>
 #include <new>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 #include <openssl/hmac.h>
 
@@ -32,7 +37,18 @@ thread_local std::size_t fail_at = 0;
 thread_local bool consumed = false;
 }
 
+namespace publication_hook {
+thread_local void (*callback)(void*) = nullptr;
+thread_local void* context = nullptr;
+thread_local std::size_t calls = 0, at = 0;
+}
+
 void* operator new(std::size_t size) {
+  if (publication_hook::callback && ++publication_hook::calls == publication_hook::at) {
+    const auto callback = publication_hook::callback;
+    publication_hook::callback = nullptr;
+    callback(publication_hook::context);
+  }
   if (allocation_fault::enabled && ++allocation_fault::calls == allocation_fault::fail_at) {
     allocation_fault::enabled = false;
     allocation_fault::consumed = true;
@@ -536,7 +552,8 @@ void BinaryCursorOwnershipAndCleanup() {
   wire::StreamingCursorManager stale_manager;
   opened = stale_manager.OpenCursor({.state = state, .now_unix_millis = 100});
   Require(opened.ok(), "stale owner setup failed");
-  Require(ledger.CleanupOwner(state.cursor_id.bytes).ok(), "external cleanup setup failed");
+  Require(governor.ReleaseNoAlloc(opened.state.memory_lease_id).ok(),
+          "external actual-owner release setup failed");
   const auto failed = stale_manager.CancelCursor(state.cursor_id);
   Require(!failed.ok() && failed.state.cancellation_requested &&
               failed.state.memory_lease_id == opened.state.memory_lease_id &&
@@ -552,13 +569,21 @@ void BinaryCursorOwnershipAndCleanup() {
   auto frame_delivery = frame_manager.RecordFrameDelivery({
       .expected = wire::StreamingCursorBindingFromState(frame_state),
       .row_count = 1, .byte_count = 64, .now_unix_millis = 101});
-  Require(frame_delivery.ok() && frame_ledger.CleanupOwner(frame_state.cursor_id.bytes).ok(),
-          "frame cleanup failure setup failed");
+  Require(frame_delivery.ok(), "frame cleanup failure setup failed");
+  allocation_fault::calls = 0;
+  allocation_fault::fail_at = 1;
+  allocation_fault::consumed = false;
+  allocation_fault::enabled = true;
   const auto frame_refused = frame_manager.GrantCredit(frame_state.cursor_id, {10, 10, 10000, false});
-  Require(!frame_refused.ok() && frame_refused.state.outstanding_frame_bytes == 64 &&
+  allocation_fault::enabled = false;
+  Require(allocation_fault::consumed && !frame_refused.ok() && frame_refused.state.outstanding_frame_bytes == 64 &&
               frame_refused.state.outstanding_frame_count == 1 &&
               frame_refused.state.client_credit.byte_credit == frame_delivery.state.client_credit.byte_credit,
           "failed frame release granted credit or erased remaining ownership");
+  Require(frame_ledger.Snapshot().current_bytes == 192 &&
+              frame_manager.CancelCursor(frame_state.cursor_id).ok() &&
+              frame_ledger.Snapshot().current_bytes == 0,
+          "failed frame release lost charges or could not be retried");
 
   wire::StreamingCursorManager overflow_manager;
   auto overflow = CursorState();
@@ -571,6 +596,154 @@ void BinaryCursorOwnershipAndCleanup() {
   Require(!denied.ok() && denied.state.frame_sequence == overflow.frame_sequence &&
               denied.state.client_credit.byte_credit == overflow.client_credit.byte_credit,
           "frame sequence overflow mutated cursor state");
+}
+
+void CursorRevocationBeforePublication() {
+  namespace mem = wire::memory;
+  for (bool frame : {false, true}) {
+    std::size_t last_allocation = 0;
+    // First measure the real operation; the final ordinary-new allocation is
+    // response/map preparation after acquisition and before its publish guard.
+    // The next executions revoke at that exact boundary, not via a mock lease.
+    for (unsigned mode = 0; mode != 4; ++mode) {
+      mem::HierarchicalMemoryBudgetLedger ledger;
+      mem::ResultCursorPlanMemoryGovernor governor;
+      wire::StreamingCursorManager manager;
+      const auto state = GovernedState(&governor, &ledger);
+      const wire::StreamingCursorOpenRequest request{.state = state, .now_unix_millis = 100};
+      if (frame) Require(manager.OpenCursor(request).ok(), "revocation frame setup failed");
+      const wire::StreamingCursorFrameDelivery delivery{
+          .expected = wire::StreamingCursorBindingFromState(state),
+          .row_count = 1, .byte_count = 64, .now_unix_millis = 101};
+      struct Context {
+        mem::HierarchicalMemoryBudgetLedger* ledger;
+        mem::ResultCursorPlanMemoryGovernor* governor;
+        wire::StreamingCursorUuid cursor;
+        unsigned mode;
+        std::uint64_t expected_bytes;
+        bool called = false, correct = false;
+      } context{&ledger, &governor, state.cursor_id, mode, frame ? 192u : 128u};
+      if (mode == 0) {
+        allocation_fault::calls = 0;
+        allocation_fault::fail_at = 0;
+        allocation_fault::enabled = true;
+      } else {
+        publication_hook::at = last_allocation;
+        publication_hook::calls = 0;
+        publication_hook::context = &context;
+        publication_hook::callback = [](void* opaque) {
+          auto& c = *static_cast<Context*>(opaque);
+          c.called = true;
+          if (c.mode == 1) {
+            const auto revoked = c.ledger->CleanupOwner(c.cursor.bytes);
+            c.correct = !revoked.ok() && revoked.cleaned_bytes == 0 &&
+                        revoked.retained_bytes == c.expected_bytes;
+          } else {
+            const auto released = c.mode == 2
+                ? c.governor->ReleaseByCursor(c.cursor, mem::ResultCursorPlanMemoryReleaseReason::cancel)
+                : c.governor->ForceCloseCursorUnderPressure(c.cursor);
+            c.correct = released.ok() && released.released_bytes == c.expected_bytes;
+          }
+        };
+      }
+      const auto result = frame ? manager.RecordFrameDelivery(delivery) : manager.OpenCursor(request);
+      allocation_fault::enabled = false;
+      publication_hook::callback = nullptr;
+      if (mode == 0) {
+        last_allocation = allocation_fault::calls;
+        Require(result.ok() && last_allocation > 0, "revocation boundary baseline failed");
+        Require(manager.CancelCursor(state.cursor_id).ok(), "revocation baseline cleanup failed");
+        continue;
+      }
+      if (!context.called || !context.correct || result.ok()) {
+        std::cerr << "publication revocation frame=" << frame << " mode=" << mode
+                  << " boundary=" << last_allocation << " calls=" << publication_hook::calls
+                  << " called=" << context.called << " cleanup_exact=" << context.correct
+                  << " success=" << result.ok() << '\n';
+      }
+      Require(context.called && context.correct && !result.ok(),
+              "revocation before publication was missed or published success");
+      const auto current = manager.Lookup(state.cursor_id);
+      Require(current.has_value() == frame, "revoked open published a cursor");
+      if (frame) {
+        Require(current->frame_sequence == state.frame_sequence &&
+                    current->client_credit.byte_credit == state.client_credit.byte_credit &&
+                    current->outstanding_frame_count == 0,
+                "revoked delivery published frame or credit state");
+        Require(!manager.ValidateFetch({.expected = delivery.expected, .now_unix_millis = 101}).ok() &&
+                    !manager.GrantCredit(state.cursor_id, {2, 4, 4096, false}).ok(),
+                "revoked cursor admitted fetch or credit");
+        if (mode == 1) {
+          Require(ledger.Snapshot().current_bytes == 128 &&
+                      manager.CancelCursor(state.cursor_id).ok(),
+                  "raw revocation lost actual cursor charge or prevented owner cleanup");
+        }
+      }
+      Require(ledger.Snapshot().current_bytes == 0 && governor.Snapshot().active_lease_count == 0,
+              "revoked publication leaked an unpublished reservation");
+    }
+  }
+  // A cursor already revoked before acquisition cannot make a fresh frame
+  // lease usable. Its unpublished frame is rolled back, not its prior owner.
+  mem::HierarchicalMemoryBudgetLedger ledger;
+  mem::ResultCursorPlanMemoryGovernor governor;
+  wire::StreamingCursorManager manager;
+  const auto state = GovernedState(&governor, &ledger);
+  Require(manager.OpenCursor({.state = state, .now_unix_millis = 100}).ok(), "prior revocation setup");
+  const auto revoked = ledger.CleanupOwner(state.cursor_id.bytes);
+  Require(!revoked.ok() && revoked.retained_bytes == 128, "prior owner revocation");
+  Require(!manager.RecordFrameDelivery({.expected = wire::StreamingCursorBindingFromState(state),
+              .row_count = 1, .byte_count = 64, .now_unix_millis = 101}).ok() &&
+              ledger.Snapshot().current_bytes == 128 && governor.Snapshot().active_lease_count == 1,
+          "fresh frame bypassed the revoked cursor owner");
+  Require(manager.CancelCursor(state.cursor_id).ok() && ledger.Snapshot().current_bytes == 0,
+          "revoked cursor actual teardown failed");
+}
+
+void CursorPublicationSerializesRevocation() {
+  namespace mem = wire::memory;
+  for (unsigned mode = 0; mode != 3; ++mode) {
+    mem::HierarchicalMemoryBudgetLedger ledger;
+    mem::ResultCursorPlanMemoryGovernor governor;
+    wire::StreamingCursorManager manager;
+    const auto state = GovernedState(&governor, &ledger);
+    const auto opened = manager.OpenCursor({.state = state, .now_unix_millis = 100});
+    const auto delivered = manager.RecordFrameDelivery({.expected = wire::StreamingCursorBindingFromState(state),
+        .row_count = 1, .byte_count = 64, .now_unix_millis = 101});
+    Require(opened.ok() && delivered.ok(), "concurrent revocation setup failed");
+    wire::StreamingCursorUuid frame_id;
+    for (const auto& lease : governor.Snapshot().active_leases)
+      if (lease.frame_lease) frame_id = lease.lease_id;
+    Require(!frame_id.is_nil(), "actual frame lease missing");
+    std::latch entered(1);
+    std::future<bool> cleanup;
+    {
+      auto original = governor.GuardForPublication(opened.state.memory_lease_id, frame_id);
+      auto guard = std::move(original);
+      Require(guard.live() && !original.live(), "publication guard move lost exclusive ownership");
+      cleanup = std::async(std::launch::async, [&] {
+        entered.count_down();
+        if (mode == 0) {
+          const auto revoked = ledger.CleanupOwner(state.cursor_id.bytes);
+          return !revoked.ok() && revoked.cleaned_bytes == 0 && revoked.retained_bytes == 192;
+        }
+        const auto released = mode == 1
+            ? governor.ReleaseByCursor(state.cursor_id, mem::ResultCursorPlanMemoryReleaseReason::cancel)
+            : governor.ForceCloseCursorUnderPressure(state.cursor_id);
+        return released.ok() && released.released_bytes == 192;
+      });
+      entered.wait();
+      Require(cleanup.wait_for(std::chrono::milliseconds(100)) == std::future_status::timeout && guard.live(),
+              "cleanup crossed the held cursor/frame publication fence");
+    }
+    Require(cleanup.wait_for(std::chrono::seconds(5)) == std::future_status::ready && cleanup.get(),
+            "cleanup did not complete exactly after publication guard release");
+    Require(!governor.GuardForPublication(opened.state.memory_lease_id, frame_id).live(),
+            "revoked or retired cursor/frame pair remained publishable");
+    if (mode == 0) Require(manager.CancelCursor(state.cursor_id).ok(), "retained concurrent owner cleanup");
+    Require(ledger.Snapshot().current_bytes == 0 && governor.Snapshot().active_lease_count == 0,
+            "concurrent owner cleanup leaked charges");
+  }
 }
 
 void CursorPublicationAllocationFaults() {
@@ -715,6 +888,8 @@ int main() {
   BinaryIdentityAndCanonicalTokenProfiles();
   BinaryCursorOwnershipAndCleanup();
   CursorPublicationAllocationFaults();
+  CursorRevocationBeforePublication();
+  CursorPublicationSerializesRevocation();
   FrameWindowUsesActualBytesCancellationAndBackpressure();
   return EXIT_SUCCESS;
 }

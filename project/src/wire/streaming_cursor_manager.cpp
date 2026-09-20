@@ -769,6 +769,18 @@ StreamingCursorResult StreamingCursorManager::OpenCursor(
   auto result = CursorOk("SB_ORH_STREAMING_CURSOR.OPENED", "cursor_opened", state);
   std::map<StreamingCursorUuid, StreamingCursorState> staged;
   staged.emplace(state.cursor_id, std::move(state));
+  if (pending.governor != nullptr) {
+    {
+      auto guard = pending.governor->GuardForPublication(pending.identity);
+      if (guard.live()) {
+        cursors_.insert(staged.extract(staged.begin()));
+        pending.identity = {};
+        return result;
+      }
+    }
+    return CursorRefuse("SB_CEIC_020_MEMORY_GOVERNANCE.RESERVATION_REFUSED",
+                        "cursor_memory_lease_revoked_or_retired", staged.begin()->second);
+  }
   cursors_.insert(staged.extract(staged.begin()));
   pending.identity = {};
   return result;
@@ -799,9 +811,23 @@ StreamingCursorResult StreamingCursorManager::GrantCredit(
             : 0;
     if (!released.ok()) return CursorMemoryRefuse(found->second, released);
   }
-  found->second.client_credit = credit;
-  return CursorOk("SB_ORH_STREAMING_CURSOR.CREDIT_UPDATED",
-                  "cursor_credit_updated", found->second);
+  auto projected = found->second;
+  projected.client_credit = credit;
+  auto result = CursorOk("SB_ORH_STREAMING_CURSOR.CREDIT_UPDATED",
+                          "cursor_credit_updated", projected);
+  if (projected.memory_governor != nullptr) {
+    {
+      auto guard = projected.memory_governor->GuardForPublication(projected.memory_lease_id);
+      if (guard.live()) {
+        found->second = std::move(projected);
+        return result;
+      }
+    }
+    return CursorRefuse("SB_CEIC_020_MEMORY_GOVERNANCE.RESERVATION_REFUSED",
+                        "cursor_memory_lease_revoked_or_retired", found->second);
+  }
+  found->second = std::move(projected);
+  return result;
 }
 
 StreamingCursorResult StreamingCursorManager::CancelCursor(
@@ -840,8 +866,18 @@ StreamingCursorResult StreamingCursorManager::ValidateFetch(
     return CursorRefuse("SB_ORH_STREAMING_CURSOR.NOT_FOUND",
                         "cursor_not_found");
   }
-  return CompareBinding(found->second, request.expected,
-                        request.now_unix_millis);
+  auto result = CompareBinding(found->second, request.expected,
+                                request.now_unix_millis);
+  if (result.ok() && found->second.memory_governor != nullptr) {
+    {
+      auto guard = found->second.memory_governor->GuardForPublication(
+          found->second.memory_lease_id);
+      if (guard.live()) return result;
+    }
+    return CursorRefuse("SB_CEIC_020_MEMORY_GOVERNANCE.RESERVATION_REFUSED",
+                        "cursor_memory_lease_revoked_or_retired", found->second);
+  }
+  return result;
 }
 
 StreamingCursorResult StreamingCursorManager::RecordFrameDelivery(
@@ -910,6 +946,19 @@ StreamingCursorResult StreamingCursorManager::RecordFrameDelivery(
       projected.client_credit.byte_credit == 0;
   auto result = CursorOk("SB_ORH_STREAMING_CURSOR.FRAME_DELIVERED",
                          "cursor_frame_delivered", projected);
+  if (pending.governor != nullptr) {
+    {
+      auto guard = pending.governor->GuardForPublication(
+          state.memory_lease_id, pending.identity);
+      if (guard.live()) {
+        state = std::move(projected);
+        pending.identity = {};
+        return result;
+      }
+    }
+    return CursorRefuse("SB_CEIC_020_MEMORY_GOVERNANCE.RESERVATION_REFUSED",
+                        "cursor_or_frame_memory_lease_revoked_or_retired", state);
+  }
   state = std::move(projected);
   pending.identity = {};
   return result;

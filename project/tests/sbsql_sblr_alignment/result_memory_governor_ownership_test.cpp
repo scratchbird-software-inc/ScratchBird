@@ -307,6 +307,82 @@ void NonallocatingTerminal() {
   }
 }
 
+void PublicationOwnership() {
+  mem::HierarchicalMemoryBudgetLedger ledger, foreign_ledger;
+  mem::ResultCursorPlanMemoryGovernor governor;
+  const auto cursor = governor.Acquire(Request(ledger, Surface::cursor));
+  Check(cursor.ok(), "publication cursor owner acquisition");
+  const auto cursor_scopes = ledger.Snapshot().scopes;
+  Check(governor.GuardForPublication(cursor.lease_id).live(), "live cursor not publishable");
+  Check(!governor.GuardForPublication({}).live() &&
+        !governor.GuardForPublication(Identity(99)).live(), "absent cursor admitted");
+  // Every ownership dimension and epoch must match, including optional ones.
+  constexpr Uuid mem::ResultCursorPlanMemoryScope::* scopes[] = {
+    &mem::ResultCursorPlanMemoryScope::process_id, &mem::ResultCursorPlanMemoryScope::plan_cache_entry_id,
+    &mem::ResultCursorPlanMemoryScope::database_id, &mem::ResultCursorPlanMemoryScope::tenant_id,
+    &mem::ResultCursorPlanMemoryScope::user_id, &mem::ResultCursorPlanMemoryScope::role_id,
+    &mem::ResultCursorPlanMemoryScope::session_id, &mem::ResultCursorPlanMemoryScope::connection_id,
+    &mem::ResultCursorPlanMemoryScope::transaction_id, &mem::ResultCursorPlanMemoryScope::statement_id,
+    &mem::ResultCursorPlanMemoryScope::query_id, &mem::ResultCursorPlanMemoryScope::cursor_id,
+    &mem::ResultCursorPlanMemoryScope::prepared_statement_id, &mem::ResultCursorPlanMemoryScope::descriptor_snapshot_id};
+  constexpr mem::u64 mem::ResultCursorPlanMemoryEpochs::* epochs[] = {
+    &mem::ResultCursorPlanMemoryEpochs::catalog_epoch, &mem::ResultCursorPlanMemoryEpochs::security_epoch,
+    &mem::ResultCursorPlanMemoryEpochs::redaction_epoch, &mem::ResultCursorPlanMemoryEpochs::policy_epoch,
+    &mem::ResultCursorPlanMemoryEpochs::resource_epoch, &mem::ResultCursorPlanMemoryEpochs::descriptor_epoch,
+    &mem::ResultCursorPlanMemoryEpochs::memory_policy_epoch};
+  const auto check_frame = [&](mem::ResultCursorPlanMemoryLeaseRequest request, bool expected) {
+    const auto frame = governor.Acquire(std::move(request));
+    Check(frame.ok(), "publication frame owner acquisition");
+    bool live = false;
+    fault::Arm(0);
+    {
+      auto guard = governor.GuardForPublication(cursor.lease_id, frame.lease_id);
+      live = guard.live();
+    }
+    fault::Off();
+    Check(!fault::hit && live == expected, "publication fence identity/epoch match or allocation drift");
+    Check(governor.ReleaseNoAlloc(frame.lease_id).ok(), "publication frame teardown");
+  };
+  check_frame(Request(ledger, Surface::result_frame), true);
+  for (auto member : scopes) {
+    auto frame = Request(ledger, Surface::result_frame);
+    frame.scope.*member = Identity(100);
+    check_frame(std::move(frame), false);
+  }
+  for (auto member : epochs) {
+    auto frame = Request(ledger, Surface::result_frame);
+    ++(frame.epochs.*member);
+    check_frame(std::move(frame), false);
+  }
+  auto different_owner = Request(ledger, Surface::result_frame);
+  different_owner.owner_id = Identity(100);
+  check_frame(different_owner, false);
+  check_frame(Request(foreign_ledger, Surface::result_frame), false);
+  for (auto surface : surfaces) if (surface != Surface::result_frame)
+    check_frame(Request(ledger, surface), false);
+  const auto frame = governor.Acquire(Request(ledger, Surface::result_frame));
+  const auto snapshot = governor.Snapshot();
+  for (const auto& lease : snapshot.active_leases) if (lease.lease_id == frame.lease_id)
+    Check(!ledger.ReleaseNoAlloc(lease.token).ok(), "raw frame release erased retained charge");
+  Check(!governor.GuardForPublication(cursor.lease_id, frame.lease_id).live(),
+        "live cursor masked a revoked frame");
+  Check(governor.GuardForPublication(cursor.lease_id).live(), "frame revocation revoked unrelated cursor lease");
+  const auto retained = ledger.Snapshot();
+  Check(retained.current_bytes == 256 && retained.reserved_bytes == 0 &&
+        retained.active_allocation_count == 2, "retained cursor/frame charges diverged");
+  for (const auto& scope : retained.scopes) {
+    const bool original_scope = std::any_of(cursor_scopes.begin(), cursor_scopes.end(),
+        [&](const auto& original) {
+          return scope.kind == original.kind && scope.binary_scope_uuid == original.binary_scope_uuid;
+        });
+    Check(scope.active_bytes == (original_scope ? 256u : 0u) && scope.reserved_bytes == 0,
+          "retained publication owners charged a foreign scope");
+  }
+  Check(governor.ReleaseNoAlloc(frame.lease_id).ok() && governor.ReleaseNoAlloc(cursor.lease_id).ok(),
+        "publication owner exact cleanup");
+  CheckLedger(ledger, 0);
+}
+
 void Destruction() {
   for (auto surface : surfaces) for (bool already_drained : {false, true}) {
     mem::HierarchicalMemoryBudgetLedger l(3,5);
@@ -318,7 +394,9 @@ void Destruction() {
       if (already_drained) {
         const auto owner = Request(l, surface).owner_id;
         const auto result = l.CleanupOwner(owner.bytes);
-        Check(result.ok() && result.cleaned_bytes == 128, "external owner drain before destructor");
+        Check(!result.ok() && result.cleaned_bytes == 0 && result.retained_bytes == 128,
+              "external cleanup must revoke without uncharging the retained governor owner");
+        CheckLedger(l, 128);
       }
       fault::Arm(0);
     }
@@ -585,6 +663,6 @@ int main(int argc, char**) {
 #ifndef SB_GOVERNOR_NO_ALLOC_OVERRIDE
   AllocationSweeps(); ReleaseSweeps(); BulkSweeps();
 #endif
-  Destruction(); NonallocatingTerminal(); MixedSelection(); ClosedInputs(); BinaryIdentityAdmission(); BinaryScopeBudgetIsolation(); OverflowPolicy(); Concurrent();
+  Destruction(); PublicationOwnership(); NonallocatingTerminal(); MixedSelection(); ClosedInputs(); BinaryIdentityAdmission(); BinaryScopeBudgetIsolation(); OverflowPolicy(); Concurrent();
   return Finish();
 }

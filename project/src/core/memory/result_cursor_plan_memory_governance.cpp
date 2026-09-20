@@ -391,8 +391,8 @@ ResultCursorPlanMemoryGovernor::CounterForLocked(
 ResultCursorPlanMemoryGovernor::~ResultCursorPlanMemoryGovernor() {
   // No concurrent callers may outlive the governor. The ledger lifetime is a
   // construction/owner obligation, just as for an allocator-backed container.
-  for (const auto& [_, record] : leases_)
-    (void)record.ledger->ReleaseNoAlloc(record.token);
+  for (auto& [_, record] : leases_)
+    (void)record.retained_owner.Reset();
 }
 
 bool ResultCursorPlanMemoryGovernor::PrepareCountersLocked(OwnedLease& record) {
@@ -778,8 +778,16 @@ ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::Acquire(
     failure.diagnostic = std::move(committed.diagnostic);
     return failure;
   }
-  // The pending owner releases even a committed reservation if map allocation
-  // fails. No result is published until its actual lease is registered.
+  auto retained = request.ledger->Retain(reserved.token);
+  if (!retained.ok()) {
+    return Refuse(request, "SB_CEIC_020_MEMORY_GOVERNANCE.RESERVATION_REFUSED",
+                  "memory.ceic_020.reservation_refused", "reservation_retention_refused",
+                  retained.status.code);
+  }
+  record.retained_owner = std::move(retained.lease);
+  // Ownership transfers once. Map allocation failure now destroys the actual
+  // retained owner, rather than attempting raw release of retained capacity.
+  pending.Publish();
   const auto lease_key = record.lease_id;
   const auto inserted = leases_.try_emplace(lease_key, std::move(record));
   if (!inserted.second) {
@@ -788,7 +796,6 @@ ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::Acquire(
   }
   AddCountersLocked(inserted.first->second);
   counter_rollback.published = true;
-  pending.Publish();
   return decision;
 } catch (const std::bad_alloc&) {
   return AllocationFailure();
@@ -799,12 +806,41 @@ Status ResultCursorPlanMemoryGovernor::ReleaseNoAlloc(const ResultCursorPlanMemo
   std::lock_guard<std::mutex> lock(mutex_);
   const auto it = leases_.find(lease_id);
   if (it == leases_.end()) return ErrorStatus(StatusCode::memory_unknown_pointer);
-  const auto status = it->second.ledger->ReleaseNoAlloc(it->second.token);
+  const auto status = it->second.retained_owner.Reset();
   if (!status.ok()) return status;
   RemoveCountersLocked(it->second);
   leases_.erase(it);
   ++release_count_;
   return OkStatus();
+}
+
+ResultCursorPlanMemoryGovernor::PublicationGuard
+ResultCursorPlanMemoryGovernor::GuardForPublication(
+    const ResultCursorPlanMemoryUuid& cursor_lease_id,
+    const ResultCursorPlanMemoryUuid& frame_lease_id) {
+  PublicationGuard guard;
+  guard.lock_ = std::unique_lock<std::mutex>(mutex_);
+  const auto cursor = leases_.find(cursor_lease_id);
+  if (cursor == leases_.end() ||
+      cursor->second.surface != ResultCursorPlanMemorySurface::cursor) return {};
+  auto frame = leases_.end();
+  if (!frame_lease_id.is_nil()) {
+    frame = leases_.find(frame_lease_id);
+    if (frame == leases_.end() ||
+        frame->second.surface != ResultCursorPlanMemorySurface::result_frame ||
+        frame->second.ledger != cursor->second.ledger ||
+        frame->second.scope != cursor->second.scope ||
+        frame->second.epochs != cursor->second.epochs ||
+        frame->second.owner_id != cursor->second.owner_id) return {};
+  }
+  guard.cursor_.emplace(cursor->second.retained_owner.Use());
+  if (!guard.cursor_->live()) return {};
+  if (frame != leases_.end()) {
+    guard.frame_.emplace(frame->second.retained_owner.Use());
+    if (!guard.frame_->live()) return {};
+  }
+  guard.live_ = true;
+  return guard;
 }
 
 ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::DrainLocked(
@@ -834,7 +870,7 @@ ResultCursorPlanMemoryDecision ResultCursorPlanMemoryGovernor::DrainLocked(
       "ceic_011_ledger_release_failed");
   for (std::size_t index = 0; index < selected.size(); ++index) {
     const auto it = selected[index];
-    const auto status = it->second.ledger->ReleaseNoAlloc(it->second.token);
+    const auto status = it->second.retained_owner.Reset();
     if (!status.ok()) {
       aggregate.status = status;
       aggregate.fail_closed = true;

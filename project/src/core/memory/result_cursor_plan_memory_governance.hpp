@@ -70,6 +70,7 @@ struct ResultCursorPlanMemoryEpochs {
   u64 resource_epoch = 0;
   u64 descriptor_epoch = 0;
   u64 memory_policy_epoch = 0;
+  bool operator==(const ResultCursorPlanMemoryEpochs&) const = default;
 };
 
 using ResultCursorPlanMemoryUuid = scratchbird::core::platform::Uuid;
@@ -92,6 +93,7 @@ struct ResultCursorPlanMemoryScope {
   std::string plan_cache_key;
   ResultCursorPlanMemoryUuid prepared_statement_id;
   ResultCursorPlanMemoryUuid descriptor_snapshot_id;
+  bool operator==(const ResultCursorPlanMemoryScope&) const = default;
 };
 
 struct ResultCursorPlanMemoryPolicy {
@@ -209,6 +211,24 @@ const char* ResultCursorPlanMemoryReleaseReasonName(
 
 class ResultCursorPlanMemoryGovernor {
  public:
+  // Holds the exact cursor and optional frame owners through a nonallocating
+  // publication. Drop it before calling any governor or ledger operation.
+  // The governor and ledger must outlive this guard.
+  class PublicationGuard {
+   public:
+    PublicationGuard() = default;
+    PublicationGuard(PublicationGuard&&) noexcept = default;
+    PublicationGuard& operator=(PublicationGuard&&) = delete;
+    bool live() const { return live_ && lock_.owns_lock(); }
+   private:
+    // Destruction order drops retained-use locks before the governor lock.
+    std::unique_lock<std::mutex> lock_;
+    std::optional<HierarchicalMemoryReservationLease::UseGuard> cursor_;
+    std::optional<HierarchicalMemoryReservationLease::UseGuard> frame_;
+    bool live_ = false;
+    friend class ResultCursorPlanMemoryGovernor;
+  };
+
   ResultCursorPlanMemoryGovernor() = default;
   // Every supplied ledger must outlive this governor and its live leases.
   ~ResultCursorPlanMemoryGovernor();
@@ -224,6 +244,9 @@ class ResultCursorPlanMemoryGovernor {
   // Actual owner teardown without diagnostic/evidence allocation. A stale
   // handle is a typed refusal, not proof that this invocation released it.
   Status ReleaseNoAlloc(const ResultCursorPlanMemoryUuid& lease_id);
+  PublicationGuard GuardForPublication(
+      const ResultCursorPlanMemoryUuid& cursor_lease_id,
+      const ResultCursorPlanMemoryUuid& frame_lease_id = {});
   ResultCursorPlanMemoryDecision ReleaseByCursor(
       const ResultCursorPlanMemoryUuid& cursor_id,
       ResultCursorPlanMemoryReleaseReason reason);
@@ -271,6 +294,7 @@ class ResultCursorPlanMemoryGovernor {
   };
   struct OwnedLease : ResultCursorPlanMemoryLeaseRecord {
     std::vector<CounterKey> counter_keys;
+    HierarchicalMemoryReservationLease retained_owner;
   };
   using LeaseMap = std::map<ResultCursorPlanMemoryUuid, OwnedLease>;
   bool PrepareCountersLocked(OwnedLease& record);
