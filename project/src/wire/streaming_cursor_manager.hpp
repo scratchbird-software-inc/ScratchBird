@@ -13,6 +13,7 @@
 #include "runtime_platform.hpp"
 #include "result_cursor_plan_memory_governance.hpp"
 
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -26,6 +27,8 @@ namespace memory = scratchbird::core::memory;
 using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::Status;
 using scratchbird::core::platform::u64;
+using StreamingCursorUuid = scratchbird::core::platform::Uuid;
+static_assert(sizeof(StreamingCursorUuid) == 16);
 
 struct StreamingCursorCreditState {
   u64 frame_credit = 0;
@@ -35,12 +38,12 @@ struct StreamingCursorCreditState {
 };
 
 struct StreamingCursorState {
-  std::string cursor_id;
+  StreamingCursorUuid cursor_id;
   std::string plan_result_contract_hash;
   u64 catalog_epoch = 0;
   u64 descriptor_epoch = 0;
   std::string transaction_snapshot_class;
-  std::string transaction_uuid;
+  StreamingCursorUuid transaction_uuid;
   u64 local_transaction_id = 0;
   u64 snapshot_visible_through_local_transaction_id = 0;
   u64 security_epoch = 0;
@@ -57,7 +60,7 @@ struct StreamingCursorState {
   memory::ResultCursorPlanMemoryPolicy memory_policy;
   memory::ResultCursorPlanMemoryScope memory_scope;
   memory::ResultCursorPlanMemoryEpochs memory_epochs;
-  std::string memory_lease_id;
+  StreamingCursorUuid memory_lease_id;
   u64 cursor_memory_bytes = 0;
   u64 outstanding_frame_bytes = 0;
   u64 outstanding_frame_count = 0;
@@ -75,12 +78,12 @@ struct StreamingCursorResult {
 };
 
 struct StreamingCursorBinding {
-  std::string cursor_id;
+  StreamingCursorUuid cursor_id;
   std::string plan_result_contract_hash;
   u64 catalog_epoch = 0;
   u64 descriptor_epoch = 0;
   std::string transaction_snapshot_class;
-  std::string transaction_uuid;
+  StreamingCursorUuid transaction_uuid;
   u64 local_transaction_id = 0;
   u64 snapshot_visible_through_local_transaction_id = 0;
   u64 security_epoch = 0;
@@ -114,18 +117,18 @@ struct StreamingCursorFrameDelivery {
 class StreamingCursorManager {
  public:
   StreamingCursorResult OpenCursor(const StreamingCursorOpenRequest& request);
-  StreamingCursorResult GrantCredit(const std::string& cursor_id,
+  StreamingCursorResult GrantCredit(const StreamingCursorUuid& cursor_id,
                                     StreamingCursorCreditState credit);
-  StreamingCursorResult CancelCursor(const std::string& cursor_id);
+  StreamingCursorResult CancelCursor(const StreamingCursorUuid& cursor_id);
   StreamingCursorResult ValidateFetch(
       const StreamingCursorFetchRequest& request) const;
   StreamingCursorResult RecordFrameDelivery(
       const StreamingCursorFrameDelivery& delivery);
-  std::optional<StreamingCursorState> Lookup(const std::string& cursor_id) const;
+  std::optional<StreamingCursorState> Lookup(const StreamingCursorUuid& cursor_id) const;
 
  private:
   mutable std::mutex mutex_;
-  std::unordered_map<std::string, StreamingCursorState> cursors_;
+  std::map<StreamingCursorUuid, StreamingCursorState> cursors_;
 };
 
 struct ContinuationTokenSecret {

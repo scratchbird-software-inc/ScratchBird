@@ -23,6 +23,7 @@
 #include "selectivity_model.hpp"
 #include "snapshot_safe_result_cache.hpp"
 #include "streaming_cursor_manager.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "transaction_inventory.hpp"
 #include "uuid.hpp"
 #include "vector_maintenance_jobs.hpp"
@@ -1111,12 +1112,12 @@ void ProveStreamingAndDirectFrameEquivalence() {
 
   wire::StreamingCursorManager manager;
   wire::StreamingCursorState state;
-  state.cursor_id = "019b8000-0000-7000-8000-000000000120";
+  state.cursor_id = scratchbird::tests::FixtureUuid(120, 1);
   state.plan_result_contract_hash = "sha256:orh120-frame-contract";
   state.catalog_epoch = 120;
   state.descriptor_epoch = 120;
   state.transaction_snapshot_class = "mga_statement_snapshot";
-  state.transaction_uuid = "019b8000-0000-7000-8000-000000000121";
+  state.transaction_uuid = scratchbird::tests::FixtureUuid(120, 2);
   state.local_transaction_id = 120;
   state.snapshot_visible_through_local_transaction_id = 119;
   state.security_epoch = 120;

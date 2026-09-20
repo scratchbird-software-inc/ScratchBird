@@ -329,7 +329,7 @@ void StreamingCursorFramesReserveAndRelease() {
   open.cursor_memory_bytes = 256;
   open.require_memory_governance = true;
   auto opened = manager.OpenCursor(open);
-  Require(opened.ok() && !opened.state.memory_lease_id.empty(),
+  Require(opened.ok() && !opened.state.memory_lease_id.is_nil(),
           "CEIC-020 streaming cursor open did not reserve cursor memory");
 
   wire::StreamingCursorCreditState credit;

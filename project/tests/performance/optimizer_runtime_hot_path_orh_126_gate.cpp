@@ -12,6 +12,7 @@
 #include "optimizer_plan_cache.hpp"
 #include "snapshot_safe_result_cache.hpp"
 #include "streaming_cursor_manager.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -436,12 +437,12 @@ void ProveOptimizerSecurityRaceInvalidation() {
 
 wire::StreamingCursorState CursorState() {
   wire::StreamingCursorState state;
-  state.cursor_id = "orh126-cursor";
+  state.cursor_id = scratchbird::tests::FixtureUuid(126, 1);
   state.plan_result_contract_hash = "result_contract:orh126:v1";
   state.catalog_epoch = 126;
   state.descriptor_epoch = 127;
   state.transaction_snapshot_class = "repeatable_read";
-  state.transaction_uuid = "orh126-tx-alice";
+  state.transaction_uuid = scratchbird::tests::FixtureUuid(126, 2);
   state.local_transaction_id = 128;
   state.snapshot_visible_through_local_transaction_id = 127;
   state.security_epoch = 129;
@@ -539,7 +540,7 @@ void ProveCursorAndContinuationSecurityRaceRefusals() {
       "token_redaction_epoch_mismatch");
 
   changed = binding;
-  changed.transaction_uuid = "orh126-tx-bob";
+  changed.transaction_uuid = scratchbird::tests::FixtureUuid(126, 3);
   RequireCursorRefusal(changed,
                        "session_auth_context_change",
                        "SB_ORH_STREAMING_CURSOR.TRANSACTION_UUID_MISMATCH",

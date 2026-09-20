@@ -13,6 +13,7 @@
 #include "optimizer_differential_fuzz.hpp"
 #include "snapshot_safe_result_cache.hpp"
 #include "streaming_cursor_manager.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
 
@@ -539,12 +540,12 @@ RouteCapture EvaluateMerge(const GeneratedCase& test_case) {
 
 wire::StreamingCursorState CursorState(const GeneratedCase& test_case) {
   wire::StreamingCursorState state;
-  state.cursor_id = test_case.case_id;
+  state.cursor_id = scratchbird::tests::FixtureUuid(129, 1);
   state.plan_result_contract_hash = "result_contract/orh129/v1";
   state.catalog_epoch = 129;
   state.descriptor_epoch = 130;
   state.transaction_snapshot_class = "repeatable_read";
-  state.transaction_uuid = "orh129-tx";
+  state.transaction_uuid = scratchbird::tests::FixtureUuid(129, 2);
   state.local_transaction_id = 131;
   state.snapshot_visible_through_local_transaction_id = 132;
   state.security_epoch = 133;

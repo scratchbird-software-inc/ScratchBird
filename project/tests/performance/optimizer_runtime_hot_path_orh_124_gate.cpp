@@ -11,6 +11,7 @@
 #include "nosql/nosql_physical_provider_contract.hpp"
 #include "optimized_path_resource_governance.hpp"
 #include "streaming_cursor_manager.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "vector_maintenance_jobs.hpp"
 #include "vector_training_recall_lifecycle.hpp"
 
@@ -450,12 +451,12 @@ void ProveResourceAdmissionFallbackSlowdownAndFailClosed() {
 
 wire::StreamingCursorState CursorState() {
   wire::StreamingCursorState state;
-  state.cursor_id = "orh124-cursor";
+  state.cursor_id = scratchbird::tests::FixtureUuid(124, 1);
   state.plan_result_contract_hash = "result-contract-orh124";
   state.catalog_epoch = 10;
   state.descriptor_epoch = 11;
   state.transaction_snapshot_class = "mga_snapshot";
-  state.transaction_uuid = "orh124-tx";
+  state.transaction_uuid = scratchbird::tests::FixtureUuid(124, 2);
   state.local_transaction_id = 12;
   state.snapshot_visible_through_local_transaction_id = 11;
   state.security_epoch = 13;

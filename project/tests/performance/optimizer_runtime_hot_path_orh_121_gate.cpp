@@ -17,6 +17,7 @@
 #include "online_maintenance_progress.hpp"
 #include "snapshot_safe_result_cache.hpp"
 #include "streaming_cursor_manager.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "transaction/transaction_api.hpp"
 #include "vector_maintenance_jobs.hpp"
 #include "vector_training_recall_lifecycle.hpp"
@@ -467,12 +468,12 @@ void ProvePartialMergeBatchRollbackReopenRecovery() {
 
 wire::StreamingCursorState CursorState() {
   wire::StreamingCursorState state;
-  state.cursor_id = "019f2200-0000-7000-8000-000000121301";
+  state.cursor_id = scratchbird::tests::FixtureUuid(121, 1);
   state.plan_result_contract_hash = "fnv1a64:orh121-result-contract";
   state.catalog_epoch = 121;
   state.descriptor_epoch = 122;
   state.transaction_snapshot_class = "mga_statement_snapshot";
-  state.transaction_uuid = "019f2200-0000-7000-8000-000000121302";
+  state.transaction_uuid = scratchbird::tests::FixtureUuid(121, 2);
   state.local_transaction_id = 12101;
   state.snapshot_visible_through_local_transaction_id = 12100;
   state.security_epoch = 123;

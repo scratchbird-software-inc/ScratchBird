@@ -7,12 +7,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "streaming_cursor_manager.hpp"
+#include "../core/uuid/uuid.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cstring>
 #include <iomanip>
 #include <limits>
 #include <sstream>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 #include <openssl/crypto.h>
@@ -27,7 +31,19 @@ using scratchbird::core::platform::Severity;
 using scratchbird::core::platform::StatusCode;
 using scratchbird::core::platform::Subsystem;
 
-constexpr std::string_view kTokenPrefix = "SBORH1";
+constexpr std::string_view kTokenPrefix = "SBORH2";
+constexpr std::size_t kMaximumTokenBytes = 32768;
+constexpr std::size_t kMaximumBindingTextBytes = 4096;
+
+struct UnpublishedMemoryLease {
+  memory::ResultCursorPlanMemoryGovernor* governor = nullptr;
+  StreamingCursorUuid identity{};
+  ~UnpublishedMemoryLease() {
+    if (governor != nullptr && !identity.is_nil()) (void)governor->ReleaseNoAlloc(identity);
+  }
+};
+
+static_assert(std::is_nothrow_move_assignable_v<StreamingCursorState>);
 
 Status OkStatus() {
   return {StatusCode::ok, Severity::info, Subsystem::engine};
@@ -64,7 +80,7 @@ void AddBool(std::vector<std::string>* evidence,
 void AppendStateEvidence(std::vector<std::string>* evidence,
                          const StreamingCursorState& state) {
   evidence->push_back("ORH_STREAMING_CURSOR_MANAGER");
-  evidence->push_back("cursor_id=" + state.cursor_id);
+  AddBool(evidence, "cursor_id_present", !state.cursor_id.is_nil());
   evidence->push_back("result_contract_hash=" +
                       state.plan_result_contract_hash);
   evidence->push_back("catalog_epoch=" +
@@ -73,7 +89,7 @@ void AppendStateEvidence(std::vector<std::string>* evidence,
                       std::to_string(state.descriptor_epoch));
   evidence->push_back("transaction_snapshot_class=" +
                       state.transaction_snapshot_class);
-  evidence->push_back("transaction_uuid=" + state.transaction_uuid);
+  AddBool(evidence, "transaction_uuid_present", !state.transaction_uuid.is_nil());
   evidence->push_back("local_transaction_id=" +
                       std::to_string(state.local_transaction_id));
   evidence->push_back("snapshot_visible_through_local_transaction_id=" +
@@ -102,8 +118,7 @@ void AppendStateEvidence(std::vector<std::string>* evidence,
           state.mga_visibility_or_finality_authority);
   AddBool(evidence, "cursor_advisory_metadata_only",
           state.advisory_metadata_only);
-  evidence->push_back("ceic_020_cursor_memory_lease_id=" +
-                      state.memory_lease_id);
+  AddBool(evidence, "ceic_020_cursor_memory_lease_present", !state.memory_lease_id.is_nil());
   evidence->push_back("ceic_020_cursor_memory_bytes=" +
                       std::to_string(state.cursor_memory_bytes));
   evidence->push_back("ceic_020_outstanding_frame_bytes=" +
@@ -135,7 +150,7 @@ StreamingCursorResult CursorRefuse(std::string code,
   result.fail_closed = true;
   result.state = std::move(state);
   result.refusal_reasons.push_back(reason);
-  if (!result.state.cursor_id.empty()) {
+  if (!result.state.cursor_id.is_nil()) {
     AppendStateEvidence(&result.evidence, result.state);
   } else {
     result.evidence.push_back("ORH_STREAMING_CURSOR_MANAGER");
@@ -148,29 +163,30 @@ StreamingCursorResult CursorRefuse(std::string code,
   return result;
 }
 
-bool RequiredStateFieldsPresent(const StreamingCursorState& state,
+template <typename Binding>
+bool RequiredStateFieldsPresent(const Binding& state,
                                 std::string* missing) {
-  if (state.cursor_id.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(state.cursor_id)) {
     *missing = "cursor_id_required";
-  } else if (state.plan_result_contract_hash.empty()) {
+  } else if (state.plan_result_contract_hash.empty() ||
+             state.plan_result_contract_hash.size() > kMaximumBindingTextBytes) {
     *missing = "result_contract_hash_required";
   } else if (state.catalog_epoch == 0) {
     *missing = "catalog_epoch_required";
   } else if (state.descriptor_epoch == 0) {
     *missing = "descriptor_epoch_required";
-  } else if (state.transaction_snapshot_class.empty()) {
+  } else if (state.transaction_snapshot_class.empty() ||
+             state.transaction_snapshot_class.size() > kMaximumBindingTextBytes) {
     *missing = "transaction_snapshot_class_required";
-  } else if (state.transaction_uuid.empty()) {
+  } else if (!scratchbird::core::uuid::IsEngineIdentityUuid(state.transaction_uuid)) {
     *missing = "transaction_uuid_required";
   } else if (state.local_transaction_id == 0) {
     *missing = "local_transaction_id_required";
-  } else if (state.snapshot_visible_through_local_transaction_id == 0) {
-    *missing = "snapshot_visible_through_local_transaction_id_required";
   } else if (state.security_epoch == 0) {
     *missing = "security_epoch_required";
   } else if (state.redaction_epoch == 0) {
     *missing = "redaction_epoch_required";
-  } else if (state.route_kind.empty()) {
+  } else if (state.route_kind.empty() || state.route_kind.size() > kMaximumBindingTextBytes) {
     *missing = "route_kind_required";
   } else if (state.expiry_deadline_unix_millis == 0) {
     *missing = "expiry_deadline_required";
@@ -201,9 +217,8 @@ memory::ResultCursorPlanMemoryEpochs MemoryEpochsFromState(
 memory::ResultCursorPlanMemoryScope MemoryScopeFromState(
     const StreamingCursorState& state) {
   auto scope = state.memory_scope;
-  if (scope.cursor_id.empty()) scope.cursor_id = state.cursor_id;
-  if (scope.query_id.empty()) scope.query_id = state.cursor_id;
-  if (scope.transaction_id.empty()) scope.transaction_id = state.transaction_uuid;
+  if (scope.cursor_id.is_nil()) scope.cursor_id = state.cursor_id;
+  if (scope.transaction_id.is_nil()) scope.transaction_id = state.transaction_uuid;
   return scope;
 }
 
@@ -308,7 +323,8 @@ void AppendField(std::string* out, std::string_view name, std::string value) {
 
 std::string BindingPayload(const StreamingCursorBinding& binding) {
   std::string payload;
-  AppendField(&payload, "cursor_id", binding.cursor_id);
+  AppendField(&payload, "cursor_id", std::string(
+      reinterpret_cast<const char*>(binding.cursor_id.bytes.data()), 16));
   AppendField(&payload, "result_contract_hash",
               binding.plan_result_contract_hash);
   AppendField(&payload, "catalog_epoch",
@@ -317,7 +333,8 @@ std::string BindingPayload(const StreamingCursorBinding& binding) {
               std::to_string(binding.descriptor_epoch));
   AppendField(&payload, "transaction_snapshot_class",
               binding.transaction_snapshot_class);
-  AppendField(&payload, "transaction_uuid", binding.transaction_uuid);
+  AppendField(&payload, "transaction_uuid", std::string(
+      reinterpret_cast<const char*>(binding.transaction_uuid.bytes.data()), 16));
   AppendField(&payload, "local_transaction_id",
               std::to_string(binding.local_transaction_id));
   AppendField(&payload, "snapshot_visible_through_local_transaction_id",
@@ -362,7 +379,7 @@ std::string SignatureFor(std::string_view payload,
            body.size(),
            digest.data(),
            &digest_len) == nullptr ||
-      digest_len == 0) {
+      digest_len != 32) {
     return {};
   }
   return HexEncode(std::string_view(
@@ -476,7 +493,7 @@ bool ParseBindingPayload(std::string_view payload,
     if (!ReadField(payload, &offset, &name, &value)) {
       return false;
     }
-    fields.emplace(std::move(name), std::move(value));
+    if (!fields.emplace(std::move(name), std::move(value)).second) return false;
   }
   constexpr std::array<std::string_view, 13> required{{
       "cursor_id",
@@ -493,16 +510,19 @@ bool ParseBindingPayload(std::string_view payload,
       "frame_sequence",
       "expiry_deadline_unix_millis",
   }};
+  if (fields.size() != required.size()) return false;
   for (const auto name : required) {
     if (fields.find(std::string(name)) == fields.end()) {
       return false;
     }
   }
-  binding->cursor_id = fields["cursor_id"];
+  if (fields["cursor_id"].size() != 16 || fields["transaction_uuid"].size() != 16)
+    return false;
+  std::memcpy(binding->cursor_id.bytes.data(), fields["cursor_id"].data(), 16);
   binding->plan_result_contract_hash = fields["result_contract_hash"];
   binding->transaction_snapshot_class =
       fields["transaction_snapshot_class"];
-  binding->transaction_uuid = fields["transaction_uuid"];
+  std::memcpy(binding->transaction_uuid.bytes.data(), fields["transaction_uuid"].data(), 16);
   binding->route_kind = fields["route_kind"];
   return ParseU64Text(fields["catalog_epoch"], &binding->catalog_epoch) &&
          ParseU64Text(fields["descriptor_epoch"], &binding->descriptor_epoch) &&
@@ -545,8 +565,8 @@ ContinuationTokenResult TokenOk(std::string code,
   result.evidence.push_back("continuation_token_valid=true");
   result.evidence.push_back("continuation_token_signature_algorithm=HMAC-SHA256");
   result.evidence.push_back("continuation_token_key_id_encoding=hex");
-  result.evidence.push_back("continuation_token_bound_cursor_id=" +
-                            result.binding.cursor_id);
+  AddBool(&result.evidence, "continuation_token_bound_cursor_id_present",
+          !result.binding.cursor_id.is_nil());
   result.evidence.push_back("continuation_token_bound_route_kind=" +
                             result.binding.route_kind);
   result.evidence.push_back("continuation_token_bound_contract_hash=" +
@@ -557,8 +577,8 @@ ContinuationTokenResult TokenOk(std::string code,
                             std::to_string(result.binding.descriptor_epoch));
   result.evidence.push_back("continuation_token_bound_snapshot_class=" +
                             result.binding.transaction_snapshot_class);
-  result.evidence.push_back("continuation_token_bound_transaction_uuid=" +
-                            result.binding.transaction_uuid);
+  AddBool(&result.evidence, "continuation_token_bound_transaction_uuid_present",
+          !result.binding.transaction_uuid.is_nil());
   result.evidence.push_back("continuation_token_bound_local_transaction_id=" +
                             std::to_string(result.binding.local_transaction_id));
   result.evidence.push_back(
@@ -691,6 +711,17 @@ StreamingCursorResult StreamingCursorManager::OpenCursor(
                         request.state);
   }
   auto state = request.state;
+  UnpublishedMemoryLease pending;
+  if (!state.memory_lease_id.is_nil() || state.outstanding_frame_bytes != 0 ||
+      state.outstanding_frame_count != 0) {
+    return CursorRefuse("SB_ORH_STREAMING_CURSOR.REQUIRED_FIELD_MISSING",
+                        "unacquired_memory_ownership", state);
+  }
+  if ((!state.memory_scope.cursor_id.is_nil() && state.memory_scope.cursor_id != state.cursor_id) ||
+      (!state.memory_scope.transaction_id.is_nil() && state.memory_scope.transaction_id != state.transaction_uuid)) {
+    return CursorRefuse("SB_ORH_STREAMING_CURSOR.REQUIRED_FIELD_MISSING",
+                        "memory_scope_identity_mismatch", state);
+  }
   state.client_credit.backpressure_active =
       state.client_credit.frame_credit == 0 || state.client_credit.row_credit == 0 ||
       state.client_credit.byte_credit == 0;
@@ -712,7 +743,7 @@ StreamingCursorResult StreamingCursorManager::OpenCursor(
     lease.epochs = MemoryEpochsFromState(state);
     lease.provenance = RuntimeMemoryProvenance();
     lease.memory_class = "ceic_020.streaming_cursor";
-    lease.owner_id = "wire.cursor:" + state.cursor_id;
+    lease.owner_id = state.cursor_id;
     lease.route_label = state.route_kind;
     lease.requested_bytes =
         request.cursor_memory_bytes != 0 ? request.cursor_memory_bytes
@@ -724,6 +755,8 @@ StreamingCursorResult StreamingCursorManager::OpenCursor(
       return CursorMemoryRefuse(state, acquired);
     }
     state.memory_lease_id = acquired.lease_id;
+    pending.governor = state.memory_governor;
+    pending.identity = acquired.lease_id;
     state.cursor_memory_bytes =
         request.cursor_memory_bytes != 0 ? request.cursor_memory_bytes
                                          : state.cursor_memory_bytes;
@@ -731,13 +764,18 @@ StreamingCursorResult StreamingCursorManager::OpenCursor(
       state.cursor_memory_bytes = 1;
     }
   }
-  cursors_.emplace(state.cursor_id, state);
-  return CursorOk("SB_ORH_STREAMING_CURSOR.OPENED",
-                  "cursor_opened", std::move(state));
+  // Prepare both the public response and owning map node before publication.
+  // Any allocation failure releases the unpublished exact lease without allocating.
+  auto result = CursorOk("SB_ORH_STREAMING_CURSOR.OPENED", "cursor_opened", state);
+  std::map<StreamingCursorUuid, StreamingCursorState> staged;
+  staged.emplace(state.cursor_id, std::move(state));
+  cursors_.insert(staged.extract(staged.begin()));
+  pending.identity = {};
+  return result;
 }
 
 StreamingCursorResult StreamingCursorManager::GrantCredit(
-    const std::string& cursor_id,
+    const StreamingCursorUuid& cursor_id,
     StreamingCursorCreditState credit) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto found = cursors_.find(cursor_id);
@@ -759,6 +797,7 @@ StreamingCursorResult StreamingCursorManager::GrantCredit(
         found->second.outstanding_frame_count >= released.released_lease_count
             ? found->second.outstanding_frame_count - released.released_lease_count
             : 0;
+    if (!released.ok()) return CursorMemoryRefuse(found->second, released);
   }
   found->second.client_credit = credit;
   return CursorOk("SB_ORH_STREAMING_CURSOR.CREDIT_UPDATED",
@@ -766,7 +805,7 @@ StreamingCursorResult StreamingCursorManager::GrantCredit(
 }
 
 StreamingCursorResult StreamingCursorManager::CancelCursor(
-    const std::string& cursor_id) {
+    const StreamingCursorUuid& cursor_id) {
   std::lock_guard<std::mutex> lock(mutex_);
   auto found = cursors_.find(cursor_id);
   if (found == cursors_.end()) {
@@ -775,15 +814,19 @@ StreamingCursorResult StreamingCursorManager::CancelCursor(
   }
   found->second.cancellation_requested = true;
   if (found->second.memory_governor != nullptr) {
-    auto released = found->second.memory_governor->ReleaseByCursor(
+    auto released = found->second.memory_governor->ReleaseResultFramesByCursor(
         cursor_id, memory::ResultCursorPlanMemoryReleaseReason::cancel);
-    found->second.outstanding_frame_bytes = 0;
-    found->second.outstanding_frame_count = 0;
-    found->second.cursor_memory_bytes =
-        found->second.cursor_memory_bytes >= released.released_bytes
-            ? found->second.cursor_memory_bytes - released.released_bytes
-            : 0;
-    found->second.memory_lease_id.clear();
+    auto& state = found->second;
+    state.outstanding_frame_bytes -= std::min(state.outstanding_frame_bytes, released.released_bytes);
+    state.outstanding_frame_count -= std::min(state.outstanding_frame_count, released.released_lease_count);
+    if (!released.ok()) return CursorMemoryRefuse(state, released);
+    if (!state.memory_lease_id.is_nil()) {
+      auto cursor_release = state.memory_governor->Release(
+          state.memory_lease_id, memory::ResultCursorPlanMemoryReleaseReason::cancel);
+      if (!cursor_release.ok()) return CursorMemoryRefuse(state, cursor_release);
+      state.cursor_memory_bytes = 0;
+      state.memory_lease_id = {};
+    }
   }
   return CursorOk("SB_ORH_STREAMING_CURSOR.CANCEL_REQUESTED",
                   "cursor_cancel_requested", found->second);
@@ -815,11 +858,19 @@ StreamingCursorResult StreamingCursorManager::RecordFrameDelivery(
     return checked;
   }
   auto& state = found->second;
+  if (state.frame_sequence == std::numeric_limits<u64>::max() ||
+      state.outstanding_frame_count == std::numeric_limits<u64>::max() ||
+      delivery.byte_count > std::numeric_limits<u64>::max() - state.outstanding_frame_bytes) {
+    return CursorRefuse("SB_ORH_STREAMING_CURSOR.BACKPRESSURE",
+                        "frame_accounting_overflow", state);
+  }
   if (delivery.row_count > state.client_credit.row_credit ||
       delivery.byte_count > state.client_credit.byte_credit) {
     return CursorRefuse("SB_ORH_STREAMING_CURSOR.BACKPRESSURE",
                         "client_credit_insufficient_for_frame", state);
   }
+  auto projected = state;
+  UnpublishedMemoryLease pending;
   if (delivery.require_memory_governance || state.memory_governor != nullptr ||
       state.memory_ledger != nullptr) {
     if (state.memory_governor == nullptr || state.memory_ledger == nullptr) {
@@ -835,7 +886,7 @@ StreamingCursorResult StreamingCursorManager::RecordFrameDelivery(
     frame_lease.epochs = MemoryEpochsFromState(state);
     frame_lease.provenance = RuntimeMemoryProvenance();
     frame_lease.memory_class = "ceic_020.result_frame";
-    frame_lease.owner_id = "wire.cursor.frame:" + state.cursor_id;
+    frame_lease.owner_id = state.cursor_id;
     frame_lease.route_label = state.route_kind;
     frame_lease.requested_bytes = delivery.byte_count;
     frame_lease.lease_expires_at_ms = state.expiry_deadline_unix_millis;
@@ -845,22 +896,27 @@ StreamingCursorResult StreamingCursorManager::RecordFrameDelivery(
       refused.refusal_reasons.push_back("result_frame_memory_backpressure");
       return refused;
     }
-    state.outstanding_frame_bytes += delivery.byte_count;
-    ++state.outstanding_frame_count;
+    pending.governor = state.memory_governor;
+    pending.identity = acquired.lease_id;
+    projected.outstanding_frame_bytes += delivery.byte_count;
+    ++projected.outstanding_frame_count;
   }
-  --state.client_credit.frame_credit;
-  state.client_credit.row_credit -= delivery.row_count;
-  state.client_credit.byte_credit -= delivery.byte_count;
-  ++state.frame_sequence;
-  state.client_credit.backpressure_active =
-      state.client_credit.frame_credit == 0 || state.client_credit.row_credit == 0 ||
-      state.client_credit.byte_credit == 0;
-  return CursorOk("SB_ORH_STREAMING_CURSOR.FRAME_DELIVERED",
-                  "cursor_frame_delivered", state);
+  --projected.client_credit.frame_credit;
+  projected.client_credit.row_credit -= delivery.row_count;
+  projected.client_credit.byte_credit -= delivery.byte_count;
+  ++projected.frame_sequence;
+  projected.client_credit.backpressure_active =
+      projected.client_credit.frame_credit == 0 || projected.client_credit.row_credit == 0 ||
+      projected.client_credit.byte_credit == 0;
+  auto result = CursorOk("SB_ORH_STREAMING_CURSOR.FRAME_DELIVERED",
+                         "cursor_frame_delivered", projected);
+  state = std::move(projected);
+  pending.identity = {};
+  return result;
 }
 
 std::optional<StreamingCursorState> StreamingCursorManager::Lookup(
-    const std::string& cursor_id) const {
+    const StreamingCursorUuid& cursor_id) const {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto found = cursors_.find(cursor_id);
   if (found == cursors_.end()) {
@@ -872,10 +928,14 @@ std::optional<StreamingCursorState> StreamingCursorManager::Lookup(
 ContinuationTokenResult IssueContinuationToken(
     const StreamingCursorBinding& binding,
     const ContinuationTokenSecret& secret) {
-  if (secret.key_id.empty() || secret.secret_material.empty()) {
+  if (secret.key_id.empty() || secret.key_id.size() > 256 || secret.secret_material.empty() ||
+      secret.secret_material.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
     return TokenRefuse("SB_ORH_CONTINUATION_TOKEN.SECRET_REQUIRED",
                        "token_secret_required");
   }
+  std::string missing;
+  if (!RequiredStateFieldsPresent(binding, &missing))
+    return TokenRefuse("SB_ORH_CONTINUATION_TOKEN.MALFORMED", missing);
   const auto payload = BindingPayload(binding);
   const auto signature = SignatureFor(payload, secret);
   if (signature.empty()) {
@@ -893,10 +953,13 @@ ContinuationTokenResult ValidateContinuationToken(
     const StreamingCursorBinding& expected,
     const ContinuationTokenSecret& secret,
     u64 now_unix_millis) {
-  if (secret.key_id.empty() || secret.secret_material.empty()) {
+  if (secret.key_id.empty() || secret.key_id.size() > 256 || secret.secret_material.empty() ||
+      secret.secret_material.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
     return TokenRefuse("SB_ORH_CONTINUATION_TOKEN.SECRET_REQUIRED",
                        "token_secret_required");
   }
+  if (token.size() > kMaximumTokenBytes)
+    return TokenRefuse("SB_ORH_CONTINUATION_TOKEN.MALFORMED", "token_size_limit");
   const auto first = token.find('.');
   const auto second = first == std::string::npos ? std::string::npos
                                                   : token.find('.', first + 1u);
@@ -914,7 +977,7 @@ ContinuationTokenResult ValidateContinuationToken(
       second + 1u, third - second - 1u);
   const auto signature = token.substr(third + 1u);
   std::string key_id;
-  if (!HexDecode(key_id_hex, &key_id)) {
+  if (!HexDecode(key_id_hex, &key_id) || HexEncode(key_id) != key_id_hex) {
     return TokenRefuse("SB_ORH_CONTINUATION_TOKEN.MALFORMED",
                        "malformed_token_key_id");
   }
@@ -923,7 +986,7 @@ ContinuationTokenResult ValidateContinuationToken(
                        "token_key_id_mismatch");
   }
   std::string payload;
-  if (!HexDecode(payload_hex, &payload)) {
+  if (!HexDecode(payload_hex, &payload) || HexEncode(payload) != payload_hex) {
     return TokenRefuse("SB_ORH_CONTINUATION_TOKEN.MALFORMED",
                        "malformed_token_payload");
   }
@@ -940,7 +1003,9 @@ ContinuationTokenResult ValidateContinuationToken(
                        "token_signature_mismatch");
   }
   StreamingCursorBinding parsed;
-  if (!ParseBindingPayload(payload, &parsed)) {
+  std::string missing;
+  if (!ParseBindingPayload(payload, &parsed) ||
+      !RequiredStateFieldsPresent(parsed, &missing) || BindingPayload(parsed) != payload) {
     return TokenRefuse("SB_ORH_CONTINUATION_TOKEN.MALFORMED",
                        "malformed_token_payload");
   }
