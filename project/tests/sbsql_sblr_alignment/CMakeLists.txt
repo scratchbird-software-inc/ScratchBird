@@ -517,6 +517,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "sbsql_sblr_alignment;IA-00;contract;fault;NATIVE_COMMON_PAGE_HEADER_V2;binary_uuid;node_ownership"
     TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
+  include(native_storage_components.cmake)
   add_executable(sbsql_sblr_alignment_catalog_metric_retention_staging catalog_metric_retention_staging_test.cpp)
   target_compile_features(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE sb_storage_database OpenSSL::Crypto)

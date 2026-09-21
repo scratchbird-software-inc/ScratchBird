@@ -1901,7 +1901,8 @@ void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializatio
   const auto reset=[&](){if(device.is_open())Check(device.Close().ok(),"close owned initialization fault fixture");path=(fixture.root/std::to_string(attempt++)).string();
     Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"new empty initialization fault fixture");};
   const auto initialize=[&](){return db::InitializeNativeFilespaceOnOpenDevice(device,request,budget);};
-  const auto empty=[&](const auto& r){Check(!r.ok()&&!r.receipt,"initialization failure never returns a receipt");};
+  const auto empty=[&](const auto& r,std::source_location at=std::source_location::current()){
+    Check(!r.ok()&&!r.receipt,"initialization failure never returns a receipt",at);};
   const auto image=[&](){const auto size=device.Size();Check(size.ok(),"read actual interrupted extent");Bytes bytes(size.size_bytes);if(!bytes.empty())Check(device.ReadAt(0,bytes.data(),bytes.size()).ok(),"read actual interrupted bytes");return bytes;};
   const auto preserved=[&](){const auto before=image();if(!before.empty()){const auto again=initialize();empty(again);Check(again.error==E::device_not_empty&&image()==before,"interrupted owned bytes preserved without implicit repair");}};
   reset();initialization_entropy_calls=stage_writes=stage_syncs=reads=observed_full_digests=observed_allocations=0;
@@ -1918,12 +1919,20 @@ void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializatio
   for(unsigned fault=1;fault<=read_count;++fault){reset();reads=0;stage_corrupt_read=fault;track_reads=true;result=initialize();track_reads=false;Check(!stage_corrupt_read,"every final verification read corruption consumed");empty(result);preserved();}
   for(unsigned fault=1;fault<=digest_count;++fault){reset();full_digest_fault=fault;result=initialize();Check(!full_digest_fault,"every initialization full hash failure consumed");empty(result);preserved();}
   for(unsigned fault=1;fault<=5;++fault){reset();hash_fault=fault;result=initialize();Check(!hash_fault,"every multipart hash failure consumed");empty(result);preserved();}
-  bool allocation_end=false;unsigned long consumed=0;
-  for(unsigned long fault=0;fault<=allocation_count;++fault){reset();allocation_budget=static_cast<long>(fault);result=initialize();const bool injected=allocation_budget<0;allocation_budget=-1;
+  bool allocation_end=false;unsigned long consumed=0,observation_loss_sites=0;
+  for(unsigned long fault=0;fault<=allocation_count;++fault){reset();const auto losses=device.failed_io_latency_observations();
+    allocation_budget=static_cast<long>(fault);result=initialize();const bool injected=allocation_budget<0;allocation_budget=-1;
     if(!injected){Check(result.ok(),"uninjected allocation sweep termination succeeds");VerifyInitializedFilespace(device,request,0,&*result.receipt);allocation_end=true;break;}
-    ++consumed;empty(result);preserved();}
+    ++consumed;
+    if(result.ok()){
+      // Latency observation is not physical I/O authority. The actual disk
+      // observer must account for this precise swallowed failure, and all
+      // durable bytes and receipt fields still pass the independent oracle.
+      Check(device.failed_io_latency_observations()==losses+1,"initialization success after allocation fault requires recorded observation loss");
+      ++observation_loss_sites;VerifyInitializedFilespace(device,request,0,&*result.receipt);
+    }else {empty(result);preserved();}}
   Check(allocation_end,"all reachable allocation failure positions exercised");
-  std::cout<<"initialization fault sites: allocations="<<consumed<<" entropy="<<entropy_count<<" writes="<<write_count<<" reads="<<read_count<<" full_hashes="<<digest_count<<std::endl;
+  std::cout<<"initialization fault sites: allocations="<<consumed<<" observation_loss="<<observation_loss_sites<<" entropy="<<entropy_count<<" writes="<<write_count<<" reads="<<read_count<<" full_hashes="<<digest_count<<std::endl;
   for(unsigned fault=0;fault<17;++fault){reset();auto changed=request;
     if(fault==0)changed.bootstrap.lifecycle_state=1;if(fault==1)changed.bootstrap.page_size_bytes=4096;
     if(fault==2)changed.bootstrap.database_uuid={};if(fault==3)changed.bootstrap.filespace_uuid={};if(fault==4)changed.bootstrap.page_size_profile_uuid=Id(91);
@@ -2402,6 +2411,7 @@ void CanonicalRowDataStaging(){using E=db::NativeRowDataStageError;using S=page:
     for(const auto* z:{&z1,&z2})directory.records.push_back({z->bootstrap,Id(z==&z1?190:191),z->page_uuid,z->page_generation,z->root_set_generation,z->total_pages,0,{}});
     const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& bytes){const auto io=file.WriteAt(number*size,bytes.data(),bytes.size());Check(io.ok()&&io.bytes_transferred==bytes.size()&&file.Sync().ok(),"persist row-data staging fixture bytes");};
     const auto persist=[&](){const auto ib=InventoryOracle(inv,13,13,13),ab=AllocationOracle(map),dbb=DirectoryOracle(directory);
+      cp.selected_local_transaction_id=inv.inventory.next_local_transaction_id-1;
       cp.roots[0].page=InventoryRef(inv);cp.roots[0].object_uuid=inv.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);
       cp.roots[2].page={Id(2),15,105,Profile(p)};cp.roots[2].object_uuid=Id(45);cp.roots[2].sha256=WholeRootHash(dbb);
       if(primary){cp.roots[3].page={fs,13,103,Profile(profile)};cp.roots[3].object_uuid=Id(43);cp.roots[3].sha256=WholeRootHash(ab);}
@@ -3095,6 +3105,7 @@ void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::Native
       record.series_uuid=metadata.record.header.object_uuid.value;record.generation=metadata.definition_version;
       metadata.record.header.kind=catalog::CatalogRecordKind::metric_series;metadata.record.header.parent_uuid.kind=platform::UuidKind::object;
       metadata.default_name_uuid={platform::UuidKind::object,Id(231)};metadata.name_vector_uuid={platform::UuidKind::object,Id(232)};
+      metadata.security_policy_uuid={platform::UuidKind::object,record.binding.visibility_policy_uuid};
       metadata.object_subtype="metric_series";
       const auto payload=catalog::EncodeCatalogMetricSeries(record);Check(payload.ok(),"encode native series definition");
       metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
@@ -4401,6 +4412,9 @@ int main(int argc,char** argv) {
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--catalog-metric-series-stage-only"){
     try{CanonicalCatalogVersionStaging(2);std::cout<<"metric series native stage checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==2&&std::string_view(argv[1])=="--catalog-metric-retention-stage-only"){
+    try{CanonicalCatalogVersionStaging(1);std::cout<<"metric retention native stage checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--row-data-stage-only"){
     try {CanonicalRowDataStaging();std::cout<<"PASS row-data-stage checks="<<checks<<'\n';return 0;}
