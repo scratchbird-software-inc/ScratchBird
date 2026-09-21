@@ -651,8 +651,8 @@ std::array<std::uint8_t, 16> AddSession(server::ServerSessionRegistry* registry,
     session.engine_authorization_trace_tags.push_back("right:SUPPORT_EXPORT");
   }
   session.local_transaction_id = local_transaction_id;
-  registry->sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
-  registry->auth_contexts_by_uuid[server::UuidBytesToText(session.auth_context_uuid)] = session;
+  registry->sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
+  registry->auth_contexts_by_uuid[scratchbird::core::platform::Uuid{session.auth_context_uuid}] = session;
   return session.session_uuid;
 }
 

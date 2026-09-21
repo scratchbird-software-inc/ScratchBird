@@ -490,7 +490,7 @@ SessionOperationResult Execute(ServerSessionRegistry* registry,
                                std::string encoded) {
   auto frame = ExecuteFrame(session_uuid, std::move(encoded));
   const auto session = registry->sessions_by_uuid.find(
-      scratchbird::server::UuidBytesToText(session_uuid));
+      scratchbird::core::platform::Uuid{session_uuid});
   if (session != registry->sessions_by_uuid.end()) {
     frame.header.connection_uuid = session->second.connection_uuid;
   }
@@ -882,7 +882,7 @@ void RunStressIteration(const Fixture& fixture, std::uint64_t index) {
               HasDiagnostic(begin, "SBLR.OPERATION.NONCANONICAL"),
           "DPC-070 retired transaction begin text bypassed canonical admission");
   const auto session_it = registry.sessions_by_uuid.find(
-      scratchbird::server::UuidBytesToText(attached.session_uuid));
+      scratchbird::core::platform::Uuid{attached.session_uuid});
   Require(session_it != registry.sessions_by_uuid.end() &&
               session_it->second.local_transaction_id != 0,
           "DPC-070 attached session did not retain an active MGA transaction");

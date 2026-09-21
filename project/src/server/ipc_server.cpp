@@ -623,7 +623,7 @@ std::vector<std::uint8_t> EncodeEventFieldPayload(
 
 std::optional<ServerSessionRecord> FindServerSession(ServerSessionRegistry* registry,
                                                      const std::array<std::uint8_t, 16>& session_uuid) {
-  const auto found = registry->sessions_by_uuid.find(UuidBytesToText(session_uuid));
+  const auto found = registry->sessions_by_uuid.find(scratchbird::core::platform::Uuid{session_uuid});
   if (found == registry->sessions_by_uuid.end()) return std::nullopt;
   return found->second;
 }
@@ -1284,7 +1284,7 @@ bool PsNameStableResolutionCacheable(
 bool PsNameSessionBound(const ServerSessionRegistry* registry,
                         const std::array<std::uint8_t, 16>& session_uuid) {
   if (registry == nullptr || sbps::IsZeroUuid(session_uuid)) return false;
-  return registry->sessions_by_uuid.find(UuidBytesToText(session_uuid)) !=
+  return registry->sessions_by_uuid.find(scratchbird::core::platform::Uuid{session_uuid}) !=
          registry->sessions_by_uuid.end();
 }
 
@@ -2729,7 +2729,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
   std::unique_lock<std::mutex> transaction_lock;
   if (session_registry != nullptr) {
     const auto found = session_registry->sessions_by_uuid.find(
-        UuidBytesToText(frame.header.session_uuid));
+        scratchbird::core::platform::Uuid{frame.header.session_uuid});
     if (found != session_registry->sessions_by_uuid.end()) {
       if (found->second.detached_recovery_quarantined) {
         return ErrorFrame(
@@ -3349,7 +3349,7 @@ std::vector<std::uint8_t> RenderUuidPublicFrame(const sbps::Frame& frame,
                       static_cast<std::uint16_t>(sbps::MessageType::kRenderUuidResult));
   }
   const auto session = session_registry->sessions_by_uuid.find(
-      UuidBytesToText(frame.header.session_uuid));
+      scratchbird::core::platform::Uuid{frame.header.session_uuid});
   const bool exact_binding =
       session != session_registry->sessions_by_uuid.end() &&
       !sbps::IsZeroUuid(frame.header.connection_uuid) &&
@@ -3760,10 +3760,10 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
         !sbps::IsZeroUuid(negotiation_state->server_channel_uuid) &&
         !sbps::IsZeroUuid(frame.header.connection_uuid)) {
       const auto session_it = session_registry->sessions_by_uuid.find(
-          UuidBytesToText(frame.header.session_uuid));
+          scratchbird::core::platform::Uuid{frame.header.session_uuid});
       const auto owner_it =
           session_registry->physical_channel_by_connection_uuid.find(
-              UuidBytesToText(frame.header.connection_uuid));
+              scratchbird::core::platform::Uuid{frame.header.connection_uuid});
       exact_physical_binding =
           session_it != session_registry->sessions_by_uuid.end() &&
           owner_it !=
@@ -3973,8 +3973,8 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
                    static_cast<std::uint16_t>(sbps::MessageType::kAuthResult)));
       return false;
     }
-    const std::string connection_key =
-        UuidBytesToText(frame.header.connection_uuid);
+    const auto connection_key =
+        scratchbird::core::platform::Uuid{frame.header.connection_uuid};
     const auto existing_owner =
         session_registry->physical_channel_by_connection_uuid.find(
             connection_key);
@@ -4050,7 +4050,7 @@ bool HandleClientFrame(IpcSocketHandle client_fd,
         !sbps::IsZeroUuid(frame.header.connection_uuid)) {
       const auto owner =
           session_registry->physical_channel_by_connection_uuid.find(
-              UuidBytesToText(frame.header.connection_uuid));
+              scratchbird::core::platform::Uuid{frame.header.connection_uuid});
       exact_attach_channel =
           owner !=
               session_registry->physical_channel_by_connection_uuid.end() &&

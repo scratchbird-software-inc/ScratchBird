@@ -167,7 +167,7 @@ scratchbird::server::ServerSessionRegistry MakeRegistry(
   session.database_uuid = "019e05df-f012-7000-8000-0000000000f6";
   *session_uuid = session.session_uuid;
   scratchbird::server::ServerSessionRegistry registry;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] =
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] =
       session;
   return registry;
 }
@@ -265,7 +265,7 @@ std::array<std::uint8_t, 16> InstallMetadataCursor(
   cursor.stream_descriptor_live = true;
   const auto cursor_uuid = cursor.cursor_uuid;
   registry->cursors_by_uuid.emplace(
-      scratchbird::server::UuidBytesToText(cursor_uuid), std::move(cursor));
+      scratchbird::core::platform::Uuid{cursor_uuid}, std::move(cursor));
   return cursor_uuid;
 }
 
@@ -309,7 +309,7 @@ void ValidateSyntheticRowsetMetadata(Harness* harness) {
   harness->Check(!sbps::IsZeroUuid(cursor_uuid),
                  "descriptor-bound rowset cursor fixture was not installed");
   const auto cursor = registry.cursors_by_uuid.at(
-      scratchbird::server::UuidBytesToText(cursor_uuid));
+      scratchbird::core::platform::Uuid{cursor_uuid});
 
   const auto fetch = scratchbird::server::HandleFetch(
       &registry, FetchFrame(session_uuid, cursor, 2, 4096));
@@ -353,7 +353,7 @@ void ValidateMultiResultMetadata(Harness* harness) {
   harness->Check(!sbps::IsZeroUuid(cursor_uuid),
                  "descriptor-bound multi-result cursor fixture was not installed");
   const auto cursor = registry.cursors_by_uuid.at(
-      scratchbird::server::UuidBytesToText(cursor_uuid));
+      scratchbird::core::platform::Uuid{cursor_uuid});
 
   const auto fetch = scratchbird::server::HandleFetch(
       &registry, FetchFrame(session_uuid, cursor, 4));
@@ -403,7 +403,7 @@ void ValidateWarningMetadata(Harness* harness) {
   harness->Check(!sbps::IsZeroUuid(cursor_uuid),
                  "descriptor-bound warning cursor fixture was not installed");
   const auto cursor = registry.cursors_by_uuid.at(
-      scratchbird::server::UuidBytesToText(cursor_uuid));
+      scratchbird::core::platform::Uuid{cursor_uuid});
 
   const auto fetch = scratchbird::server::HandleFetch(
       &registry, FetchFrame(session_uuid, cursor, 4));

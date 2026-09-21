@@ -498,9 +498,9 @@ void TestCoordination() {
       view.visible_committed_high_watermark;
   live.session_binding_present = true;
   registry.physical_channel_by_connection_uuid.emplace(
-      server::UuidBytesToText(live.connection_uuid),
+      scratchbird::core::platform::Uuid{live.connection_uuid},
       live.server_channel_uuid);
-  registry.sessions_by_uuid.emplace(server::UuidBytesToText(live.session_uuid),
+  registry.sessions_by_uuid.emplace(scratchbird::core::platform::Uuid{live.session_uuid},
                                     live);
 
   server::ServerStatementContextRecord statement;
@@ -564,7 +564,7 @@ void TestCoordination() {
                  "foreign receipt was not hidden before authority issue");
 
   auto& stored_session =
-      registry.sessions_by_uuid.at(server::UuidBytesToText(live.session_uuid));
+      registry.sessions_by_uuid.at(scratchbird::core::platform::Uuid{live.session_uuid});
   const auto live_transaction_uuid = stored_session.transaction_uuid;
   stored_session.transaction_uuid =
       UuidText(NewTypedUuid(platform::UuidKind::transaction));

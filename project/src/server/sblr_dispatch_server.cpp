@@ -1296,7 +1296,7 @@ std::vector<std::uint8_t> EncodeClosePreparedSblrResult(
 
 std::optional<ServerSessionRecord> FindSession(const ServerSessionRegistry& registry,
                                                const std::array<std::uint8_t, 16>& session_uuid) {
-  const auto found = registry.sessions_by_uuid.find(UuidBytesToText(session_uuid));
+  const auto found = registry.sessions_by_uuid.find(scratchbird::core::platform::Uuid{session_uuid});
   if (found == registry.sessions_by_uuid.end()) return std::nullopt;
   return found->second;
 }
@@ -1304,7 +1304,7 @@ std::optional<ServerSessionRecord> FindSession(const ServerSessionRegistry& regi
 ServerSessionRecord* FindMutableSession(ServerSessionRegistry* registry,
                                         const std::array<std::uint8_t, 16>& session_uuid) {
   if (registry == nullptr) return nullptr;
-  const auto found = registry->sessions_by_uuid.find(UuidBytesToText(session_uuid));
+  const auto found = registry->sessions_by_uuid.find(scratchbird::core::platform::Uuid{session_uuid});
   return found == registry->sessions_by_uuid.end() ? nullptr : &found->second;
 }
 
@@ -1883,7 +1883,7 @@ std::string PreparedStatementAuthorityMismatchReason(
     return "prepared_statement_authority_hash_stale";
   }
   const auto context_it = registry.prepared_execution_contexts_by_uuid.find(
-      UuidBytesToText(prepared.prepared_statement_uuid));
+      scratchbird::core::platform::Uuid{prepared.prepared_statement_uuid});
   if (context_it == registry.prepared_execution_contexts_by_uuid.end()) {
     return "prepared_statement_execution_context_missing";
   }
@@ -2076,7 +2076,7 @@ void StorePreparedExecutionContext(ServerSessionRegistry* registry,
                                    const ServerSessionRecord& session) {
   if (registry == nullptr) return;
   registry->prepared_execution_contexts_by_uuid
-      [UuidBytesToText(prepared.prepared_statement_uuid)] =
+      [scratchbird::core::platform::Uuid{prepared.prepared_statement_uuid}] =
           BuildPreparedExecutionContext(prepared, session);
 }
 
@@ -9333,7 +9333,7 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
   }
   SealPreparedAuthorityProof(&prepared, prepare_session);
   StorePreparedExecutionContext(registry, prepared, prepare_session);
-  registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
+  registry->prepared_by_uuid[scratchbird::core::platform::Uuid{prepared.prepared_statement_uuid}] = prepared;
   LinkServerRequestPreparedStatement(registry,
                                      request_record.request_uuid,
                                      prepared.prepared_statement_uuid);
@@ -9566,7 +9566,7 @@ SessionOperationResult HandleExecuteSblrImpl(
   mark_execute_phase("register_request_lifecycle");
   std::string encoded = decoded->encoded_sblr_envelope;
   bool cursor_requested = decoded->cursor_requested;
-  const auto prepared_it = registry->prepared_by_uuid.find(UuidBytesToText(decoded->prepared_statement_uuid));
+  const auto prepared_it = registry->prepared_by_uuid.find(scratchbird::core::platform::Uuid{decoded->prepared_statement_uuid});
   const ServerPreparedStatementRecord* prepared_statement =
       prepared_it == registry->prepared_by_uuid.end() ? nullptr : &prepared_it->second;
   // Do not let a later transaction-selector refusal disclose that another
@@ -10470,7 +10470,7 @@ SessionOperationResult HandleExecuteSblrImpl(
     }
     SealPreparedAuthorityProof(&prepared, *session);
     StorePreparedExecutionContext(registry, prepared, *session);
-    registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
+    registry->prepared_by_uuid[scratchbird::core::platform::Uuid{prepared.prepared_statement_uuid}] = prepared;
     UpdateServerRequestLifecycleOperation(registry,
                                           request_record.request_uuid,
                                           admission.operation_id);
@@ -10609,7 +10609,7 @@ SessionOperationResult HandleExecuteSblrImpl(
     cursor.session_uuid = decoded->session_uuid;
     cursor.cursor_name = cursor_name;
     cursor.operation_id = admission.operation_id;
-    auto request_it = registry->requests_by_uuid.find(UuidBytesToText(request_record.request_uuid));
+    auto request_it = registry->requests_by_uuid.find(scratchbird::core::platform::Uuid{request_record.request_uuid});
     cursor.finality_token_uuid = request_it == registry->requests_by_uuid.end()
                                      ? std::array<std::uint8_t, 16>{}
                                      : request_it->second.finality_token_uuid;
@@ -10622,7 +10622,7 @@ SessionOperationResult HandleExecuteSblrImpl(
     if (cursor.exhausted) {
       (void)ReleaseServerCursorExecutionAuthority(registry, &cursor);
     }
-    registry->cursors_by_uuid[UuidBytesToText(cursor_uuid)] = cursor;
+    registry->cursors_by_uuid[scratchbird::core::platform::Uuid{cursor_uuid}] = cursor;
     UpdateServerRequestLifecycleOperation(registry,
                                           request_record.request_uuid,
                                           admission.operation_id);
@@ -10640,7 +10640,7 @@ SessionOperationResult HandleExecuteSblrImpl(
                                          admission.operation_id,
                                          "",
                                          CursorMetadataDetail(
-                                             registry->cursors_by_uuid[UuidBytesToText(cursor_uuid)]));
+                                             registry->cursors_by_uuid[scratchbird::core::platform::Uuid{cursor_uuid}]));
     return result;
   }
   if (admission.operation_id == "session.cursor_fetch") {
@@ -11121,7 +11121,7 @@ SessionOperationResult HandleExecuteSblrImpl(
           "routine_cursor_uuid_invalid");
     }
     auto cursor_it =
-        registry->cursors_by_uuid.find(UuidBytesToText(*parsed_cursor_uuid));
+        registry->cursors_by_uuid.find(scratchbird::core::platform::Uuid{*parsed_cursor_uuid});
     if (cursor_it == registry->cursors_by_uuid.end() || cursor_it->second.closed ||
         cursor_it->second.session_uuid != decoded->session_uuid) {
       return fail_routine_cursor(
@@ -11976,7 +11976,7 @@ SessionOperationResult HandleExecuteSblrImpl(
               detail.empty() ? "result_page_descriptor_invalid" : detail);
         }
         const auto cursor = registry->cursors_by_uuid.find(
-            UuidBytesToText(result_page_descriptor.cursor_uuid));
+            scratchbird::core::platform::Uuid{result_page_descriptor.cursor_uuid});
         if (cursor == registry->cursors_by_uuid.end() ||
             cursor->second.closed || cursor->second.engine_result == nullptr ||
             cursor->second.session_uuid != decoded->session_uuid ||
@@ -12820,7 +12820,7 @@ SessionOperationResult HandleExecuteSblrImpl(
     cursor.cursor_uuid = cursor_uuid;
     cursor.request_uuid = request_record.request_uuid;
     cursor.session_uuid = decoded->session_uuid;
-    auto request_it = registry->requests_by_uuid.find(UuidBytesToText(request_record.request_uuid));
+    auto request_it = registry->requests_by_uuid.find(scratchbird::core::platform::Uuid{request_record.request_uuid});
     cursor.finality_token_uuid = request_it == registry->requests_by_uuid.end()
                                      ? std::array<std::uint8_t, 16>{}
                                      : request_it->second.finality_token_uuid;
@@ -12881,7 +12881,7 @@ SessionOperationResult HandleExecuteSblrImpl(
       // receipt until EOS, close, cancellation, disconnect, or failure.
       statement_context_release.TransferToCursor(&cursor);
     }
-    registry->cursors_by_uuid[UuidBytesToText(cursor_uuid)] = cursor;
+    registry->cursors_by_uuid[scratchbird::core::platform::Uuid{cursor_uuid}] = cursor;
     LinkServerRequestCursor(registry,
                             request_record.request_uuid,
                             cursor_uuid,
@@ -12935,7 +12935,7 @@ SessionOperationResult HandleExecuteSblrImpl(
                                              : "");
   }
   const auto published_cursor = cursor_requested
-      ? registry->cursors_by_uuid.find(UuidBytesToText(cursor_uuid))
+      ? registry->cursors_by_uuid.find(scratchbird::core::platform::Uuid{cursor_uuid})
       : registry->cursors_by_uuid.end();
   if (canonical_ingress) {
     AppendCursorStreamDescriptor(
@@ -13231,7 +13231,7 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
   if (session->transaction_mutex != nullptr) {
     transaction_lock = std::unique_lock<std::mutex>(*session->transaction_mutex);
   }
-  auto it = registry->cursors_by_uuid.find(UuidBytesToText(decoded->cursor_uuid));
+  auto it = registry->cursors_by_uuid.find(scratchbird::core::platform::Uuid{decoded->cursor_uuid});
   if (it == registry->cursors_by_uuid.end() || it->second.closed) {
     return Failure(static_cast<std::uint16_t>(sbps::MessageType::kFetchResult),
                    kSchemaFetchResultTestV1,
@@ -13543,7 +13543,7 @@ SessionOperationResult HandleClosePreparedSblr(
       nullptr);
 
   const auto prepared_it = registry->prepared_by_uuid.find(
-      UuidBytesToText(decoded->prepared_statement_uuid));
+      scratchbird::core::platform::Uuid{decoded->prepared_statement_uuid});
   if (prepared_it == registry->prepared_by_uuid.end() ||
       prepared_it->second.session_uuid != decoded->session_uuid ||
       prepared_it->second.database_uuid != session->database_uuid) {
@@ -13614,7 +13614,7 @@ SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
                    "The close cursor payload is invalid.",
                    "close_cursor_invalid");
   }
-  auto it = registry->cursors_by_uuid.find(UuidBytesToText(decoded->cursor_uuid));
+  auto it = registry->cursors_by_uuid.find(scratchbird::core::platform::Uuid{decoded->cursor_uuid});
   std::string detail;
   if (it != registry->cursors_by_uuid.end()) {
     if (it->second.session_uuid != decoded->session_uuid ||
@@ -13690,7 +13690,7 @@ SessionOperationResult HandleCloseCursor(ServerSessionRegistry* registry,
                                      cancel.unknown_outcome
                                          ? "client_cancelled_outcome_unknown_preserved"
                                          : "client_cancelled");
-      auto cursor_after_cancel = registry->cursors_by_uuid.find(UuidBytesToText(decoded->cursor_uuid));
+      auto cursor_after_cancel = registry->cursors_by_uuid.find(scratchbird::core::platform::Uuid{decoded->cursor_uuid});
       if (cursor_after_cancel != registry->cursors_by_uuid.end()) {
         detail = CursorMetadataDetail(cursor_after_cancel->second);
       }

@@ -357,7 +357,7 @@ SelectedTypedRejectionFixture MakeSelectedTypedRejection(bool* ok) {
 
   scratchbird::server::ServerSessionRegistry registry;
   registry.sessions_by_uuid.emplace(
-      scratchbird::server::UuidBytesToText(session_uuid),
+      scratchbird::core::platform::Uuid{session_uuid},
       std::move(session));
 
   scratchbird::server::sbps::Frame request;

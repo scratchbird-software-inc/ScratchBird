@@ -121,7 +121,7 @@ void RequireClusterRequestLifecycle(const ServerSessionRegistry* registry,
                                     const std::string& label,
                                     std::string_view expected_operation_id) {
   const auto request_it = registry->requests_by_uuid.find(
-      scratchbird::server::UuidBytesToText(request_uuid));
+      scratchbird::core::platform::Uuid{request_uuid});
   Require(request_it != registry->requests_by_uuid.end(),
           label + " did not record request lifecycle evidence");
   if (ClusterProviderStubBuild()) {
@@ -165,7 +165,7 @@ void RequireFamilyReconciliationFailure(const ServerSessionRegistry* registry,
   Require(!result.accepted && HasDiagnostic(result, refusal_code),
           label + " did not fail closed at canonical operation admission");
   const auto request_it = registry->requests_by_uuid.find(
-      scratchbird::server::UuidBytesToText(frame.header.request_uuid));
+      scratchbird::core::platform::Uuid{frame.header.request_uuid});
   Require(request_it != registry->requests_by_uuid.end(),
           label + " did not record admission-refusal lifecycle evidence");
   Require(request_it->second.state == scratchbird::server::ServerRequestLifecycleState::kFailed,
@@ -453,7 +453,7 @@ ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
   session.database_path = "/tmp/sb_server_sbsql_admission_conformance.sbdb";
   session.database_uuid = "019e05bf-f010-7000-8000-000000000001";
   *session_uuid = session.session_uuid;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   return registry;
 }
 
@@ -691,7 +691,7 @@ void RequireNoRowDetailLeak(const SessionOperationResult& result,
 void VerifyClusterPrivateRowsFailClosed(ServerSessionRegistry* registry,
                                         const HostedEngineState& engine_state,
                                         const std::array<std::uint8_t, 16>& session_uuid) {
-  const std::string session_key = scratchbird::server::UuidBytesToText(session_uuid);
+  const auto session_key = scratchbird::core::platform::Uuid{session_uuid};
   for (const auto& expected : kSbsfc025rAClusterPrivateRows) {
     const auto* row = sbsql::FindGeneratedSurfaceRegistryRowById(expected.surface_id);
     Require(row != nullptr, std::string(expected.surface_id) + " missing from generated registry");
@@ -734,7 +734,7 @@ void VerifyClusterProfileGateRowsFailClosed(
     ServerSessionRegistry* registry,
     const HostedEngineState& engine_state,
     const std::array<std::uint8_t, 16>& session_uuid) {
-  const std::string session_key = scratchbird::server::UuidBytesToText(session_uuid);
+  const auto session_key = scratchbird::core::platform::Uuid{session_uuid};
   for (const auto& expected : kSbsfc025rClusterProfileGateRows) {
     const auto* row = sbsql::FindGeneratedSurfaceRegistryRowById(expected.surface_id);
     Require(row != nullptr, std::string(expected.surface_id) + " missing from generated registry");
@@ -783,7 +783,7 @@ void VerifyClusterScopeResidualRowsFailClosed(
     ServerSessionRegistry* registry,
     const HostedEngineState& engine_state,
     const std::array<std::uint8_t, 16>& session_uuid) {
-  const std::string session_key = scratchbird::server::UuidBytesToText(session_uuid);
+  const auto session_key = scratchbird::core::platform::Uuid{session_uuid};
   for (const auto& expected : kSbsfc025rZResidualClusterScopeRows) {
     const auto* row = sbsql::FindGeneratedSurfaceRegistryRowById(expected.surface_id);
     Require(row != nullptr, std::string(expected.surface_id) + " missing from generated registry");
@@ -1021,7 +1021,7 @@ int main() {
   RequireClusterProviderInfoOutcome(binary_provider_info,
                                     "binary cluster provider info operation envelope");
   const auto binary_provider_info_request_it = registry.requests_by_uuid.find(
-      scratchbird::server::UuidBytesToText(binary_provider_info_frame.header.request_uuid));
+      scratchbird::core::platform::Uuid{binary_provider_info_frame.header.request_uuid});
   Require(binary_provider_info_request_it != registry.requests_by_uuid.end(),
           "binary cluster provider info did not record request lifecycle evidence");
   Require(binary_provider_info_request_it->second.state ==

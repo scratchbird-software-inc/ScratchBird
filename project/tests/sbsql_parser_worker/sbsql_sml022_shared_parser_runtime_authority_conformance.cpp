@@ -142,7 +142,7 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
   session.transaction_timestamp = "2026-06-12T00:00:00Z";
   *session_uuid = session.session_uuid;
   registry.channel_state = server::ServerChannelState::kReady;
-  registry.sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   return registry;
 }
 
@@ -426,7 +426,7 @@ void VerifyServerOwnsUuidMediationAndPreparedEpochs() {
   const auto prepared_uuid = server::DecodePreparedStatementUuidForTest(prepare.payload);
   Require(prepared_uuid.has_value() && !IsZeroUuid(*prepared_uuid),
           "server did not mint a prepared-statement UUID");
-  Require(registry.prepared_by_uuid.count(server::UuidBytesToText(*prepared_uuid)) == 1,
+  Require(registry.prepared_by_uuid.count(scratchbird::core::platform::Uuid{*prepared_uuid}) == 1,
           "server prepared registry did not own prepared UUID");
   Require(registry.requests_by_uuid.size() == 1,
           "server did not record prepare request lifecycle");
@@ -440,14 +440,14 @@ void VerifyServerOwnsUuidMediationAndPreparedEpochs() {
           "server request lifecycle lost transaction finality preservation evidence");
 
   const auto finality_it =
-      registry.finality_by_request_uuid.find(server::UuidBytesToText(request.request_uuid));
+      registry.finality_by_request_uuid.find(scratchbird::core::platform::Uuid{request.request_uuid});
   Require(finality_it != registry.finality_by_request_uuid.end(),
           "server did not upsert finality record for prepare request");
   Require(finality_it->second.operation == "observability.show_version" &&
               finality_it->second.state == "completed",
           "server finality record did not preserve completed engine/server authority");
 
-  auto session_it = registry.sessions_by_uuid.find(server::UuidBytesToText(session_uuid));
+  auto session_it = registry.sessions_by_uuid.find(scratchbird::core::platform::Uuid{session_uuid});
   Require(session_it != registry.sessions_by_uuid.end(), "server session disappeared");
   session_it->second.security_epoch += 1;
 

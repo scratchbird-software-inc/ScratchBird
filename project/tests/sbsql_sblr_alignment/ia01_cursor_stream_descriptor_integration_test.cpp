@@ -48,7 +48,7 @@ struct Fixture {
     session_record.auth_context_uuid = sbps::MakeUuidV7Bytes();
     session_record.principal_uuid = sbps::MakeUuidV7Bytes();
     session_record.effective_user_uuid = session_record.principal_uuid;
-    registry.sessions_by_uuid[server::UuidBytesToText(session)] = session_record;
+    registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session}] = session_record;
 
     server::ServerCursorRecord record;
     record.cursor_uuid = cursor;
@@ -93,7 +93,7 @@ struct Fixture {
     Require(digest.ok(), "could not create receipt binding fixture");
     record.stream_descriptor_receipt_binding_sha256 = digest.digest;
     record.stream_descriptor_live = true;
-    registry.cursors_by_uuid[server::UuidBytesToText(cursor)] = record;
+    registry.cursors_by_uuid[scratchbird::core::platform::Uuid{cursor}] = record;
   }
   sbps::Frame Fetch(bool include_descriptor, std::uint16_t version = 1,
                     std::uint64_t generation = 1,
@@ -188,7 +188,7 @@ int main() {
   {
     Fixture fixture;
     auto& cursor = fixture.registry.cursors_by_uuid[
-        server::UuidBytesToText(fixture.cursor)];
+        scratchbird::core::platform::Uuid{fixture.cursor}];
     (void)server::ReleaseAndClearServerCursorResources(&fixture.registry,
                                                        &cursor);
     const auto result = server::HandleFetch(&fixture.registry,
@@ -209,7 +209,7 @@ int main() {
   {
     Fixture fixture;
     auto& cursor = fixture.registry.cursors_by_uuid[
-        server::UuidBytesToText(fixture.cursor)];
+        scratchbird::core::platform::Uuid{fixture.cursor}];
     cursor.stream_descriptor_receipt_binding_sha256[0] ^= 0x80;
     const auto result = server::HandleFetch(&fixture.registry,
                                              fixture.Fetch(true));

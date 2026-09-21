@@ -183,7 +183,7 @@ scratchbird::server::ServerSessionRegistry MakeRegistry(
   transaction_context->transaction_uuid = begun.transaction_uuid;
 
   scratchbird::server::ServerSessionRegistry registry;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   registry.channel_state = scratchbird::server::ServerChannelState::kReady;
   return registry;
 }
@@ -288,7 +288,7 @@ std::array<std::uint8_t, 16> OpenCursor(scratchbird::server::ServerSessionRegist
   open_request.header.connection_uuid = route.connection_uuid;
   open_request.header.session_uuid = route.session_uuid;
   const auto session_it = registry->sessions_by_uuid.find(
-      scratchbird::server::UuidBytesToText(route.session_uuid));
+      scratchbird::core::platform::Uuid{route.session_uuid});
   Require(session_it != registry->sessions_by_uuid.end(),
           "stream finality session fixture is missing");
   const auto request = scratchbird::server::RegisterServerRequestLifecycle(
@@ -298,7 +298,7 @@ std::array<std::uint8_t, 16> OpenCursor(scratchbird::server::ServerSessionRegist
 
   const auto cursor_uuid = cursor.cursor_uuid;
   registry->cursors_by_uuid.emplace(
-      scratchbird::server::UuidBytesToText(cursor_uuid), std::move(cursor));
+      scratchbird::core::platform::Uuid{cursor_uuid}, std::move(cursor));
   return cursor_uuid;
 }
 
@@ -306,7 +306,7 @@ const scratchbird::server::ServerCursorRecord& FindCursor(
     const scratchbird::server::ServerSessionRegistry& registry,
     const std::array<std::uint8_t, 16>& cursor_uuid) {
   const auto found = registry.cursors_by_uuid.find(
-      scratchbird::server::UuidBytesToText(cursor_uuid));
+      scratchbird::core::platform::Uuid{cursor_uuid});
   Require(found != registry.cursors_by_uuid.end(),
           "stream finality cursor fixture is missing");
   return found->second;
@@ -334,7 +334,7 @@ int main() {
   Require(!timeout_fetch2.accepted && !timeout_fetch2.diagnostics.empty() &&
               timeout_fetch2.diagnostics.front().code == "SERVER.STREAM.TIMEOUT",
           "timeout stream did not fail closed with deterministic timeout diagnostic");
-  const auto timeout_it = registry.cursors_by_uuid.find(scratchbird::server::UuidBytesToText(timeout_cursor));
+  const auto timeout_it = registry.cursors_by_uuid.find(scratchbird::core::platform::Uuid{timeout_cursor});
   Require(timeout_it != registry.cursors_by_uuid.end() &&
               timeout_it->second.closed &&
               timeout_it->second.finality_state == "timed_out",
@@ -342,7 +342,7 @@ int main() {
 
   const auto drain_cursor = OpenCursor(&registry, route, "drain", 0);
   registry.sessions_by_uuid
-      .at(scratchbird::server::UuidBytesToText(route.session_uuid))
+      .at(scratchbird::core::platform::Uuid{route.session_uuid})
       .channel_state = scratchbird::server::ServerChannelState::kDraining;
   const auto drain_fetch = scratchbird::server::HandleFetch(
       &registry, FetchFrame(route, FindCursor(registry, drain_cursor), 1));
@@ -355,13 +355,13 @@ int main() {
               Contains(drain_payload->detail, "\"state\":\"drained\""),
           "drain stream finality packet or metadata is missing");
   registry.sessions_by_uuid
-      .at(scratchbird::server::UuidBytesToText(route.session_uuid))
+      .at(scratchbird::core::platform::Uuid{route.session_uuid})
       .channel_state = scratchbird::server::ServerChannelState::kReady;
 
   const auto cancel_cursor = OpenCursor(&registry, route, "cancel", 0);
   const auto cancel_close = scratchbird::server::HandleCloseCursor(
       &registry, CloseFrame(route, cancel_cursor, kCursorCloseFlagCancel));
-  const auto cancel_it = registry.cursors_by_uuid.find(scratchbird::server::UuidBytesToText(cancel_cursor));
+  const auto cancel_it = registry.cursors_by_uuid.find(scratchbird::core::platform::Uuid{cancel_cursor});
   Require(cancel_close.accepted && cancel_it != registry.cursors_by_uuid.end() &&
               cancel_it->second.closed &&
               cancel_it->second.finality_state == "cancelled",
@@ -370,7 +370,7 @@ int main() {
   const auto killed_cursor = OpenCursor(&registry, route, "cancel", 0);
   const auto disconnect = scratchbird::server::HandleDisconnectNotice(
       &registry, DisconnectFrame(route, "parser_killed"));
-  const auto killed_it = registry.cursors_by_uuid.find(scratchbird::server::UuidBytesToText(killed_cursor));
+  const auto killed_it = registry.cursors_by_uuid.find(scratchbird::core::platform::Uuid{killed_cursor});
   Require(disconnect.accepted && killed_it != registry.cursors_by_uuid.end() &&
               killed_it->second.closed &&
               killed_it->second.finality_state == "parser_killed",

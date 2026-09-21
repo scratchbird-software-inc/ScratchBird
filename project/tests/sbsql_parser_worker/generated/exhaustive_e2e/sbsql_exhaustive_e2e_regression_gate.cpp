@@ -735,7 +735,7 @@ scratchbird::server::ServerSessionRegistry MakeRegistry(
   *session_uuid = session.session_uuid;
 
   scratchbird::server::ServerSessionRegistry registry;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] =
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] =
       session;
   return registry;
 }

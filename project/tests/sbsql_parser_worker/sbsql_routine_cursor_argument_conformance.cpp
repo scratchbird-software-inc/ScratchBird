@@ -364,7 +364,7 @@ void AddSession(ServerSessionRegistry* registry,
   session.effective_user_uuid = session.principal_uuid;
   session.database_path = "/tmp/sbsql_routine_cursor_argument_conformance.sbdb";
   session.database_uuid = "019f0000-0000-7000-8000-000000450101";
-  registry->sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
+  registry->sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
 }
 
 HostedEngineState MakeEngineState() {
@@ -394,7 +394,7 @@ std::array<std::uint8_t, 16> OpenSyntheticCursor(
   cursor.next_row_index = 0;
   cursor.exhausted = rows == 0;
   registry->cursors_by_uuid[
-      scratchbird::server::UuidBytesToText(cursor_uuid)] = std::move(cursor);
+      scratchbird::core::platform::Uuid{cursor_uuid}] = std::move(cursor);
   return cursor_uuid;
 }
 
@@ -506,7 +506,7 @@ void RequireRoutineCursorBodyFetchExecution() {
           "ROUTINE-CURSOR-GATE-002 parser cursor execution evidence missing");
 
   const auto cursor_it =
-      registry.cursors_by_uuid.find(scratchbird::server::UuidBytesToText(cursor_uuid));
+      registry.cursors_by_uuid.find(scratchbird::core::platform::Uuid{cursor_uuid});
   Require(cursor_it != registry.cursors_by_uuid.end() &&
               cursor_it->second.fetch_count == 1 &&
               cursor_it->second.next_row_index == 1,
@@ -565,7 +565,7 @@ void RequireRoutineCursorFunctionPolicy() {
   Require(inspected.accepted,
           "ROUTINE-CURSOR-GATE-004 admitted function cursor inspection rejected");
   const auto cursor_it =
-      registry.cursors_by_uuid.find(scratchbird::server::UuidBytesToText(cursor_uuid));
+      registry.cursors_by_uuid.find(scratchbird::core::platform::Uuid{cursor_uuid});
   Require(cursor_it != registry.cursors_by_uuid.end() &&
               cursor_it->second.fetch_count == 0,
           "ROUTINE-CURSOR-GATE-004 metadata inspection advanced cursor");

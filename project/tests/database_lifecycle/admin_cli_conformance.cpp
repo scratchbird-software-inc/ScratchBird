@@ -151,8 +151,8 @@ std::array<std::uint8_t, 16> AddSession(ServerSessionRegistry* registry,
         "right:OBS_CONFIG_INSPECT",
         "right:OBS_METRICS_READ_ALL"});
   }
-  registry->sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
-  registry->auth_contexts_by_uuid[scratchbird::server::UuidBytesToText(session.auth_context_uuid)] = session;
+  registry->sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
+  registry->auth_contexts_by_uuid[scratchbird::core::platform::Uuid{session.auth_context_uuid}] = session;
   return session.session_uuid;
 }
 

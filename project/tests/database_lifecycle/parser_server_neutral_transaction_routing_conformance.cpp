@@ -696,9 +696,9 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
   session.auth_context_uuid = sbps::MakeUuidV7Bytes();
   session.principal_uuid = sbps::MakeUuidV7Bytes();
   session.effective_user_uuid = session.principal_uuid;
-  registry.sessions_by_uuid[server::UuidBytesToText(session_uuid)] = session;
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session_uuid}] = session;
   auto& stored_session = registry.sessions_by_uuid.at(
-      server::UuidBytesToText(session_uuid));
+      scratchbird::core::platform::Uuid{session_uuid});
 
   const auto shared_handle = server::AllocateSessionObjectHandle(
       &registry,
@@ -729,9 +729,9 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
     prepared.prepare_snapshot_visible_through_local_transaction_id = 201;
     return prepared;
   };
-  registry.prepared_by_uuid[server::UuidBytesToText(first_uuid)] =
+  registry.prepared_by_uuid[scratchbird::core::platform::Uuid{first_uuid}] =
       prepared_record(first_uuid);
-  registry.prepared_by_uuid[server::UuidBytesToText(second_uuid)] =
+  registry.prepared_by_uuid[scratchbird::core::platform::Uuid{second_uuid}] =
       prepared_record(second_uuid);
   for (const auto& prepared_uuid : {first_uuid, second_uuid}) {
     server::ServerPreparedExecutionContextRecord context;
@@ -739,7 +739,7 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
     context.session_uuid = session_uuid;
     context.database_uuid = stored_session.database_uuid;
     registry.prepared_execution_contexts_by_uuid
-        [server::UuidBytesToText(prepared_uuid)] = context;
+        [scratchbird::core::platform::Uuid{prepared_uuid}] = context;
   }
 
   const auto cursor_uuid = sbps::MakeUuidV7Bytes();
@@ -761,14 +761,14 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
   cursor.total_row_count = 3;
   cursor.next_row_index = 1;
   cursor.fetch_count = 1;
-  registry.cursors_by_uuid[server::UuidBytesToText(cursor_uuid)] = cursor;
+  registry.cursors_by_uuid[scratchbird::core::platform::Uuid{cursor_uuid}] = cursor;
   server::ServerRequestRecord cursor_request;
   cursor_request.request_uuid = cursor_request_uuid;
   cursor_request.session_uuid = session_uuid;
   cursor_request.cursor_uuid = cursor_uuid;
   cursor_request.state = server::ServerRequestLifecycleState::kCursorOpen;
   cursor_request.engine_result_retained = true;
-  registry.requests_by_uuid[server::UuidBytesToText(cursor_request_uuid)] =
+  registry.requests_by_uuid[scratchbird::core::platform::Uuid{cursor_request_uuid}] =
       cursor_request;
 
   const auto requests_before_zero_identity = registry.requests_by_uuid.size();
@@ -784,7 +784,7 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
   const auto closed_first = server::HandleClosePreparedSblr(
       &registry, ClosePreparedFrame(session_uuid, first_uuid));
   const auto& first = registry.prepared_by_uuid.at(
-      server::UuidBytesToText(first_uuid));
+      scratchbird::core::platform::Uuid{first_uuid});
   const auto handle_key = server::UuidBytesToText(session_uuid) + "#" +
                           std::to_string(shared_handle.handle_id);
   Require(closed_first.accepted && closed_first.response_schema_id == 4014 &&
@@ -793,36 +793,36 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
               first.prepare_transaction_uuid ==
                   "019f0000-0000-7000-8000-000000000201" &&
               !registry.prepared_execution_contexts_by_uuid.contains(
-                  server::UuidBytesToText(first_uuid)) &&
+                  scratchbird::core::platform::Uuid{first_uuid}) &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).closed &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).closed &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).row_packet.empty() &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).row_packet.empty() &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid))
+                  scratchbird::core::platform::Uuid{cursor_uuid})
                   .bulk_reject_records.empty() &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).bulk_stream_kind.empty() &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).bulk_stream_kind.empty() &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).multi_result_kind.empty() &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).multi_result_kind.empty() &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).warning_stream_kind.empty() &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).warning_stream_kind.empty() &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).bulk_total_rows == 0 &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).bulk_total_rows == 0 &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).bulk_rejected_rows == 0 &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).bulk_rejected_rows == 0 &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).multi_result_count == 0 &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).multi_result_count == 0 &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).warning_count == 0 &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).warning_count == 0 &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).total_row_count == 0 &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).total_row_count == 0 &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).next_row_index == 0 &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).next_row_index == 0 &&
               registry.cursors_by_uuid.at(
-                  server::UuidBytesToText(cursor_uuid)).fetch_count == 0 &&
+                  scratchbird::core::platform::Uuid{cursor_uuid}).fetch_count == 0 &&
               !registry.requests_by_uuid.at(
-                   server::UuidBytesToText(cursor_request_uuid))
+                   scratchbird::core::platform::Uuid{cursor_request_uuid})
                    .engine_result_retained &&
               !registry.object_handles_by_key.at(handle_key).closed &&
               stored_session.transactions_by_local_id.size() == 1 &&
@@ -851,7 +851,7 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
       sbps::MakeUuidV7Bytes(),
       Transaction(203, "019f0000-0000-7000-8000-000000000203"));
   other_session.database_uuid = stored_session.database_uuid;
-  registry.sessions_by_uuid[server::UuidBytesToText(other_session_uuid)] =
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{other_session_uuid}] =
       other_session;
   const auto cross_session = server::HandleClosePreparedSblr(
       &registry, ClosePreparedFrame(other_session_uuid, first_uuid));
@@ -878,12 +878,12 @@ void VerifyChannelScopedQuarantine() {
       channel_b,
       Transaction(102, "019f0000-0000-7000-8000-000000000102"));
   registry.physical_channel_by_connection_uuid[
-      server::UuidBytesToText(session_a_uuid)] = channel_a;
+      scratchbird::core::platform::Uuid{session_a_uuid}] = channel_a;
   registry.physical_channel_by_connection_uuid[
-      server::UuidBytesToText(session_b_uuid)] = channel_b;
-  registry.sessions_by_uuid[server::UuidBytesToText(session_a_uuid)] =
+      scratchbird::core::platform::Uuid{session_b_uuid}] = channel_b;
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session_a_uuid}] =
       session_a;
-  registry.sessions_by_uuid[server::UuidBytesToText(session_b_uuid)] =
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session_b_uuid}] =
       session_b;
 
   const auto closed = server::HandleUnexpectedParserChannelClose(
@@ -891,12 +891,12 @@ void VerifyChannelScopedQuarantine() {
   Require(closed.size() == 1 && closed.front().accepted &&
               registry.channel_state == server::ServerChannelState::kReady &&
               registry.sessions_by_uuid.contains(
-                  server::UuidBytesToText(session_b_uuid)) &&
+                  scratchbird::core::platform::Uuid{session_b_uuid}) &&
               registry.sessions_by_uuid
-                  .at(server::UuidBytesToText(session_a_uuid))
+                  .at(scratchbird::core::platform::Uuid{session_a_uuid})
                   .detached_recovery_quarantined &&
               registry.physical_channel_by_connection_uuid.contains(
-                  server::UuidBytesToText(session_b_uuid)),
+                  scratchbird::core::platform::Uuid{session_b_uuid}),
           "one channel's unknown finality drained or detached a sibling channel");
 }
 
@@ -1421,9 +1421,9 @@ NeutralLiveV2Route MakeNeutralLiveV2Route(
 
   route.registry.channel_state = server::ServerChannelState::kReady;
   route.registry.physical_channel_by_connection_uuid[
-      server::UuidBytesToText(route.session_uuid)] = channel_uuid;
+      scratchbird::core::platform::Uuid{route.session_uuid}] = channel_uuid;
   route.registry.sessions_by_uuid[
-      server::UuidBytesToText(route.session_uuid)] = std::move(session);
+      scratchbird::core::platform::Uuid{route.session_uuid}] = std::move(session);
 
   route.engine_state.engine_context_active = true;
   server::HostedDatabaseSnapshot database;
@@ -1589,7 +1589,7 @@ void VerifyNeutralPersistedRelationProjection() {
           "V3 client emitted schema 7007 without negotiated capability");
 
   auto& server_session = route.registry.sessions_by_uuid.at(
-      server::UuidBytesToText(route.session_uuid));
+      scratchbird::core::platform::Uuid{route.session_uuid});
   server_session.relation_descriptor_projection_v3_negotiated = false;
   const auto server_refused_capability = DecodeServerFrame(
       server::ResolveNamePublicFrameForEmbedded(
@@ -2420,7 +2420,7 @@ void VerifyTransferablePreparedRoutineMetadata() {
   const auto data_context = BeginEngineTransaction(fixture, 61);
   auto route = MakeNeutralLiveV2Route(fixture, data_context);
   auto& session = route.registry.sessions_by_uuid.at(
-      server::UuidBytesToText(route.session_uuid));
+      scratchbird::core::platform::Uuid{route.session_uuid});
   const auto data_selector = route.default_transaction;
 
   const auto ddl_selector =
@@ -2520,7 +2520,7 @@ void VerifyTransferablePreparedRoutineMetadata() {
           "capability-gated engine metadata binding was not prepared: " +
               transferable_prepare_detail);
   const auto& prepared_record = route.registry.prepared_by_uuid.at(
-      server::UuidBytesToText(*transferable_uuid));
+      scratchbird::core::platform::Uuid{*transferable_uuid});
   Require(prepared_record.prepared_metadata_transferable &&
               prepared_record.prepared_metadata_binding != nullptr,
           "server accepted transferable prepare without an engine binding");
@@ -2603,7 +2603,7 @@ void VerifyLiveV2MultiTransactionVisibility() {
   const auto initial_context = BeginEngineTransaction(fixture, 21);
   auto route = MakeNeutralLiveV2Route(fixture, initial_context);
   auto& session = route.registry.sessions_by_uuid.at(
-      server::UuidBytesToText(route.session_uuid));
+      scratchbird::core::platform::Uuid{route.session_uuid});
   const auto default_transaction = route.default_transaction;
 
   const auto t1 = BeginAdditionalTransaction(&route, "read_committed");
@@ -2822,7 +2822,7 @@ void VerifyLiveV2MultiTransactionVisibility() {
   // Orderly detach is the one-shot cleanup authority for every remaining
   // selector. Unknown finality retains the session in quarantine and fails
   // these assertions; this proof never retries or guesses rollback outcome.
-  const auto session_key = server::UuidBytesToText(route.session_uuid);
+  const auto session_key = scratchbird::core::platform::Uuid{route.session_uuid};
   const auto disconnected = server::HandleDisconnectNotice(
       &route.registry, OrderlyDisconnectFrame(route.session_uuid));
   Require(disconnected.accepted &&
@@ -2839,7 +2839,7 @@ void VerifyRetiredNeutralPreparedInputRefused() {
   const auto context = BeginEngineTransaction(fixture, 140);
   auto route = MakeNeutralLiveV2Route(fixture, context);
   const auto selector = route.default_transaction;
-  const auto session_key = server::UuidBytesToText(route.session_uuid);
+  const auto session_key = scratchbird::core::platform::Uuid{route.session_uuid};
   const auto session_before = route.registry.sessions_by_uuid.at(session_key);
   const auto prepared_before = route.registry.prepared_by_uuid.size();
   const auto contexts_before =

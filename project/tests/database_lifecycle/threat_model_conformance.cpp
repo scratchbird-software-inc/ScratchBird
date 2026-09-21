@@ -310,7 +310,7 @@ std::array<std::uint8_t, 16> AddSession(server::ServerSessionRegistry* registry,
   session.security_epoch = 1;
   session.resource_epoch = 1;
   session.name_resolution_epoch = 1;
-  registry->sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
+  registry->sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   return session.session_uuid;
 }
 
@@ -372,7 +372,7 @@ void TestManagementIpcHealthAuthGate(const std::filesystem::path& temp_dir) {
 
   const auto auditor = AddSession(&registry, "auditor", database_path, database_uuid);
   auto& auditor_session =
-      registry.sessions_by_uuid[server::UuidBytesToText(auditor)];
+      registry.sessions_by_uuid[scratchbird::core::platform::Uuid{auditor}];
   auditor_session.embedded_in_process = true;
   auditor_session.engine_authorization_trace_tags = {
       "security.fixture_trace_authority",
@@ -395,7 +395,7 @@ void TestManagementIpcHealthAuthGate(const std::filesystem::path& temp_dir) {
 
   const auto spoofed = AddSession(&registry, "root", database_path, database_uuid);
   auto& spoofed_session =
-      registry.sessions_by_uuid[server::UuidBytesToText(spoofed)];
+      registry.sessions_by_uuid[scratchbird::core::platform::Uuid{spoofed}];
   spoofed_session.engine_authorization_trace_tags = {
       "right:OBS_MANAGEMENT_CONTROL",
       "right:OBS_MANAGEMENT_INSPECT",

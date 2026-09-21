@@ -1279,10 +1279,10 @@ server::ServerSessionRegistry MakeServerRegistry(
   server::ServerSessionRegistry registry;
   registry.channel_state = server::ServerChannelState::kReady;
   registry.physical_channel_by_connection_uuid[
-      server::UuidBytesToText(session.connection_uuid)] =
+      scratchbird::core::platform::Uuid{session.connection_uuid}] =
       session.server_channel_uuid;
   registry.sessions_by_uuid.emplace(
-      server::UuidBytesToText(session.session_uuid), std::move(session));
+      scratchbird::core::platform::Uuid{session.session_uuid}, std::move(session));
   return registry;
 }
 
@@ -1341,7 +1341,7 @@ sbps::Frame CanonicalNativeServerFrame(
               statement->second.receipt && !statement->second.released,
           "CDP-040 private statement receipt was not retained by the server");
   const auto session = registry->sessions_by_uuid.find(
-      server::UuidBytesToText(session_uuid));
+      scratchbird::core::platform::Uuid{session_uuid});
   Require(session != registry->sessions_by_uuid.end(),
           "CDP-040 server session disappeared after statement acquisition");
   const auto submission = CanonicalNativeBulkContainer(

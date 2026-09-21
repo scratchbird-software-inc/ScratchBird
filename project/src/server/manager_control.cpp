@@ -348,7 +348,7 @@ std::optional<ServerDiagnostic> EngineAuthorizeManagement(
 std::optional<ServerSessionRecord> FindSession(const ServerSessionRegistry& registry,
                                                const std::array<std::uint8_t, 16>& uuid) {
   if (sbps::IsZeroUuid(uuid)) return std::nullopt;
-  const auto found = registry.sessions_by_uuid.find(UuidBytesToText(uuid));
+  const auto found = registry.sessions_by_uuid.find(scratchbird::core::platform::Uuid{uuid});
   if (found == registry.sessions_by_uuid.end()) return std::nullopt;
   return found->second;
 }

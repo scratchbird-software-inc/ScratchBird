@@ -542,7 +542,7 @@ struct EmbeddedEngineClient::Impl {
     identity.parser_package_version_minor = 0;
     identity.parser_package_version_patch = 0;
     registry.admitted_parser_identity_by_connection_uuid.insert_or_assign(
-        scratchbird::server::UuidBytesToText(connection_uuid), identity);
+        scratchbird::core::platform::Uuid{connection_uuid}, identity);
   }
 
   bool PublishCanonicalNativeSessionIdentity(SessionContext* session) {
@@ -896,7 +896,7 @@ bool EmbeddedEngineClient::AuthenticateAndAttachSysarch(
   }
 
   const auto found = impl_->registry.sessions_by_uuid.find(
-      scratchbird::server::UuidBytesToText(session_uuid));
+      scratchbird::core::platform::Uuid{session_uuid});
   session->authenticated = true;
   session->session_uuid = scratchbird::server::UuidBytesToText(session_uuid);
   session->connection_uuid = found == impl_->registry.sessions_by_uuid.end()

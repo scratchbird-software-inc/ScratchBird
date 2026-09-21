@@ -801,8 +801,8 @@ void TestCoordination() {
       view.visible_committed_high_watermark;
   live.session_binding_present = true;
   registry.physical_channel_by_connection_uuid.emplace(
-      server::UuidBytesToText(live.connection_uuid), live.server_channel_uuid);
-  registry.sessions_by_uuid.emplace(server::UuidBytesToText(live.session_uuid),
+      scratchbird::core::platform::Uuid{live.connection_uuid}, live.server_channel_uuid);
+  registry.sessions_by_uuid.emplace(scratchbird::core::platform::Uuid{live.session_uuid},
                                     live);
 
   server::ServerStatementContextRecord statement;

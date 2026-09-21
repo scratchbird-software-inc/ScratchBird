@@ -498,7 +498,7 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
   Require(registry.sessions_by_uuid.size() == 2, "DBLC-009 did not create two sessions");
   Require(registry.auth_contexts_by_uuid.size() == 2, "DBLC-009 did not retain two auth contexts");
 
-  auto session_it = registry.sessions_by_uuid.find(scratchbird::server::UuidBytesToText(session_a.session_uuid));
+  auto session_it = registry.sessions_by_uuid.find(scratchbird::core::platform::Uuid{session_a.session_uuid});
   Require(session_it != registry.sessions_by_uuid.end(), "DBLC-009 session A missing before detach");
   api::EngineBeginTransactionRequest begin;
   begin.context = EngineContext(database_path, database_uuid,
@@ -542,7 +542,7 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
   prepared.prepare_snapshot_visible_through_local_transaction_id =
       transaction.snapshot_visible_through_local_transaction_id;
   registry.prepared_by_uuid.emplace(
-      scratchbird::server::UuidBytesToText(prepared_uuid),
+      scratchbird::core::platform::Uuid{prepared_uuid},
       std::move(prepared));
 
   const auto cursor_uuid = sbps::MakeUuidV7Bytes();
@@ -556,7 +556,7 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
       transaction.snapshot_visible_through_local_transaction_id;
   cursor.owning_transaction_uuid = transaction.transaction_uuid;
   registry.cursors_by_uuid.emplace(
-      scratchbird::server::UuidBytesToText(cursor_uuid), std::move(cursor));
+      scratchbird::core::platform::Uuid{cursor_uuid}, std::move(cursor));
 
   const auto active_local_transaction_id = transaction.local_transaction_id;
   Require(TransactionHasState(database_path, active_local_transaction_id, tx::TransactionState::active),
@@ -590,19 +590,19 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
                               tx::TransactionState::rolled_back),
           "DBLC-009 engine did not own disconnect rollback finality");
 
-  Require(registry.sessions_by_uuid.count(scratchbird::server::UuidBytesToText(session_a.session_uuid)) == 0,
+  Require(registry.sessions_by_uuid.count(scratchbird::core::platform::Uuid{session_a.session_uuid}) == 0,
           "DBLC-009 session A remained active after detach");
-  Require(registry.auth_contexts_by_uuid.count(scratchbird::server::UuidBytesToText(session_a.auth_context_uuid)) == 0,
+  Require(registry.auth_contexts_by_uuid.count(scratchbird::core::platform::Uuid{session_a.auth_context_uuid}) == 0,
           "DBLC-009 auth context A remained active after detach");
-  Require(registry.sessions_by_uuid.count(scratchbird::server::UuidBytesToText(session_b.session_uuid)) == 1,
+  Require(registry.sessions_by_uuid.count(scratchbird::core::platform::Uuid{session_b.session_uuid}) == 1,
           "DBLC-009 session B was affected by session A detach");
-  Require(registry.auth_contexts_by_uuid.count(scratchbird::server::UuidBytesToText(session_b.auth_context_uuid)) == 1,
+  Require(registry.auth_contexts_by_uuid.count(scratchbird::core::platform::Uuid{session_b.auth_context_uuid}) == 1,
           "DBLC-009 auth context B was affected by session A detach");
 
-  const auto prepared_it = registry.prepared_by_uuid.find(scratchbird::server::UuidBytesToText(prepared_uuid));
+  const auto prepared_it = registry.prepared_by_uuid.find(scratchbird::core::platform::Uuid{prepared_uuid});
   Require(prepared_it != registry.prepared_by_uuid.end() && prepared_it->second.closed,
           "DBLC-009 prepared statement was not tombstoned");
-  const auto cursor_it = registry.cursors_by_uuid.find(scratchbird::server::UuidBytesToText(cursor_uuid));
+  const auto cursor_it = registry.cursors_by_uuid.find(scratchbird::core::platform::Uuid{cursor_uuid});
   Require(cursor_it != registry.cursors_by_uuid.end() &&
               cursor_it->second.closed &&
               cursor_it->second.exhausted &&
@@ -622,7 +622,7 @@ void VerifyDetachCleanup(const std::filesystem::path& database_path,
           "DBLC-009 detached session fetched a tombstoned cursor");
 
   const auto finality_it = registry.finality_by_request_uuid.find(
-      scratchbird::server::UuidBytesToText(disconnect_frame.header.request_uuid));
+      scratchbird::core::platform::Uuid{disconnect_frame.header.request_uuid});
   Require(finality_it != registry.finality_by_request_uuid.end(),
           "DBLC-009 detach finality record missing");
   Require(finality_it->second.state == "detached" &&
@@ -681,8 +681,8 @@ void VerifyTemporaryCleanupFailure(const std::filesystem::path& database_path,
   const auto engine_state = MakeEngineState(database_path, database_uuid);
   const auto attached = AttachAuthenticatedSession(&registry, engine_state);
   const auto sibling = AttachAuthenticatedSession(&registry, engine_state);
-  const auto key = scratchbird::server::UuidBytesToText(attached.session_uuid);
-  const auto sibling_key = scratchbird::server::UuidBytesToText(sibling.session_uuid);
+  const auto key = scratchbird::core::platform::Uuid{attached.session_uuid};
+  const auto sibling_key = scratchbird::core::platform::Uuid{sibling.session_uuid};
   auto& session = registry.sessions_by_uuid.at(key);
   FinalizeFixtureTransactions(session, attached, database_path, database_uuid);
   const auto sibling_transaction = registry.sessions_by_uuid.at(sibling_key).local_transaction_id;
@@ -710,7 +710,7 @@ void VerifyTemporaryCleanupFailure(const std::filesystem::path& database_path,
   Require(registry.sessions_by_uuid.contains(key) &&
               registry.sessions_by_uuid.at(key).detached_recovery_quarantined &&
               registry.auth_contexts_by_uuid.contains(
-                  scratchbird::server::UuidBytesToText(attached.auth_context_uuid)),
+                  scratchbird::core::platform::Uuid{attached.auth_context_uuid}),
           "failed temporary cleanup lost its owning session or authorization");
   Require(Contains(payload.detail, "temporary_cleanup_state=failed"),
           "temporary cleanup failure detail lost");
@@ -755,7 +755,7 @@ void VerifyTemporaryCleanupIdentity(const std::filesystem::path& database_path,
   ServerSessionRegistry registry;
   const auto engine_state = MakeEngineState(database_path, database_uuid);
   const auto attached = AttachAuthenticatedSession(&registry, engine_state);
-  const auto key = scratchbird::server::UuidBytesToText(attached.session_uuid);
+  const auto key = scratchbird::core::platform::Uuid{attached.session_uuid};
   auto& session = registry.sessions_by_uuid.at(key);
   FinalizeFixtureTransactions(session, attached, database_path, database_uuid);
   auto context = EngineContext(database_path, database_uuid, attached.session_uuid);
@@ -871,7 +871,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   ServerSessionRegistry registry;
   const auto attached = AttachAuthenticatedSession(
       &registry, MakeEngineState(database_path, database_uuid));
-  const auto key = scratchbird::server::UuidBytesToText(attached.session_uuid);
+  const auto key = scratchbird::core::platform::Uuid{attached.session_uuid};
   auto& session = registry.sessions_by_uuid.at(key);
   FinalizeFixtureTransactions(session, attached, database_path, database_uuid);
   auto context = EngineContext(database_path, database_uuid, attached.session_uuid);

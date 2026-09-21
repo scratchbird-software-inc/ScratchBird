@@ -3502,8 +3502,8 @@ void VerifyServerOwnedReceiptAndBoundedParserProjection(
       server_transaction.local_transaction_id, server_transaction);
   registry.channel_state = server::ServerChannelState::kReady;
   registry.physical_channel_by_connection_uuid[
-      server::UuidBytesToText(session_uuid)] = session.server_channel_uuid;
-  registry.sessions_by_uuid.emplace(server::UuidBytesToText(session_uuid),
+      scratchbird::core::platform::Uuid{session_uuid}] = session.server_channel_uuid;
+  registry.sessions_by_uuid.emplace(scratchbird::core::platform::Uuid{session_uuid},
                                     std::move(session));
 
   engine_state.engine_context_active = true;

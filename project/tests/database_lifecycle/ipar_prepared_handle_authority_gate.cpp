@@ -117,7 +117,7 @@ int main() {
   server::ServerSessionRegistry registry;
   const auto engine_state = MakeEngineState();
   const auto session = MakeSession();
-  const std::string session_key = server::UuidBytesToText(session.session_uuid);
+  const auto session_key = scratchbird::core::platform::Uuid{session.session_uuid};
   registry.sessions_by_uuid.emplace(session_key, session);
   const auto before = registry.sessions_by_uuid.at(session_key);
   const auto next_handle_before = registry.next_session_object_handle_id;

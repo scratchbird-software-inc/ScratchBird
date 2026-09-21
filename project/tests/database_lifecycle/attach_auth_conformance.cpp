@@ -125,7 +125,7 @@ void PrintDiagnostics(const SessionOperationResult& result) {
 
 std::string FinalityState(const ServerSessionRegistry& registry, const sbps::Frame& frame) {
   const auto found =
-      registry.finality_by_request_uuid.find(scratchbird::server::UuidBytesToText(frame.header.request_uuid));
+      registry.finality_by_request_uuid.find(scratchbird::core::platform::Uuid{frame.header.request_uuid});
   return found == registry.finality_by_request_uuid.end() ? "" : found->second.state;
 }
 
@@ -608,7 +608,7 @@ void TestNonDefaultLanguageContextIdentity() {
           "non-default language context lost resource version identity");
 
   ServerSessionRegistry registry;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   const auto status = scratchbird::server::SessionRegistryStatusJson(registry);
   Require(Contains(status, "\"language_profile_id\":\"sbsql.language-profile.fr-CA\""),
           "session status omitted non-default language profile id");

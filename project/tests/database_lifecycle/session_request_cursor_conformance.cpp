@@ -238,7 +238,7 @@ AttachedSession AddDeniedSession(ServerSessionRegistry* registry,
   session.name_resolution_epoch = 1;
   session.session_binding_present = true;
   registry->sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(attached.session_uuid)] = session;
+      scratchbird::core::platform::Uuid{attached.session_uuid}] = session;
   return attached;
 }
 
@@ -342,7 +342,7 @@ scratchbird::server::ServerRequestRecord RequireRequest(
   const auto record = scratchbird::server::FindServerRequestLifecycle(registry, UuidText(target_uuid));
   Require(record.has_value(), message);
   Require(record->state == expected_state, message);
-  const auto finality = registry.finality_by_request_uuid.find(UuidText(record->request_uuid));
+  const auto finality = registry.finality_by_request_uuid.find(scratchbird::core::platform::Uuid{record->request_uuid});
   Require(finality != registry.finality_by_request_uuid.end(), "DBLC-013G finality record missing");
   Require(finality->second.state == scratchbird::server::ServerRequestLifecycleStateName(expected_state),
           "DBLC-013G finality state mismatch");
@@ -493,7 +493,7 @@ void TestDisconnectUnknownOutcome(const std::filesystem::path& database_path,
                                 cursor_uuid,
                                 ServerRequestLifecycleState::kCursorOpen,
                                 "DBLC-013G begin transaction cursor request missing");
-  const auto session_it = registry->sessions_by_uuid.find(UuidText(admin.session_uuid));
+  const auto session_it = registry->sessions_by_uuid.find(scratchbird::core::platform::Uuid{admin.session_uuid});
   Require(session_it != registry->sessions_by_uuid.end(), "DBLC-013G active session missing");
   const auto active_local_transaction_id = session_it->second.local_transaction_id;
   Require(active_local_transaction_id != 0, "DBLC-013G begin did not bind transaction id");

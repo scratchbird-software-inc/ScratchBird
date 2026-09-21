@@ -309,7 +309,7 @@ scratchbird::server::ServerSessionRegistry MakeRegistry(
   *session_uuid = session.session_uuid;
 
   scratchbird::server::ServerSessionRegistry registry;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] =
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] =
       session;
   return registry;
 }
@@ -407,7 +407,7 @@ std::array<std::uint8_t, 16> InstallMetadataCursor(
   cursor.stream_descriptor_live = true;
   const auto cursor_uuid = cursor.cursor_uuid;
   registry->cursors_by_uuid.emplace(
-      scratchbird::server::UuidBytesToText(cursor_uuid), std::move(cursor));
+      scratchbird::core::platform::Uuid{cursor_uuid}, std::move(cursor));
   return cursor_uuid;
 }
 
@@ -418,7 +418,7 @@ void ValidatePublicMetadataProjection(Harness* harness) {
   harness->Check(!sbps::IsZeroUuid(cursor_uuid),
                  "descriptor-bound metadata cursor fixture was not installed");
   const auto cursor = registry.cursors_by_uuid.at(
-      scratchbird::server::UuidBytesToText(cursor_uuid));
+      scratchbird::core::platform::Uuid{cursor_uuid});
   const auto fetch = scratchbird::server::HandleFetch(
       &registry, FetchFrame(session_uuid, cursor, 1));
   harness->Check(fetch.accepted, "server fetch rejected metadata projection fixture");
@@ -544,7 +544,7 @@ void ValidateRetiredPreparedIngressRefusal(Harness* harness) {
   std::array<std::uint8_t, 16> session_uuid{};
   auto registry = MakeRegistry(&session_uuid);
   auto& session = registry.sessions_by_uuid.at(
-      scratchbird::server::UuidBytesToText(session_uuid));
+      scratchbird::core::platform::Uuid{session_uuid});
   session.local_transaction_id = 1;
   session.default_local_transaction_id = 1;
   session.snapshot_visible_through_local_transaction_id = 1;

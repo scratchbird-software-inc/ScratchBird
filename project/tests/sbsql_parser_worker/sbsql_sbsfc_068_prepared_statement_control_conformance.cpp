@@ -177,7 +177,7 @@ ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
   session.transaction_uuid =
       scratchbird::server::UuidBytesToText(sbps::MakeUuidV7Bytes());
   *session_uuid = session.session_uuid;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   return registry;
 }
 

@@ -238,6 +238,20 @@ namespace server = scratchbird::server;
 using Uuid = scratchbird::core::platform::Uuid;
 using CoordinationMap = decltype(server::ServerSessionRegistry::parameter_coordinations_by_uuid);
 static_assert(sizeof(Uuid) == 16);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::sessions_by_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::auth_contexts_by_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::negotiated_capabilities_by_connection_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::admitted_parser_identity_by_connection_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::physical_channel_by_connection_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::finality_by_request_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::requests_by_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::prepared_by_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::prepared_execution_contexts_by_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::cursors_by_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::public_abi_sessions_by_session_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::language_bundles_by_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::job_schedulers_by_database_uuid)::key_type, Uuid>);
+static_assert(std::is_same_v<decltype(server::ServerSessionRegistry::job_quotas_by_database_uuid)::key_type, Uuid>);
 static_assert(std::is_same_v<CoordinationMap::key_type, Uuid>);
 static_assert(std::is_same_v<decltype(server::ServerParameterExecutionCoordinationRecord::session_uuid), Uuid>);
 static_assert(std::is_same_v<decltype(server::ServerParameterExecutionCoordinationRecord::operation_uuid), Uuid>);
@@ -519,6 +533,56 @@ int main() {
     check(std::lexicographical_compare(previous->first.bytes.begin(), previous->first.bytes.end(),
                                        current->first.bytes.begin(), current->first.bytes.end()));
   }
+
+  // Registry identity indexes operate on all 128 bits, without UUID formatting.
+  // Direct container checks do not admit the records or confer authority.
+  const auto check_identity_index = [&]<typename Map>(Map& identities) {
+    check(identities.try_emplace(base).second);
+    for (std::size_t bit = 0; bit != 128; ++bit) {
+      auto other = base;
+      other.bytes[bit / 8] ^= static_cast<std::uint8_t>(1u << (bit % 8));
+      check(identities.find(other) == identities.end());
+      check(identities.try_emplace(other).second);
+      check(identities.find(base) != identities.end());
+      check(!identities.try_emplace(other).second);
+    }
+    check(identities.size() == 129);
+    for (auto previous = identities.begin(), current = std::next(previous);
+         current != identities.end(); ++previous, ++current)
+      check(std::lexicographical_compare(previous->first.bytes.begin(),
+                                         previous->first.bytes.end(),
+                                         current->first.bytes.begin(),
+                                         current->first.bytes.end()));
+    for (std::size_t bit = 0; bit != 128; ++bit) {
+      auto other = base;
+      other.bytes[bit / 8] ^= static_cast<std::uint8_t>(1u << (bit % 8));
+      check(identities.erase(other) == 1);
+      check(identities.find(other) == identities.end());
+      check(identities.find(base) != identities.end());
+    }
+    check(identities.size() == 1);
+    check(identities.erase(base) == 1);
+    check(identities.empty());
+  };
+  server::ServerSessionRegistry identity_indexes;
+  check_identity_index(identity_indexes.sessions_by_uuid);
+  check_identity_index(identity_indexes.auth_contexts_by_uuid);
+  check_identity_index(identity_indexes.negotiated_capabilities_by_connection_uuid);
+  check_identity_index(identity_indexes.admitted_parser_identity_by_connection_uuid);
+  check_identity_index(identity_indexes.physical_channel_by_connection_uuid);
+  check_identity_index(identity_indexes.finality_by_request_uuid);
+  check_identity_index(identity_indexes.requests_by_uuid);
+  check_identity_index(identity_indexes.prepared_by_uuid);
+  check_identity_index(identity_indexes.prepared_execution_contexts_by_uuid);
+  check_identity_index(identity_indexes.cursors_by_uuid);
+  check_identity_index(identity_indexes.public_abi_sessions_by_session_uuid);
+  check_identity_index(identity_indexes.language_bundles_by_uuid);
+  // Scheduler keys are checked statically above; constructing its legacy
+  // default policy would invoke a synthetic identity issuer, not this index.
+  check(identity_indexes.job_schedulers_by_database_uuid.find(base) ==
+        identity_indexes.job_schedulers_by_database_uuid.end());
+  check_identity_index(identity_indexes.job_quotas_by_database_uuid);
+
   // Actual production receipt projection and binary key isolation only.
   // This coordinator does not prove execution of a SQL session setting.
   api::EngineRequestContext context;

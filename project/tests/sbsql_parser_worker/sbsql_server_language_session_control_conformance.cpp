@@ -184,7 +184,7 @@ server::ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session
   session.transaction_timestamp = "2026-09-02T00:00:00Z";
   server::ApplyRequestedLanguageProfile(&session, "en");
   *session_uuid = session.session_uuid;
-  registry.sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   return registry;
 }
 
@@ -278,7 +278,7 @@ void VerifyServerOwnsLanguageSessionControl() {
   const auto prepared_uuid = server::DecodePreparedStatementUuidForTest(prepare.payload);
   Require(prepared_uuid.has_value(), "baseline prepare did not return prepared UUID");
 
-  const auto session_key = server::UuidBytesToText(session_uuid);
+  const auto session_key = scratchbird::core::platform::Uuid{session_uuid};
   const auto before = server::ServerLanguageContextForSession(
       registry.sessions_by_uuid.at(session_key));
   const auto set_frame =

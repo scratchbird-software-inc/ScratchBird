@@ -101,7 +101,7 @@ ServerSessionRegistry MakeRegistry(std::array<std::uint8_t, 16>* session_uuid) {
   session.database_path = "/tmp/sb_server_cursor_protocol_conformance.sbdb";
   session.database_uuid = "019e05df-f010-7000-8000-0000000000b2";
   *session_uuid = session.session_uuid;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   return registry;
 }
 
@@ -155,7 +155,7 @@ std::array<std::uint8_t, 16> OpenCursor(ServerSessionRegistry* registry,
 
   const auto cursor_uuid = cursor.cursor_uuid;
   registry->cursors_by_uuid.emplace(
-      scratchbird::server::UuidBytesToText(cursor_uuid), std::move(cursor));
+      scratchbird::core::platform::Uuid{cursor_uuid}, std::move(cursor));
   return cursor_uuid;
 }
 
@@ -163,7 +163,7 @@ const ServerCursorRecord& FindCursor(
     const ServerSessionRegistry& registry,
     const std::array<std::uint8_t, 16>& cursor_uuid) {
   const auto found = registry.cursors_by_uuid.find(
-      scratchbird::server::UuidBytesToText(cursor_uuid));
+      scratchbird::core::platform::Uuid{cursor_uuid});
   Require(found != registry.cursors_by_uuid.end(), "cursor fixture is missing");
   return found->second;
 }

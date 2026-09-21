@@ -63,7 +63,7 @@ ServerSessionRegistry MakeRegistry(
   *session_uuid = session.session_uuid;
   ServerSessionRegistry registry;
   registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(session.session_uuid)] = session;
+      scratchbird::core::platform::Uuid{session.session_uuid}] = session;
   return registry;
 }
 
@@ -71,7 +71,7 @@ const ServerCursorRecord& FindCursor(
     const ServerSessionRegistry& registry,
     const std::array<std::uint8_t, 16>& cursor_uuid) {
   const auto found = registry.cursors_by_uuid.find(
-      scratchbird::server::UuidBytesToText(cursor_uuid));
+      scratchbird::core::platform::Uuid{cursor_uuid});
   Require(found != registry.cursors_by_uuid.end(),
           "warning-stream cursor fixture is missing");
   return found->second;
@@ -134,7 +134,7 @@ std::array<std::uint8_t, 16> InstallWarningStreamCursor(
 
   const auto cursor_uuid = cursor.cursor_uuid;
   registry->cursors_by_uuid.emplace(
-      scratchbird::server::UuidBytesToText(cursor_uuid), std::move(cursor));
+      scratchbird::core::platform::Uuid{cursor_uuid}, std::move(cursor));
   return cursor_uuid;
 }
 

@@ -340,12 +340,12 @@ int main() {
   server::ServerSessionRegistry server_registry;
   server::ServerSessionRecord server_session;
   server_session.session_uuid = Bytes(Text(fixture->session));
-  server_registry.sessions_by_uuid.emplace(Text(fixture->session),
+  server_registry.sessions_by_uuid.emplace(scratchbird::core::platform::Uuid{fixture->session},
                                             std::move(server_session));
   const auto cross_session_uuid = NewUuid(platform::UuidKind::session);
   server::ServerSessionRecord cross_session;
   cross_session.session_uuid = Bytes(Text(cross_session_uuid));
-  server_registry.sessions_by_uuid.emplace(Text(cross_session_uuid),
+  server_registry.sessions_by_uuid.emplace(scratchbird::core::platform::Uuid{cross_session_uuid},
                                             std::move(cross_session));
   server::ServerStatementContextRecord statement_record;
   statement_record.session_uuid = Bytes(Text(fixture->session));

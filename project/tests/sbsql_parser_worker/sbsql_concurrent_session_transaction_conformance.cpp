@@ -790,7 +790,7 @@ ServerRouteForTest MakeServerRoute(const std::filesystem::path& database_path,
   route.engine_state = MakeEngineStateForDatabase(database_path);
   auto session = MakeSessionForContext(database_path, context, &route.session_uuid);
   route.registry.channel_state = scratchbird::server::ServerChannelState::kReady;
-  route.registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(route.session_uuid)] =
+  route.registry.sessions_by_uuid[scratchbird::core::platform::Uuid{route.session_uuid}] =
       session;
   return route;
 }
@@ -1016,7 +1016,7 @@ void VerifyCdp032AlwaysActiveServerFinality(const std::filesystem::path& databas
                    TransactionEnvelope("transaction.commit",
                                        "SBLR_TXN_COMMIT")));
   const auto& committed_session = commit_route.registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(commit_route.session_uuid)];
+      scratchbird::core::platform::Uuid{commit_route.session_uuid}];
   Require(!commit_execute.accepted &&
               HasDiagnostic(commit_execute, "SBLR.OPERATION.NONCANONICAL"),
           "retired text commit bypassed canonical server admission");
@@ -1037,7 +1037,7 @@ void VerifyCdp032AlwaysActiveServerFinality(const std::filesystem::path& databas
                    TransactionEnvelope("transaction.rollback",
                                        "SBLR_TXN_ROLLBACK")));
   const auto& rolled_session = rollback_route.registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(rollback_route.session_uuid)];
+      scratchbird::core::platform::Uuid{rollback_route.session_uuid}];
   Require(!rollback_execute.accepted &&
               HasDiagnostic(rollback_execute, "SBLR.OPERATION.NONCANONICAL"),
           "retired text rollback bypassed canonical server admission");
@@ -1065,7 +1065,7 @@ void VerifyCdp032AutocommitEmulation(const std::filesystem::path& database_path)
               HasDiagnostic(execute, "SBLR.OPERATION.NONCANONICAL"),
           "retired COPY-style autocommit text bypassed canonical admission");
   const auto& session = route.registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(route.session_uuid)];
+      scratchbird::core::platform::Uuid{route.session_uuid}];
   Require(session.local_transaction_id == context.local_transaction_id &&
               session.transaction_uuid == context.transaction_uuid.canonical,
           "retired autocommit text changed transaction finality");
@@ -1090,7 +1090,7 @@ void VerifyCdp032PressureRestartPolicy(const std::filesystem::path& database_pat
                                        "SBLR_TXN_ROLLBACK",
                                        true)));
   const auto& pressure_session = pressure_route.registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(pressure_route.session_uuid)];
+      scratchbird::core::platform::Uuid{pressure_route.session_uuid}];
   Require(!pressure_result.accepted &&
               HasDiagnostic(pressure_result, "SBLR.OPERATION.NONCANONICAL"),
           "retired pressure-policy text bypassed canonical admission");
@@ -1185,7 +1185,7 @@ void VerifyNeutralV2MultiTransactionRouting(
     auto context = BeginTransaction(database_path, "310");
     auto route = MakeServerRoute(database_path, context);
     auto& session = route.registry.sessions_by_uuid[
-        scratchbird::server::UuidBytesToText(route.session_uuid)];
+        scratchbird::core::platform::Uuid{route.session_uuid}];
     const auto* default_transaction =
         scratchbird::server::AdoptAndFindExactActiveDefaultTransaction(
             &session);
@@ -1280,7 +1280,7 @@ void VerifyNeutralV2MultiTransactionRouting(
   auto initial_context = BeginTransaction(database_path, "310");
   auto route = MakeServerRoute(database_path, initial_context);
   auto& session = route.registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(route.session_uuid)];
+      scratchbird::core::platform::Uuid{route.session_uuid}];
   const std::uint64_t hidden_default_id = session.local_transaction_id;
   const std::string hidden_default_uuid = session.transaction_uuid;
   auto selected_query = ServerOperationEnvelope("dml.select_rows",
@@ -1333,7 +1333,7 @@ void VerifyNeutralV2MultiTransactionRouting(
   Require(prepared_t2_uuid.has_value(),
           "V2 prepare did not publish a prepared UUID");
   auto prepared_t2_it = route.registry.prepared_by_uuid.find(
-      scratchbird::server::UuidBytesToText(*prepared_t2_uuid));
+      scratchbird::core::platform::Uuid{*prepared_t2_uuid});
   Require(prepared_t2_it != route.registry.prepared_by_uuid.end() &&
               prepared_t2_it->second.prepared_transaction_routing_v2,
           "V2 prepare did not seal its transaction-routed wire origin");
@@ -1389,7 +1389,7 @@ void VerifyNeutralV2MultiTransactionRouting(
           prepared_v1.payload);
   Require(prepared_v1_uuid.has_value(), "V1 prepare UUID missing");
   const auto prepared_v1_it = route.registry.prepared_by_uuid.find(
-      scratchbird::server::UuidBytesToText(*prepared_v1_uuid));
+      scratchbird::core::platform::Uuid{*prepared_v1_uuid});
   Require(prepared_v1_it != route.registry.prepared_by_uuid.end() &&
               !prepared_v1_it->second.prepared_transaction_routing_v2 &&
               prepared_v1_it->second.prepare_local_transaction_id != 0 &&
@@ -1519,7 +1519,7 @@ void VerifyNeutralV2MultiTransactionRouting(
   std::array<std::uint8_t, 16> other_session_uuid{};
   auto other_session = MakeSession(&other_session_uuid);
   route.registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(other_session_uuid)] =
+      scratchbird::core::platform::Uuid{other_session_uuid}] =
       other_session;
   const auto cross_session = scratchbird::server::HandleExecuteSblr(
       &route.registry,
@@ -1818,9 +1818,9 @@ void VerifyNeutralPhysicalChannelGuards(
   auth_context.session_uuid = auth_context_uuid;
   auth_context.server_channel_uuid = admitted_channel;
   binding_registry.auth_contexts_by_uuid[
-      scratchbird::server::UuidBytesToText(auth_context_uuid)] = auth_context;
+      scratchbird::core::platform::Uuid{auth_context_uuid}] = auth_context;
   binding_registry.physical_channel_by_connection_uuid[
-      scratchbird::server::UuidBytesToText(connection_uuid)] = replay_channel;
+      scratchbird::core::platform::Uuid{connection_uuid}] = replay_channel;
   sbps::Frame forged_attach;
   forged_attach.header.message_type =
       static_cast<std::uint16_t>(sbps::MessageType::kAttachDatabase);
@@ -1836,12 +1836,12 @@ void VerifyNeutralPhysicalChannelGuards(
           "an authentication context was replayed from a second physical channel");
 
   binding_registry.physical_channel_by_connection_uuid[
-      scratchbird::server::UuidBytesToText(connection_uuid)] = admitted_channel;
+      scratchbird::core::platform::Uuid{connection_uuid}] = admitted_channel;
   std::array<std::uint8_t, 16> sibling_uuid{};
   auto sibling = MakeSession(&sibling_uuid);
   sibling.server_channel_uuid = admitted_channel;
   binding_registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(sibling_uuid)] = sibling;
+      scratchbird::core::platform::Uuid{sibling_uuid}] = sibling;
   const auto sibling_attach = scratchbird::server::HandleAttachDatabase(
       &binding_registry, MakeEngineStateForDatabase(database_path), forged_attach);
   Require(!sibling_attach.accepted &&
@@ -1853,14 +1853,14 @@ void VerifyNeutralPhysicalChannelGuards(
   auto cleanup_context = BeginTransaction(database_path, "320");
   auto cleanup_route = MakeServerRoute(database_path, cleanup_context);
   auto& cleanup_session = cleanup_route.registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(cleanup_route.session_uuid)];
+      scratchbird::core::platform::Uuid{cleanup_route.session_uuid}];
   Require(scratchbird::server::AdoptAndFindExactActiveDefaultTransaction(
               &cleanup_session) != nullptr,
           "channel cleanup fixture did not adopt its exact default transaction");
   const auto cleanup_channel = sbps::MakeUuidV7Bytes();
   cleanup_session.server_channel_uuid = cleanup_channel;
   cleanup_route.registry.physical_channel_by_connection_uuid[
-      scratchbird::server::UuidBytesToText(cleanup_session.connection_uuid)] =
+      scratchbird::core::platform::Uuid{cleanup_session.connection_uuid}] =
       cleanup_channel;
   const auto cleaned =
       scratchbird::server::HandleUnexpectedParserChannelClose(
@@ -1875,7 +1875,7 @@ void VerifyNeutralPhysicalChannelGuards(
   auto continuity_context = BeginTransaction(database_path, "322");
   auto continuity_route = MakeServerRoute(database_path, quarantined_context);
   auto& quarantined_session = continuity_route.registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(continuity_route.session_uuid)];
+      scratchbird::core::platform::Uuid{continuity_route.session_uuid}];
   auto* quarantined_transaction =
       scratchbird::server::AdoptAndFindExactActiveDefaultTransaction(
           &quarantined_session);
@@ -1886,8 +1886,8 @@ void VerifyNeutralPhysicalChannelGuards(
   const auto quarantined_channel = sbps::MakeUuidV7Bytes();
   quarantined_session.server_channel_uuid = quarantined_channel;
   continuity_route.registry.physical_channel_by_connection_uuid[
-      scratchbird::server::UuidBytesToText(
-          quarantined_session.connection_uuid)] = quarantined_channel;
+      scratchbird::core::platform::Uuid{
+          quarantined_session.connection_uuid}] = quarantined_channel;
 
   std::array<std::uint8_t, 16> continuity_session_uuid{};
   auto continuity_session = MakeSessionForContext(
@@ -1900,11 +1900,11 @@ void VerifyNeutralPhysicalChannelGuards(
   Require(continuity_transaction != nullptr,
           "continuity fixture did not adopt its exact default transaction");
   continuity_route.registry.sessions_by_uuid[
-      scratchbird::server::UuidBytesToText(continuity_session_uuid)] =
+      scratchbird::core::platform::Uuid{continuity_session_uuid}] =
       continuity_session;
   continuity_route.registry.physical_channel_by_connection_uuid[
-      scratchbird::server::UuidBytesToText(
-          continuity_session.connection_uuid)] = continuity_channel;
+      scratchbird::core::platform::Uuid{
+          continuity_session.connection_uuid}] = continuity_channel;
   scratchbird::server::ServerCursorRecord continuity_cursor;
   continuity_cursor.cursor_uuid = sbps::MakeUuidV7Bytes();
   continuity_cursor.session_uuid = continuity_session_uuid;
@@ -1918,7 +1918,7 @@ void VerifyNeutralPhysicalChannelGuards(
   continuity_cursor.owning_transaction_uuid =
       continuity_transaction->transaction_uuid;
   continuity_route.registry.cursors_by_uuid[
-      scratchbird::server::UuidBytesToText(continuity_cursor.cursor_uuid)] =
+      scratchbird::core::platform::Uuid{continuity_cursor.cursor_uuid}] =
       continuity_cursor;
 
   const auto quarantined =
@@ -1928,14 +1928,14 @@ void VerifyNeutralPhysicalChannelGuards(
               continuity_route.registry.channel_state ==
                   scratchbird::server::ServerChannelState::kReady &&
               continuity_route.registry.sessions_by_uuid
-                  .at(scratchbird::server::UuidBytesToText(
-                      continuity_route.session_uuid))
+                  .at(scratchbird::core::platform::Uuid{
+                      continuity_route.session_uuid})
                   .detached_recovery_quarantined,
           "unknown channel-close finality was not retained as session-scoped quarantine");
   const auto continuity_cursor_after_quarantine =
       continuity_route.registry.cursors_by_uuid.find(
-          scratchbird::server::UuidBytesToText(
-              continuity_cursor.cursor_uuid));
+          scratchbird::core::platform::Uuid{
+              continuity_cursor.cursor_uuid});
   Require(continuity_cursor_after_quarantine !=
               continuity_route.registry.cursors_by_uuid.end() &&
               !continuity_cursor_after_quarantine->second.closed &&
@@ -1997,8 +1997,8 @@ void VerifyServerSessionConformance() {
   scratchbird::server::ServerSessionRegistry registry;
   auto record_a = MakeSession(&session_a);
   auto record_b = MakeSession(&session_b);
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session_a)] = record_a;
-  registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session_b)] = record_b;
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session_a}] = record_a;
+  registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session_b}] = record_b;
   registry.channel_state = scratchbird::server::ServerChannelState::kReady;
   const auto engine_state = MakeEngineState();
 
@@ -2028,7 +2028,7 @@ void VerifyServerSessionConformance() {
   prepared.group_set_hash = record_a.group_set_hash;
   prepared.search_path_hash = record_a.search_path_hash;
   registry.prepared_by_uuid[
-      scratchbird::server::UuidBytesToText(prepared_uuid)] = prepared;
+      scratchbird::core::platform::Uuid{prepared_uuid}] = prepared;
 
   const auto cross_session_execute = scratchbird::server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_b, prepared_uuid, ""));
@@ -2049,7 +2049,7 @@ void VerifyServerSessionConformance() {
   cursor.stream_descriptor_generation = 1;
   cursor.stream_descriptor_live = true;
   registry.cursors_by_uuid[
-      scratchbird::server::UuidBytesToText(cursor_uuid)] = cursor;
+      scratchbird::core::platform::Uuid{cursor_uuid}] = cursor;
 
   auto wrong_session_fetch_frame = FetchFrame(session_b, cursor_uuid);
   PutUuid(&wrong_session_fetch_frame.payload, cursor.stream_descriptor_uuid);
@@ -2079,7 +2079,7 @@ void VerifyServerSessionConformance() {
                             "SERVER.STREAM.DESCRIPTOR_STALE"),
           "session B was able to fetch session A cursor");
 
-  auto& session_record = registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session_a)];
+  auto& session_record = registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session_a}];
   session_record.catalog_generation = 2;
   const auto stale_execute = scratchbird::server::HandleExecuteSblr(
       &registry, engine_state, ExecuteFrame(session_a, prepared_uuid, ""));
@@ -2102,7 +2102,7 @@ void VerifyServerSessionConformance() {
   cancellable_cursor.session_uuid = session_a;
   cancellable_cursor.operation_id = "dml.insert_rows";
   cancellable_cursor.finality_state = "active";
-  registry.cursors_by_uuid[scratchbird::server::UuidBytesToText(cancellable_cursor.cursor_uuid)] =
+  registry.cursors_by_uuid[scratchbird::core::platform::Uuid{cancellable_cursor.cursor_uuid}] =
       cancellable_cursor;
   scratchbird::server::LinkServerRequestCursor(
       &registry, cancellable.request_uuid, cancellable_cursor.cursor_uuid, false);
@@ -2124,18 +2124,18 @@ void VerifyServerSessionConformance() {
               cancelled_record->transaction_finality_preserved,
           "request cancellation did not retain MGA finality authority");
   const auto finality_it = registry.finality_by_request_uuid.find(
-      scratchbird::server::UuidBytesToText(cancellable.request_uuid));
+      scratchbird::core::platform::Uuid{cancellable.request_uuid});
   Require(finality_it != registry.finality_by_request_uuid.end() &&
               finality_it->second.state == "unknown_outcome",
           "request finality registry did not record unknown_outcome");
   const auto cancelled_cursor_it = registry.cursors_by_uuid.find(
-      scratchbird::server::UuidBytesToText(cancellable_cursor.cursor_uuid));
+      scratchbird::core::platform::Uuid{cancellable_cursor.cursor_uuid});
   Require(cancelled_cursor_it != registry.cursors_by_uuid.end() &&
               cancelled_cursor_it->second.closed &&
               cancelled_cursor_it->second.exhausted &&
               cancelled_cursor_it->second.finality_state == "cancelled_unknown_outcome",
           "request cancellation did not close linked cursor as cancelled_unknown_outcome");
-  Require(registry.sessions_by_uuid[scratchbird::server::UuidBytesToText(session_a)].local_transaction_id == 4242,
+  Require(registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session_a}].local_transaction_id == 4242,
           "request cancellation changed session transaction authority");
 
   const auto unknown_cancel = scratchbird::server::CancelServerRequestLifecycle(
@@ -2153,13 +2153,13 @@ void VerifyServerSessionConformance() {
       &registry, DisconnectFrame(session_a, "parser_disconnect_notice"));
   Require(disconnect.accepted, "disconnect did not detach session A");
   const auto cursor_it = registry.cursors_by_uuid.find(
-      scratchbird::server::UuidBytesToText(cursor_uuid));
+      scratchbird::core::platform::Uuid{cursor_uuid});
   Require(cursor_it != registry.cursors_by_uuid.end() &&
               cursor_it->second.closed &&
               cursor_it->second.finality_state == "parser_disconnected",
           "disconnect did not close active cursor with parser_disconnected finality");
   const auto prepared_it = registry.prepared_by_uuid.find(
-      scratchbird::server::UuidBytesToText(prepared_uuid));
+      scratchbird::core::platform::Uuid{prepared_uuid});
   Require(prepared_it != registry.prepared_by_uuid.end() && prepared_it->second.closed,
           "disconnect did not close prepared SBLR record");
 }

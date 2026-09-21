@@ -647,18 +647,18 @@ struct ServerAdmittedParserChannelIdentity {
 
 struct ServerSessionRegistry {
   ServerChannelState channel_state = ServerChannelState::kProtocolAdmitted;
-  std::map<std::string, ServerSessionRecord> sessions_by_uuid;
-  std::map<std::string, ServerSessionRecord> auth_contexts_by_uuid;
-  std::map<std::string, std::array<std::uint8_t, 32>>
+  std::map<scratchbird::core::platform::Uuid, ServerSessionRecord> sessions_by_uuid;
+  std::map<scratchbird::core::platform::Uuid, ServerSessionRecord> auth_contexts_by_uuid;
+  std::map<scratchbird::core::platform::Uuid, std::array<std::uint8_t, 32>>
       negotiated_capabilities_by_connection_uuid;
-  std::map<std::string, ServerAdmittedParserChannelIdentity>
+  std::map<scratchbird::core::platform::Uuid, ServerAdmittedParserChannelIdentity>
       admitted_parser_identity_by_connection_uuid;
-  std::map<std::string, std::array<std::uint8_t, 16>>
+  std::map<scratchbird::core::platform::Uuid, std::array<std::uint8_t, 16>>
       physical_channel_by_connection_uuid;
-  std::map<std::string, ServerFinalityRecord> finality_by_request_uuid;
-  std::map<std::string, ServerRequestRecord> requests_by_uuid;
-  std::map<std::string, ServerPreparedStatementRecord> prepared_by_uuid;
-  std::map<std::string, ServerPreparedExecutionContextRecord>
+  std::map<scratchbird::core::platform::Uuid, ServerFinalityRecord> finality_by_request_uuid;
+  std::map<scratchbird::core::platform::Uuid, ServerRequestRecord> requests_by_uuid;
+  std::map<scratchbird::core::platform::Uuid, ServerPreparedStatementRecord> prepared_by_uuid;
+  std::map<scratchbird::core::platform::Uuid, ServerPreparedExecutionContextRecord>
       prepared_execution_contexts_by_uuid;
   std::map<std::pair<scratchbird::core::platform::Uuid, std::uint64_t>, ServerSessionObjectHandleRecord> object_handles_by_key;
   std::map<std::string, ServerAuthorityCacheRecord> authority_cache_by_key;
@@ -668,8 +668,8 @@ struct ServerSessionRegistry {
   std::map<std::string, ServerPublicNameResolutionCacheRecord>
       stable_public_name_resolution_cache_by_key;
   std::deque<std::string> stable_public_name_resolution_cache_lru;
-  std::map<std::string, ServerCursorRecord> cursors_by_uuid;
-  std::map<std::string, ServerPublicAbiSessionContext>
+  std::map<scratchbird::core::platform::Uuid, ServerCursorRecord> cursors_by_uuid;
+  std::map<scratchbird::core::platform::Uuid, ServerPublicAbiSessionContext>
       public_abi_sessions_by_session_uuid;
   std::map<scratchbird::core::platform::Uuid, ServerStatementContextRecord>
       statement_contexts_by_statement_uuid;
@@ -679,12 +679,12 @@ struct ServerSessionRegistry {
       variable_frames_by_coordination_uuid;
   std::shared_ptr<std::mutex> statement_context_mutex =
       std::make_shared<std::mutex>();
-  std::map<std::string, ServerLanguageBundleRecord> language_bundles_by_uuid;
+  std::map<scratchbird::core::platform::Uuid, ServerLanguageBundleRecord> language_bundles_by_uuid;
   std::map<std::string, ServerLanguageResourceDirectoryRecord>
       language_resource_directories_by_id;
-  std::map<std::string, scratchbird::core::agents::DatabaseLocalBackgroundJobScheduler>
+  std::map<scratchbird::core::platform::Uuid, scratchbird::core::agents::DatabaseLocalBackgroundJobScheduler>
       job_schedulers_by_database_uuid;
-  std::map<std::string, scratchbird::core::agents::WorkloadResourceQuotaController>
+  std::map<scratchbird::core::platform::Uuid, scratchbird::core::agents::WorkloadResourceQuotaController>
       job_quotas_by_database_uuid;
   std::uint64_t next_session_object_handle_id = 1;
   std::uint64_t next_authority_cache_generation = 1;

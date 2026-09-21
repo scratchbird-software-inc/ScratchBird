@@ -596,7 +596,7 @@ ServerRouteForTest MakeServerRoute(const std::filesystem::path& database_path,
                                              std::move(transaction));
   }
   route.session_uuid = session.session_uuid;
-  route.registry.sessions_by_uuid[server::UuidBytesToText(session.session_uuid)] = session;
+  route.registry.sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
 
   route.engine_state.engine_context_active = true;
   server::HostedDatabaseSnapshot database;

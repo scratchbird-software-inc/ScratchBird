@@ -144,9 +144,9 @@ void ProveControlPlaneCodecCompatibility() {
 void ProveBindingTakeoverAndClear() {
   scratchbird::server::ServerSessionRegistry registry;
   auto session = ActiveSession();
-  const auto session_key = scratchbird::server::UuidBytesToText(session.session_uuid);
+  const auto session_key = scratchbird::core::platform::Uuid{session.session_uuid};
   registry.sessions_by_uuid[session_key] = session;
-  registry.auth_contexts_by_uuid[scratchbird::server::UuidBytesToText(session.auth_context_uuid)] = session;
+  registry.auth_contexts_by_uuid[scratchbird::core::platform::Uuid{session.auth_context_uuid}] = session;
   registry.channel_state = scratchbird::server::ServerChannelState::kReady;
 
   scratchbird::listener::SessionBindingReportPayload binding;
@@ -216,7 +216,7 @@ void ProveBindingTakeoverAndClear() {
 
   const auto destination_channel_uuid = Uuid(0xf0);
   registry.physical_channel_by_connection_uuid.insert_or_assign(
-      scratchbird::server::UuidBytesToText(takeover.attachment_id),
+      scratchbird::core::platform::Uuid{takeover.attachment_id},
       destination_channel_uuid);
   std::array<std::uint8_t, 32> destination_capabilities{};
   destination_capabilities[0] =
@@ -224,7 +224,7 @@ void ProveBindingTakeoverAndClear() {
       scratchbird::server::sbps::kCapabilityPreparedMetadataTransferV1 |
       scratchbird::server::sbps::kCapabilityRelationDescriptorProjectionV3;
   registry.negotiated_capabilities_by_connection_uuid.insert_or_assign(
-      scratchbird::server::UuidBytesToText(takeover.attachment_id),
+      scratchbird::core::platform::Uuid{takeover.attachment_id},
       destination_capabilities);
 
   const auto ordinary_prepared_uuid = Uuid(0x01);
@@ -233,7 +233,7 @@ void ProveBindingTakeoverAndClear() {
   ordinary_prepared.session_uuid = session.session_uuid;
   ordinary_prepared.encoded_sblr_envelope = "ordinary-prepared-envelope";
   registry.prepared_by_uuid.insert_or_assign(
-      scratchbird::server::UuidBytesToText(ordinary_prepared_uuid),
+      scratchbird::core::platform::Uuid{ordinary_prepared_uuid},
       ordinary_prepared);
 
   const auto transferable_prepared_uuid = Uuid(0x02);
@@ -244,7 +244,7 @@ void ProveBindingTakeoverAndClear() {
       "transferable-prepared-envelope";
   transferable_prepared.prepared_metadata_transferable = true;
   registry.prepared_by_uuid.insert_or_assign(
-      scratchbird::server::UuidBytesToText(transferable_prepared_uuid),
+      scratchbird::core::platform::Uuid{transferable_prepared_uuid},
       transferable_prepared);
 
   auto probe = scratchbird::server::EvaluateServerSessionTakeoverProbe(
@@ -275,13 +275,13 @@ void ProveBindingTakeoverAndClear() {
   Require(taken.takeover_generation == 1 && taken.takeover_control_sequence == 20,
           "TAKEOVER_REQUEST must publish generation and replay sequence");
   const auto& ordinary_after_takeover = registry.prepared_by_uuid.at(
-      scratchbird::server::UuidBytesToText(ordinary_prepared_uuid));
+      scratchbird::core::platform::Uuid{ordinary_prepared_uuid});
   Require(!ordinary_after_takeover.closed &&
               ordinary_after_takeover.encoded_sblr_envelope ==
                   "ordinary-prepared-envelope",
           "physical channel takeover retired an ordinary prepared statement");
   const auto& transferable_after_takeover = registry.prepared_by_uuid.at(
-      scratchbird::server::UuidBytesToText(transferable_prepared_uuid));
+      scratchbird::core::platform::Uuid{transferable_prepared_uuid});
   Require(transferable_after_takeover.closed &&
               !transferable_after_takeover.prepared_metadata_transferable &&
               transferable_after_takeover.prepared_metadata_binding == nullptr &&
@@ -329,7 +329,7 @@ void ProveTakeoverRejectsUnadmittedPhysicalChannel() {
   scratchbird::server::ServerSessionRegistry registry;
   const auto session = BoundSession();
   const auto session_key =
-      scratchbird::server::UuidBytesToText(session.session_uuid);
+      scratchbird::core::platform::Uuid{session.session_uuid};
   registry.sessions_by_uuid.insert_or_assign(session_key, session);
 
   const auto destination_connection_uuid = Uuid(0xc1);
@@ -362,13 +362,13 @@ void ProveMissingCapabilityRecordClearsInheritedAuthority() {
   scratchbird::server::ServerSessionRegistry registry;
   const auto session = BoundSession();
   const auto session_key =
-      scratchbird::server::UuidBytesToText(session.session_uuid);
+      scratchbird::core::platform::Uuid{session.session_uuid};
   registry.sessions_by_uuid.insert_or_assign(session_key, session);
 
   const auto destination_connection_uuid = Uuid(0xc2);
   const auto destination_channel_uuid = Uuid(0xc3);
   registry.physical_channel_by_connection_uuid.insert_or_assign(
-      scratchbird::server::UuidBytesToText(destination_connection_uuid),
+      scratchbird::core::platform::Uuid{destination_connection_uuid},
       destination_channel_uuid);
   const auto request =
       ConnectionTakeoverRequest(session, destination_connection_uuid);
