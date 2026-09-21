@@ -36,9 +36,9 @@ bool Text(const std::string& s) { return !s.empty() && s.find('\0') == std::stri
 
 MetricHistoryRecordResult<MetricSeriesIdentity> MakeMetricSeriesIdentity(
     const MetricDescriptor& descriptor, MetricLabelSet labels, const MetricRetentionPolicy& policy,
-    const MetricHistoryBinding& binding, const MetricUuid& series_uuid) {
+    const MetricHistoryBinding& binding, const MetricUuid& series_uuid, u64 series_generation) {
   if (!MetricSystemUuidValid(series_uuid)) return {E::invalid_identity, {}};
-  if (!ValidateStoredMetricValueDescriptor(descriptor) ||
+  if (!series_generation || !ValidateStoredMetricValueDescriptor(descriptor) ||
       !BindingValid(descriptor, binding) || !ValidateMetricRetentionPolicy(policy).ok ||
       policy.policy_uuid != binding.retention_policy_uuid || policy.generation != binding.retention_policy_generation ||
       (policy.scope == "cluster") != descriptor.cluster_only) return {E::invalid_binding, {}};
@@ -46,6 +46,7 @@ MetricHistoryRecordResult<MetricSeriesIdentity> MakeMetricSeriesIdentity(
   MetricSeriesIdentity result;
   static_cast<MetricHistoryBinding&>(result) = binding;
   result.series_uuid = series_uuid;
+  result.series_definition_generation = series_generation;
   result.series_key = Key(binding, labels);
   result.metric_family = descriptor.family;
   result.namespace_path = descriptor.namespace_path;
@@ -61,7 +62,7 @@ MetricHistoryRecordResult<MetricRawSampleRecord> MakeMetricRawSampleRecord(
     const MetricDescriptor& descriptor, const MetricSeriesIdentity& series, const MetricValue& value,
     u64 observed, u64 collected, u64 sequence) {
   if (!MetricSystemUuidValid(series.series_uuid)) return {E::invalid_identity, {}};
-  if (!BindingValid(descriptor, series) || series.series_key != Key(series, series.labels) ||
+  if (!series.series_definition_generation || !BindingValid(descriptor, series) || series.series_key != Key(series, series.labels) ||
       series.metric_family != descriptor.family || series.scope_class != (descriptor.cluster_only ? "cluster" : "local"))
     return {E::invalid_binding, {}};
   if (!ValidateMetricLabelSet(descriptor, series.labels).ok || !ValidateMetricLabelSet(descriptor, value.labels).ok ||
@@ -72,6 +73,7 @@ MetricHistoryRecordResult<MetricRawSampleRecord> MakeMetricRawSampleRecord(
   MetricRawSampleRecord result;
   static_cast<MetricHistoryBinding&>(result) = series;
   result.series_uuid = series.series_uuid;
+  result.series_definition_generation = series.series_definition_generation;
   result.metric_family = series.metric_family;
   result.labels = series.labels;
   result.value = value;

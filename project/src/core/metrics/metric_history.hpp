@@ -34,6 +34,7 @@ using MetricHistorySeriesKey = std::tuple<MetricUuid, MetricUuid, MetricUuid,
 
 struct MetricSeriesIdentity : MetricHistoryBinding {
   MetricUuid series_uuid;
+  u64 series_definition_generation = 0;
   MetricHistorySeriesKey series_key;
   std::string metric_family;
   std::string namespace_path;
@@ -46,6 +47,7 @@ struct MetricSeriesIdentity : MetricHistoryBinding {
 struct MetricRawSampleRecord : MetricHistoryBinding {
   MetricUuid sample_uuid;
   MetricUuid series_uuid;
+  u64 series_definition_generation = 0;
   std::string metric_family;
   MetricLabelSet labels;
   u64 sample_time_utc_ns = 0;
@@ -116,7 +118,8 @@ template<class Record> struct MetricHistoryRecordResult {
 // up names, write storage or publish data.
 MetricHistoryRecordResult<MetricSeriesIdentity> MakeMetricSeriesIdentity(
     const MetricDescriptor&, MetricLabelSet, const MetricRetentionPolicy&,
-    const MetricHistoryBinding&, const MetricUuid& catalog_series_uuid);
+    const MetricHistoryBinding&, const MetricUuid& catalog_series_uuid,
+    u64 catalog_series_definition_generation);
 MetricHistoryRecordResult<MetricRawSampleRecord> MakeMetricRawSampleRecord(
     const MetricDescriptor&, const MetricSeriesIdentity&, const MetricValue&,
     u64 sample_time_utc_ns, u64 collection_time_utc_ns, u64 source_sequence);

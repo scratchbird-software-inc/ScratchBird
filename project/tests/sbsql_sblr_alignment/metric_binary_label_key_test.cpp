@@ -122,7 +122,7 @@ struct ObservationFixture {
   void Bind(m::MetricUuid identity){
     m::MetricHistoryBinding binding;static_cast<m::MetricDescriptorBinding&>(binding)=descriptor;
     binding.database_uuid=queue->binding().database_uuid;binding.node_uuid=queue->binding().node_uuid;
-    auto made=m::MakeMetricSeriesIdentity(descriptor,labels,policy,binding,identity);
+    auto made=m::MakeMetricSeriesIdentity(descriptor,labels,policy,binding,identity,7);
     Require(made.ok(),"construct exact retained series");series=std::move(*made.record);
   }
   void Register(m::MetricRegistry& registry){Require(registry.RegisterDescriptor(descriptor).ok&&registry.RegisterSeries(series,policy).ok,"register retained observation bindings");}
@@ -146,6 +146,7 @@ void QueuePublication(){
   Require(f.Increment(registry).ok,"bound update not handed off");
   m::MetricObservationLease first_lease;const auto first=f.Read(first_lease);
   Require(first.series_uuid==f.series.series_uuid&&first.metric_uuid==f.descriptor.metric_uuid&&
+    first.series_definition_generation==7&&first_lease.observation->series_definition_generation==7&&
     first.source_sequence==1&&first.sample_time_utc_ns>0&&first.sample_time_utc_ns==first.collection_time_utc_ns&&
     !first.publication_time_utc_ns&&first.clock_quality.empty()&&first.freshness_class.empty()&&
     m::MetricSystemUuidValid(first.sample_uuid)&&std::get<m::u64>(first.value.value)==1,"queued sample invented binding/finality/quality or changed exact counter");
@@ -199,7 +200,7 @@ void SeriesBindingAndConcurrency(){
   auto different=typed.series;different.series_uuid.bytes[15]++;
   Require(!registry.RegisterSeries(different,typed.policy).ok,"second UUID replaced an occupied typed key");
   auto other_labels=typed.labels;other_labels[0].value=std::string("different tenant");
-  const auto other=m::MakeMetricSeriesIdentity(typed.descriptor,other_labels,typed.policy,typed.series,typed.series.series_uuid);
+  const auto other=m::MakeMetricSeriesIdentity(typed.descriptor,other_labels,typed.policy,typed.series,typed.series.series_uuid,1);
   Require(other.ok()&&!registry.RegisterSeries(*other.record,typed.policy).ok,"same series UUID bound two typed keys");
   std::atomic<bool> start=false,good=true;std::vector<std::thread> producers;
   for(unsigned t=0;t<4;++t)producers.emplace_back([&]{while(!start.load(std::memory_order_acquire))std::this_thread::yield();

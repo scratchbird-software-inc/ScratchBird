@@ -40,6 +40,7 @@ MetricQueueError MetricObservationQueue::TryEnqueue(const MetricDescriptor& desc
     auto observation=std::make_shared<MetricQueuedObservation>();
     observation->binding=static_cast<const MetricHistoryBinding&>(sample);observation->sample_uuid=sample.sample_uuid;
     observation->series_uuid=sample.series_uuid;observation->source_sequence=sample.source_sequence;observation->bytes=std::move(encoded.bytes);
+    observation->series_definition_generation=sample.series_definition_generation;
     std::unique_lock<std::mutex> guard(mutex_,std::try_to_lock);if(!guard.owns_lock())return Reject(E::busy);
     if(std::any_of(pending_.begin(),pending_.end(),[&](const auto& e){return e->sample_uuid==sample.sample_uuid;}))return Reject(E::duplicate);
     if(pending_.size()>=limits_.maximum_samples||observation->bytes.size()>limits_.maximum_wire_bytes-wire_bytes_)return Reject(E::full);

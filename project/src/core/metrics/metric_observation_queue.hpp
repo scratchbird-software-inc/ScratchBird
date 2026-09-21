@@ -17,7 +17,7 @@ struct MetricQueueLimits {std::size_t maximum_samples=0,maximum_wire_bytes=0;};
 struct MetricQueuedObservation {
   MetricHistoryBinding binding;
   MetricUuid sample_uuid,series_uuid;
-  u64 source_sequence=0;
+  u64 source_sequence=0,series_definition_generation=0;
   std::vector<platform::byte> bytes;
 };
 struct MetricObservationLease {

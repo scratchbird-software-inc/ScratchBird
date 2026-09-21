@@ -6,7 +6,7 @@
 #include <span>
 
 namespace scratchbird::core::metrics {
-constexpr std::size_t kMetricSampleHeaderBytes=280;
+constexpr std::size_t kMetricSampleHeaderBytes=288;
 constexpr std::size_t kMetricSampleMaxBytes=kMetricSampleHeaderBytes+256+kMetricValueMaxBytes;
 enum class MetricSampleCodecError {
   none, invalid_binding, invalid_sample, invalid_value, invalid_framing,
@@ -22,7 +22,7 @@ struct MetricSampleDecodeResult {
   std::optional<MetricRawSampleRecord> record;
   bool ok() const {return error==MetricSampleCodecError::none&&record.has_value();}
 };
-// SBMS v1 payload only. Caller retains native relation/row, catalog, clock/rate
+// SBMS v2 payload only. Caller retains native relation/row, catalog, clock/rate
 // source, security and MGA inventory authority. No identities/times are issued.
 MetricSampleEncodeResult EncodeMetricRawSample(const MetricDescriptor&,
     const MetricSeriesIdentity&,const MetricRawSampleRecord&) noexcept;

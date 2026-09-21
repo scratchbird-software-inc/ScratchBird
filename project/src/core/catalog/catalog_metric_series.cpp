@@ -203,6 +203,6 @@ metrics::MetricHistoryRecordResult<metrics::MetricSeriesIdentity> BindCatalogMet
     if(schema==d.labels.end() || schema->value_type!=l.type)return {};
     labels.push_back({l.key,l.value});
   }
-  return metrics::MakeMetricSeriesIdentity(d,std::move(labels),policy,r.binding,r.series_uuid);
+  return metrics::MakeMetricSeriesIdentity(d,std::move(labels),policy,r.binding,r.series_uuid,r.generation);
 }
 }  // namespace scratchbird::core::catalog

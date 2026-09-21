@@ -60,62 +60,65 @@ m::MetricLabelSet Labels() {
 template<class R> void Rejected(const R& r) { Check(!r.ok()&&!r.record,"failure exposed partial history record"); }
 void Bindings() {
   const auto d=Descriptor(); const auto b=Binding(); const auto p=Policy(); const auto labels=Labels();
-  const auto result=m::MakeMetricSeriesIdentity(d,labels,p,b,Id(9));
+  const auto result=m::MakeMetricSeriesIdentity(d,labels,p,b,Id(9),1);
   Check(result.ok(),"valid catalog-bound series rejected");
   if(!result.ok())return;
   Check(result.record->series_uuid==Id(9)&&result.record->metric_uuid==b.metric_uuid&&
         result.record->label_schema_generation==12&&result.record->retention_policy_generation==13&&
-        result.record->visibility_policy_generation==14&&result.record->redaction_class=="contains_sensitive_labels",
+        result.record->visibility_policy_generation==14&&result.record->series_definition_generation==1&&result.record->redaction_class=="contains_sensitive_labels",
         "series lost supplied binary identity or generation");
   auto reordered=labels;std::reverse(reordered.begin(),reordered.end());
-  auto same=m::MakeMetricSeriesIdentity(d,reordered,p,b,Id(9));
+  auto same=m::MakeMetricSeriesIdentity(d,reordered,p,b,Id(9),1);
   Check(same.ok()&&same.record->series_key==result.record->series_key,"label ordering changed typed identity");
   auto changed_policy=p;changed_policy.generation++;auto changed_binding=b;changed_binding.retention_policy_generation++;
   auto changed_descriptor=d;changed_descriptor.retention_policy_generation++;
-  same=m::MakeMetricSeriesIdentity(changed_descriptor,labels,changed_policy,changed_binding,Id(9));
-  Check(same.ok()&&same.record->series_key==result.record->series_key,"policy version replaced series key");
+  same=m::MakeMetricSeriesIdentity(changed_descriptor,labels,changed_policy,changed_binding,Id(9),2);
+  Check(same.ok()&&same.record->series_key==result.record->series_key&&same.record->series_uuid==result.record->series_uuid&&same.record->series_definition_generation==2,"definition version replaced series identity/key or was discarded");
+  Rejected(m::MakeMetricSeriesIdentity(d,labels,p,b,Id(9),0));
+  const auto maximum=m::MakeMetricSeriesIdentity(d,labels,p,b,Id(9),std::numeric_limits<p::u64>::max());
+  Check(maximum.ok()&&maximum.record->series_definition_generation==std::numeric_limits<p::u64>::max(),"series definition generation narrowed");
   for(auto member:std::initializer_list<m::MetricUuid m::MetricHistoryBinding::*>{&m::MetricHistoryBinding::metric_uuid,&m::MetricHistoryBinding::label_schema_uuid,
       &m::MetricHistoryBinding::retention_policy_uuid,&m::MetricHistoryBinding::visibility_policy_uuid,
       &m::MetricHistoryBinding::database_uuid,&m::MetricHistoryBinding::node_uuid}) {
-    auto bad=b;bad.*member={};Rejected(m::MakeMetricSeriesIdentity(d,labels,p,bad,Id(9)));
-    for(unsigned version=0;version<16;++version)if(version!=7){bad=b;(bad.*member).bytes[6]=version<<4;Rejected(m::MakeMetricSeriesIdentity(d,labels,p,bad,Id(9)));}
-    for(unsigned variant:{0u,0x40u,0xc0u}){bad=b;(bad.*member).bytes[8]=variant;Rejected(m::MakeMetricSeriesIdentity(d,labels,p,bad,Id(9)));}
+    auto bad=b;bad.*member={};Rejected(m::MakeMetricSeriesIdentity(d,labels,p,bad,Id(9),1));
+    for(unsigned version=0;version<16;++version)if(version!=7){bad=b;(bad.*member).bytes[6]=version<<4;Rejected(m::MakeMetricSeriesIdentity(d,labels,p,bad,Id(9),1));}
+    for(unsigned variant:{0u,0x40u,0xc0u}){bad=b;(bad.*member).bytes[8]=variant;Rejected(m::MakeMetricSeriesIdentity(d,labels,p,bad,Id(9),1));}
   }
   for(auto member:{&m::MetricHistoryBinding::descriptor_generation,&m::MetricHistoryBinding::label_schema_generation,
       &m::MetricHistoryBinding::retention_policy_generation,&m::MetricHistoryBinding::visibility_policy_generation}) {
-    auto bad=b;bad.*member=0;Rejected(m::MakeMetricSeriesIdentity(d,labels,p,bad,Id(9)));
+    auto bad=b;bad.*member=0;Rejected(m::MakeMetricSeriesIdentity(d,labels,p,bad,Id(9),1));
   }
-  changed_binding=b;changed_binding.retention_policy_uuid=Id(10);Rejected(m::MakeMetricSeriesIdentity(d,labels,p,changed_binding,Id(9)));
+  changed_binding=b;changed_binding.retention_policy_uuid=Id(10);Rejected(m::MakeMetricSeriesIdentity(d,labels,p,changed_binding,Id(9),1));
   for(auto member:{&m::MetricDescriptorBinding::metric_uuid,&m::MetricDescriptorBinding::label_schema_uuid,
       &m::MetricDescriptorBinding::retention_policy_uuid,&m::MetricDescriptorBinding::visibility_policy_uuid}) {
     auto wrong_descriptor=d;(wrong_descriptor.*member).bytes[15]++;
-    Rejected(m::MakeMetricSeriesIdentity(wrong_descriptor,labels,p,b,Id(9)));
+    Rejected(m::MakeMetricSeriesIdentity(wrong_descriptor,labels,p,b,Id(9),1));
   }
   for(auto member:{&m::MetricDescriptorBinding::descriptor_generation,&m::MetricDescriptorBinding::label_schema_generation,
       &m::MetricDescriptorBinding::retention_policy_generation,&m::MetricDescriptorBinding::visibility_policy_generation}) {
     auto wrong_descriptor=d;wrong_descriptor.*member+=1;
-    Rejected(m::MakeMetricSeriesIdentity(wrong_descriptor,labels,p,b,Id(9)));
+    Rejected(m::MakeMetricSeriesIdentity(wrong_descriptor,labels,p,b,Id(9),1));
   }
-  changed_binding=b;changed_binding.cluster_uuid=Id(10);Rejected(m::MakeMetricSeriesIdentity(d,labels,p,changed_binding,Id(9)));
+  changed_binding=b;changed_binding.cluster_uuid=Id(10);Rejected(m::MakeMetricSeriesIdentity(d,labels,p,changed_binding,Id(9),1));
   auto cluster=d;cluster.cluster_only=true;changed_policy=p;changed_policy.scope="cluster";
-  Rejected(m::MakeMetricSeriesIdentity(cluster,labels,changed_policy,b,Id(9)));
-  Check(m::MakeMetricSeriesIdentity(cluster,labels,changed_policy,changed_binding,Id(9)).ok(),"valid cluster record construction rejected");
-  Rejected(m::MakeMetricSeriesIdentity(cluster,labels,p,changed_binding,Id(9)));
+  Rejected(m::MakeMetricSeriesIdentity(cluster,labels,changed_policy,b,Id(9),1));
+  Check(m::MakeMetricSeriesIdentity(cluster,labels,changed_policy,changed_binding,Id(9),1).ok(),"valid cluster record construction rejected");
+  Rejected(m::MakeMetricSeriesIdentity(cluster,labels,p,changed_binding,Id(9),1));
   auto no_labels=d;no_labels.labels.clear();auto absent=b;absent.label_schema_uuid={};absent.label_schema_generation=0;
   no_labels.label_schema_uuid={};no_labels.label_schema_generation=0;
-  Check(m::MakeMetricSeriesIdentity(no_labels,{},p,absent,Id(9)).ok(),"exact optional label-schema absence rejected");
-  absent.label_schema_uuid=Id(2);Rejected(m::MakeMetricSeriesIdentity(no_labels,{},p,absent,Id(9)));
-  absent=b;absent.label_schema_uuid={};Rejected(m::MakeMetricSeriesIdentity(no_labels,{},p,absent,Id(9)));
+  Check(m::MakeMetricSeriesIdentity(no_labels,{},p,absent,Id(9),1).ok(),"exact optional label-schema absence rejected");
+  absent.label_schema_uuid=Id(2);Rejected(m::MakeMetricSeriesIdentity(no_labels,{},p,absent,Id(9),1));
+  absent=b;absent.label_schema_uuid={};Rejected(m::MakeMetricSeriesIdentity(no_labels,{},p,absent,Id(9),1));
   for(unsigned version=1;version<=7;++version){auto data=labels;std::get<m::MetricUuid>(data[1].value).bytes[6]=version<<4;
-    const auto r=m::MakeMetricSeriesIdentity(d,data,p,b,Id(9));Check(r.ok()&&std::get<m::MetricUuid>(r.record->labels[1].value).bytes[6]==version<<4,"user UUID value coerced or rejected");}
-  auto badlabels=labels;badlabels[0].value=std::string("00000000-0000-7000-8000-000000000007");Rejected(m::MakeMetricSeriesIdentity(d,badlabels,p,b,Id(9)));
-  badlabels=labels;badlabels.push_back(labels[0]);Rejected(m::MakeMetricSeriesIdentity(d,badlabels,p,b,Id(9)));
-  badlabels=labels;badlabels.pop_back();const auto short_key=m::MakeMetricSeriesIdentity(d,badlabels,p,b,Id(9));
+    const auto r=m::MakeMetricSeriesIdentity(d,data,p,b,Id(9),1);Check(r.ok()&&std::get<m::MetricUuid>(r.record->labels[1].value).bytes[6]==version<<4,"user UUID value coerced or rejected");}
+  auto badlabels=labels;badlabels[0].value=std::string("00000000-0000-7000-8000-000000000007");Rejected(m::MakeMetricSeriesIdentity(d,badlabels,p,b,Id(9),1));
+  badlabels=labels;badlabels.push_back(labels[0]);Rejected(m::MakeMetricSeriesIdentity(d,badlabels,p,b,Id(9),1));
+  badlabels=labels;badlabels.pop_back();const auto short_key=m::MakeMetricSeriesIdentity(d,badlabels,p,b,Id(9),1);
   Check(short_key.ok()&&short_key.record->series_key!=result.record->series_key,"typed label sets collided");
-  Rejected(m::MakeMetricSeriesIdentity(d,labels,p,b,{}));
+  Rejected(m::MakeMetricSeriesIdentity(d,labels,p,b,{},1));
 }
 void Samples() {
-  const auto d=Descriptor();const auto series=m::MakeMetricSeriesIdentity(d,Labels(),Policy(),Binding(),Id(9));
+  const auto d=Descriptor();const auto series=m::MakeMetricSeriesIdentity(d,Labels(),Policy(),Binding(),Id(9),1);
   Check(series.ok(),"sample series setup");if(!series.ok())return;
   m::MetricValue value;value.family=d.family;value.labels=Labels();value.type=d.type;value.value=13.0;
   std::set<m::MetricUuid> issued;
@@ -124,10 +127,11 @@ void Samples() {
     Check(m::MetricSystemUuidValid(r.record->sample_uuid)&&issued.insert(r.record->sample_uuid).second&&r.record->sample_uuid!=series.record->series_uuid,"identical observations reused sample identity");
     Check(r.record->publication_time_utc_ns==0&&r.record->revision==1&&r.record->sample_time_utc_ns==1000&&r.record->collection_time_utc_ns==1001&&
           r.record->clock_quality.empty()&&r.record->freshness_class.empty()&&r.record->evidence_uuid.is_nil(),"construction invented publication/clock/quality/evidence");
-    Check(r.record->metric_uuid==Binding().metric_uuid&&r.record->visibility_policy_generation==14&&r.record->source_sequence==1,"sample lost actual binding or sequence");
+    Check(r.record->metric_uuid==Binding().metric_uuid&&r.record->visibility_policy_generation==14&&r.record->source_sequence==1&&r.record->series_definition_generation==1,"sample lost actual binding or sequence");
   }
   for(unsigned bad=0;bad<3;++bad)Rejected(m::MakeMetricRawSampleRecord(d,*series.record,value,bad==0?0:1,bad==1?0:2,bad==2?0:1));
   auto bad_series=*series.record;bad_series.series_uuid={};Rejected(m::MakeMetricRawSampleRecord(d,bad_series,value,1,2,1));
+  bad_series=*series.record;bad_series.series_definition_generation=0;Rejected(m::MakeMetricRawSampleRecord(d,bad_series,value,1,2,1));
   bad_series=*series.record;bad_series.metric_uuid=Id(20);Rejected(m::MakeMetricRawSampleRecord(d,bad_series,value,1,2,1));
   auto bad_value=value;bad_value.family="other";Rejected(m::MakeMetricRawSampleRecord(d,*series.record,bad_value,1,2,1));
   bad_value=value;bad_value.type=m::MetricType::gauge;Rejected(m::MakeMetricRawSampleRecord(d,*series.record,bad_value,1,2,1));
@@ -151,7 +155,7 @@ void Evidence() {
 }
 void IssuanceFailure() {
 #if defined(SB_METRIC_HISTORY_ENTROPY_FAULT_TEST)
-  const auto d=Descriptor();const auto series=m::MakeMetricSeriesIdentity(d,Labels(),Policy(),Binding(),Id(9));
+  const auto d=Descriptor();const auto series=m::MakeMetricSeriesIdentity(d,Labels(),Policy(),Binding(),Id(9),1);
   Check(series.ok(),"issuance fault series setup");if(!series.ok())return;
   m::MetricValue value;value.family=d.family;value.labels=Labels();value.type=d.type;value.value=0.0;
   m::MetricRetentionEvidenceRecord e;e.policy_uuid=Id(1);e.actor_uuid=Id(2);e.transaction_uuid=Id(3);e.operation="raw_cleanup";e.decision="rejected";

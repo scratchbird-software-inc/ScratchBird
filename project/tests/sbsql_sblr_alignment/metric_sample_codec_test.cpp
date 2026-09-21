@@ -24,7 +24,7 @@ SampleFixture Sample(m::MetricScalar value=U(9007199254740993ULL)) {
   binding.database_uuid=Id(9);binding.node_uuid=Id(10);
   m::MetricRetentionPolicy policy;policy.policy_uuid=d.retention_policy_uuid;policy.generation=6;policy.policy_name="sample-policy";
   m::MetricLabelSet labels={{"object",Id(11)},{"data",Id(12,4)},{"text",std::string("x=;\0\xc3\xa9",7)}};
-  auto series=m::MakeMetricSeriesIdentity(d,labels,policy,binding,Id(13));Check(series.ok(),"real series factory");
+  auto series=m::MakeMetricSeriesIdentity(d,labels,policy,binding,Id(13),17);Check(series.ok(),"real series factory");
   if(!series.ok())throw "series factory failed";
   f.series=std::move(*series.record);auto v=Value(d,std::move(value));v.labels=labels;
   auto sample=m::MakeMetricRawSampleRecord(d,f.series,v,U(-1),U(-2),U(-3));Check(sample.ok(),"real sample factory");
@@ -32,7 +32,7 @@ SampleFixture Sample(m::MetricScalar value=U(9007199254740993ULL)) {
   f.sample=std::move(*sample.record);return f;
 }
 Bytes GoldenSample(const SampleFixture& f) {
-  const auto& s=f.sample;Bytes b(280,0);b[0]='S';b[1]='B';b[2]='M';b[3]='S';Put(b,4,1,2);Put(b,6,280,2);
+  const auto& s=f.sample;Bytes b(288,0);b[0]='S';b[1]='B';b[2]='M';b[3]='S';Put(b,4,2,2);Put(b,6,288,2);
   const auto id=[&](std::size_t at,const m::MetricUuid& u){std::copy(u.bytes.begin(),u.bytes.end(),b.begin()+at);};
   id(16,s.sample_uuid);id(32,s.series_uuid);id(48,s.metric_uuid);Put(b,64,s.descriptor_generation,8);
   id(72,s.label_schema_uuid);Put(b,88,s.label_schema_generation,8);id(96,s.retention_policy_uuid);Put(b,112,s.retention_policy_generation,8);
@@ -41,6 +41,7 @@ Bytes GoldenSample(const SampleFixture& f) {
   id(168,s.database_uuid);id(184,s.node_uuid);id(200,s.cluster_uuid);id(216,s.evidence_uuid);
   Put(b,232,s.sample_time_utc_ns,8);Put(b,240,s.collection_time_utc_ns,8);Put(b,248,s.publication_time_utc_ns,8);
   Put(b,256,s.source_sequence,8);Put(b,264,s.revision,8);Put(b,272,s.clock_quality.size(),4);Put(b,276,s.freshness_class.size(),4);
+  Put(b,280,s.series_definition_generation,8);
   b.insert(b.end(),s.clock_quality.begin(),s.clock_quality.end());b.insert(b.end(),s.freshness_class.begin(),s.freshness_class.end());
   auto value=Golden(f.descriptor,s.value);Put(b,12,value.size(),4);b.insert(b.end(),value.begin(),value.end());Put(b,8,b.size(),4);return b;
 }
@@ -73,7 +74,7 @@ void SampleTypesAndBindings() {
   for(auto at:{32u,48u,72u,96u,120u,144u,168u,184u,200u}) {
     auto bad=original;bad[at+15]^=1;SampleRejected(f,bad);
   }
-  for(auto at:{64u,88u,112u,136u,160u}) {
+  for(auto at:{64u,88u,112u,136u,160u,280u}) {
     auto bad=original;Put(bad,at,0,8);
     if(at==160)Put(bad,at,1,8);
     SampleRejected(f,bad);bad=original;bad[at]^=0x80;SampleRejected(f,bad);
@@ -84,7 +85,13 @@ void SampleTypesAndBindings() {
   }
   for(unsigned variant:{0u,0x40u,0xc0u}){auto bad=original;bad[24]=variant;SampleRejected(f,bad);}
   for(auto at:{0u,6u,8u,12u}){auto bad=original;bad[at]^=0x80;SampleRejected(f,bad);}
-  auto bad=original;Put(bad,4,2,2);SampleRejected(f,bad);
+  auto bad=original;Put(bad,4,3,2);SampleRejected(f,bad);
+  bad=original;bad.erase(bad.begin()+280,bad.begin()+288);Put(bad,4,1,2);Put(bad,6,280,2);Put(bad,8,bad.size(),4);
+  const auto retired=m::DecodeMetricRawSample(f.descriptor,f.series,bad);
+  Check(retired.error==m::MetricSampleCodecError::unsupported_version&&!retired.record,"retired generation-free version1 reinterpreted");
+  for(auto generation:{U(0),U(1),U(18),U(-1)}){auto mismatch=f;mismatch.sample.series_definition_generation=generation;SampleEncodeRejected(mismatch);
+    mismatch=f;mismatch.series.series_definition_generation=generation;SampleEncodeRejected(mismatch);SampleRejected(mismatch,original);}
+  {auto maximum=f;maximum.series.series_definition_generation=maximum.sample.series_definition_generation=U(-1);SampleRoundTrip(maximum);}
   for(auto at:{12u,272u,276u}){bad=original;Put(bad,at,0xffffffff,4);SampleRejected(f,bad);}
   bad=original;bad.push_back(0);Put(bad,8,bad.size(),4);SampleRejected(f,bad);
   f.sample.evidence_uuid=Id(20,4);SampleEncodeRejected(f);
@@ -138,7 +145,7 @@ void SampleRateHistogramAndLimits() {
   f.series.labels.clear();f.sample.labels.clear();f.sample.value.labels.clear();f.series.label_schema_uuid={};f.series.label_schema_generation=0;
   f.sample.label_schema_uuid={};f.sample.label_schema_generation=0;std::get<4>(f.series.series_key)={};std::get<5>(f.series.series_key).clear();
   f.sample.clock_quality=std::string(128,'c');f.sample.freshness_class=std::string(128,'f');
-  auto e=m::EncodeMetricRawSample(f.descriptor,f.series,f.sample);Check(e.ok()&&e.bytes.size()==1049112,"exact sample cap refused");
+  auto e=m::EncodeMetricRawSample(f.descriptor,f.series,f.sample);Check(e.ok()&&e.bytes.size()==1049120,"exact sample cap refused");
   if(e.ok())Check(m::DecodeMetricRawSample(f.descriptor,f.series,e.bytes).ok(),"maximum sample decode");
   f.sample.freshness_class.push_back('f');SampleEncodeRejected(f);
   Bytes oversized(1049113,0);SampleRejected(f,oversized);

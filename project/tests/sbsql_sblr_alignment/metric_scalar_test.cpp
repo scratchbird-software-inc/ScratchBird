@@ -128,7 +128,7 @@ void ActualHistory(){
     Decimal("9999999999999999999999999999999999",6111),true,std::string("a\0b",3),Id(6,1),m::MetricEnumValue{U(-1)}};
   for(const auto& scalar:values){auto d=Descriptor(m::MetricScalarTypeOf(scalar));if(d.value_type==T::enumeration)d.enum_values={U(-1)};
     static_cast<m::MetricDescriptorBinding&>(d)=binding;
-    const auto series=m::MakeMetricSeriesIdentity(d,{},policy,binding,Id(7));Check(series.ok(),"exact scalar series construction");if(!series.ok())continue;
+    const auto series=m::MakeMetricSeriesIdentity(d,{},policy,binding,Id(7),1);Check(series.ok(),"exact scalar series construction");if(!series.ok())continue;
     m::MetricValue value;value.family=d.family;value.type=d.type;value.value=scalar;
     const auto result=m::MakeMetricRawSampleRecord(d,*series.record,value,1,2,1);
     Check(result.ok()&&result.record->value.value==scalar,"actual sample lost exact typed scalar");

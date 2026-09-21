@@ -155,7 +155,9 @@ void SeriesBindings() {
   auto d0=Descriptor();m::MetricDescriptor d;static_cast<m::MetricDescriptorDefinition&>(d)=d0.definition;static_cast<m::MetricDescriptorBinding&>(d)=d0.binding;
   m::MetricRetentionPolicy policy;policy.policy_name="fixture";policy.policy_uuid=base.binding.retention_policy_uuid;policy.generation=base.binding.retention_policy_generation;
   const auto bound=c::BindCatalogMetricSeries(base,d,policy);
-  Check(bound.ok()&&bound.record->series_uuid==base.series_uuid&&bound.record->labels.size()==3,"catalog series not bound to existing identity");
+  Check(bound.ok()&&bound.record->series_uuid==base.series_uuid&&bound.record->series_definition_generation==base.generation&&bound.record->labels.size()==3,"catalog series not bound to existing identity/generation");
+  {auto later=base;later.generation=17;const auto selected=c::BindCatalogMetricSeries(later,d,policy);
+    Check(bound.ok()&&selected.ok()&&selected.record->series_definition_generation==17&&selected.record->series_uuid==base.series_uuid&&selected.record->series_key==bound.record->series_key,"catalog owner did not pass exact generation independently of stable key");}
   for(unsigned which=0;which<9;++which){auto r=base;auto descriptor=d;auto p=policy;
     if(which==0)descriptor.metric_uuid.bytes[15]++;if(which==1)descriptor.descriptor_generation++;
     if(which==2)descriptor.labels[0].value_type=m::MetricLabelType::uuid_value;if(which==3)r.labels.erase(r.labels.begin()+1);

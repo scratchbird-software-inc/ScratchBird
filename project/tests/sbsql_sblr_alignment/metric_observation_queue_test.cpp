@@ -31,6 +31,7 @@ void QueueIdentityAndLeases(){
   auto first=q->TryAcquire();Check(first.ok()&&first.lease.observation->bytes==expected&&
       first.lease.observation->binding==static_cast<const m::MetricHistoryBinding&>(f.sample)&&
       first.lease.observation->sample_uuid==f.sample.sample_uuid&&first.lease.observation->series_uuid==f.sample.series_uuid&&
+      first.lease.observation->series_definition_generation==17&&
       first.lease.observation->source_sequence==f.sample.source_sequence,"queue changed exact sample binding/bytes");
   Check(q->TryAcquire().error==QE::busy,"head acquired twice");
   Check(q->TryEnqueue(f.descriptor,f.series,f.sample)==QE::duplicate,"duplicate queued identity accepted");
@@ -59,10 +60,11 @@ void QueueCapacityAndScope(){
   Check(q->TryRemove(next.lease)==QE::none,"second remove");next=q->TryAcquire();
   Check(next.ok()&&next.lease.observation->sample_uuid==third.sample_uuid,"queue lost third sample");
   auto small=Queue(f,3,bytes-1);Check(small->TryEnqueue(f.descriptor,f.series,f.sample)==QE::full&&small->Stats().queued==0,"oversized sample partially enqueued");
-  for(unsigned n=0;n<6;++n){auto sample=f.sample;
+  for(unsigned n=0;n<7;++n){auto sample=f.sample;
     if(n==0)sample.database_uuid=Id(55);if(n==1)sample.node_uuid=Id(55);
     if(n==2)sample.cluster_uuid=Id(55);if(n==3)sample.publication_time_utc_ns=9;
     if(n==4)sample.descriptor_generation++;if(n==5)sample.value.value=std::monostate{};
+    if(n==6)sample.series_definition_generation++;
     Check(q->TryEnqueue(f.descriptor,f.series,sample)==QE::invalid_observation,"invalid scope/published/binding sample enqueued");
   }
   const auto local=Queue(f);f.descriptor.cluster_only=true;f.descriptor.namespace_path="cluster.sys.metrics.test";

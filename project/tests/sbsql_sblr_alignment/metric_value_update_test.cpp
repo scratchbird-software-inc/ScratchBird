@@ -143,7 +143,7 @@ void Updates(){
     binding.visibility_policy_uuid=Id(3);binding.visibility_policy_generation=1;binding.database_uuid=Id(4);binding.node_uuid=Id(5);
     m::MetricRetentionPolicy policy;policy.policy_uuid=Id(2);policy.generation=1;policy.policy_name="typed-histogram";
     static_cast<m::MetricDescriptorBinding&>(d)=binding;
-    const auto series=m::MakeMetricSeriesIdentity(d,{},policy,binding,Id(6));Check(series.ok(),"histogram history binding");
+    const auto series=m::MakeMetricSeriesIdentity(d,{},policy,binding,Id(6),1);Check(series.ok(),"histogram history binding");
     if(series.ok()){
       const auto sample=m::MakeMetricRawSampleRecord(d,*series.record,*current,1,2,1);
       Check(sample.ok()&&Same(sample.record->value,*current),"real history factory lost typed histogram state");

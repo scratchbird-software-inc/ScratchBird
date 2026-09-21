@@ -584,7 +584,7 @@ MetricValidationResult MetricRegistry::RegisterSeries(const MetricSeriesIdentity
   if(descriptor.cluster_only||descriptor.readiness!=MetricReadiness::implemented||
       series.database_uuid!=binding.database_uuid||series.node_uuid!=binding.node_uuid||!series.cluster_uuid.is_nil())
     return MetricError("METRIC.VALUE_INVALID", "local observation binding mismatch");
-  const auto canonical=MakeMetricSeriesIdentity(descriptor,series.labels,policy,series,series.series_uuid);
+  const auto canonical=MakeMetricSeriesIdentity(descriptor,series.labels,policy,series,series.series_uuid,series.series_definition_generation);
   if(!canonical.ok()||canonical.record->series_key!=series.series_key||
       canonical.record->metric_family!=series.metric_family||canonical.record->namespace_path!=series.namespace_path||
       canonical.record->producer_owner!=series.producer_owner||canonical.record->scope_class!=series.scope_class||

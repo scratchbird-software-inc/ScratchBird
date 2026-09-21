@@ -203,7 +203,7 @@ void SeriesSelection() {
   Check(result.ok(),"valid series dependency snapshot refused");
   if(result.ok()) {
     const auto& r=*result.binding;
-    Check(r.series.series_uuid==Id(p::UuidKind::object,81).value&&r.definition.series_uuid==r.series.series_uuid,
+    Check(r.series.series_uuid==Id(p::UuidKind::object,81).value&&r.definition.series_uuid==r.series.series_uuid&&r.series.series_definition_generation==r.definition.generation,
           "series identity synthesized or replaced");
     Check(r.series_metadata.record.payload==original&&r.dependencies.metric.visibility_policy.record.payload==f.rows[3].record.payload,
           "selected series or opaque security metadata replaced");
