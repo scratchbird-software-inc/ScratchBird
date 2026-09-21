@@ -7,11 +7,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "physical_mga_cow_store.hpp"
-#include "catalog_schema_definition.hpp"
-#include "catalog_metric_retention_policy.hpp"
-#include "catalog_metric_descriptor.hpp"
-#include "catalog_metric_label_schema.hpp"
-#include "catalog_metric_series.hpp"
 
 #include "database_format.hpp"
 #include "disk_device.hpp"
@@ -1852,19 +1847,9 @@ DecodedNativeCatalogRows DecodeNativeCatalogRows(const RowDataPageBody& body,
   }
   for (const auto& row : body.rows) {
     const auto prior=decoded.metadata.find(row.previous_version_uuid);
-    if (prior!=decoded.metadata.end() && !catalog::CatalogSchemaDefinitionPreservesOrigin(
-        prior->second,decoded.metadata.at(row.version_uuid)))
-      return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.schema_origin_changed");
     if (prior!=decoded.metadata.end()) {
-      if (!catalog::CatalogMetricSeriesPreservesOrigin(prior->second,decoded.metadata.at(row.version_uuid)))
-        return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.metric_series_origin_changed");
-      if (!catalog::CatalogMetricLabelSchemaPreservesOrigin(prior->second,decoded.metadata.at(row.version_uuid)))
-        return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.metric_label_schema_origin_changed");
-      if (!catalog::CatalogMetricDescriptorPreservesOrigin(prior->second,decoded.metadata.at(row.version_uuid)))
-        return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.metric_descriptor_origin_changed");
-      if (!catalog::CatalogMetricRetentionPolicyPreservesOrigin(
-          prior->second,decoded.metadata.at(row.version_uuid)))
-        return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.metric_retention_origin_changed");
+      if (!catalog::CatalogMetadataPreservesFamilyOrigin(prior->second,decoded.metadata.at(row.version_uuid)))
+        return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.family_origin_changed");
       const auto before=decoded.names.find(row.previous_version_uuid),after=decoded.names.find(row.version_uuid);
       if ((before!=decoded.names.end() || after!=decoded.names.end()) &&
           (before==decoded.names.end() || after==decoded.names.end() ||
@@ -2251,11 +2236,7 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
               !catalog::CatalogNamePayloadPreservesIdentity(old_name.record->payload,new_name.record->payload))
             return fail(E::invalid_chain);
         }
-        if (!catalog::CatalogSchemaDefinitionPreservesOrigin(before,after) ||
-            !catalog::CatalogMetricRetentionPolicyPreservesOrigin(before,after) ||
-            !catalog::CatalogMetricDescriptorPreservesOrigin(before,after) ||
-            !catalog::CatalogMetricSeriesPreservesOrigin(before,after) ||
-            !catalog::CatalogMetricLabelSchemaPreservesOrigin(before,after) ||
+        if (!catalog::CatalogMetadataPreservesFamilyOrigin(before,after) ||
             before.definition_version==std::numeric_limits<u64>::max() || after.definition_version!=before.definition_version+1 ||
             after.schema_epoch<before.schema_epoch || after.security_epoch<before.security_epoch || after.resource_epoch<before.resource_epoch ||
             after.catalog_generation<before.catalog_generation || after.dependency_generation<before.dependency_generation ||
@@ -2508,11 +2489,7 @@ PreparedNativeCatalogMutation PrepareNativeCatalogVersion(
         previous->metadata.record.header.object_uuid.value != request.metadata.record.header.object_uuid.value ||
         previous->metadata.record.header.kind != request.metadata.record.header.kind ||
         previous->metadata.record.header.deleted ||
-        !catalog::CatalogSchemaDefinitionPreservesOrigin(previous->metadata,request.metadata) ||
-        !catalog::CatalogMetricRetentionPolicyPreservesOrigin(previous->metadata,request.metadata) ||
-        !catalog::CatalogMetricDescriptorPreservesOrigin(previous->metadata,request.metadata) ||
-        !catalog::CatalogMetricSeriesPreservesOrigin(previous->metadata,request.metadata) ||
-        !catalog::CatalogMetricLabelSchemaPreservesOrigin(previous->metadata,request.metadata) ||
+        !catalog::CatalogMetadataPreservesFamilyOrigin(previous->metadata,request.metadata) ||
         (is_name && (!previous->name_payload ||
          !catalog::CatalogNamePayloadPreservesIdentity(*previous->name_payload,*request.name_payload))) ||
         previous->metadata.definition_version == std::numeric_limits<u64>::max() ||

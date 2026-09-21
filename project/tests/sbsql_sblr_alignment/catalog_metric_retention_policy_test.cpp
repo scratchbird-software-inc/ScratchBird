@@ -12,9 +12,16 @@ namespace m = scratchbird::core::metrics;
 namespace p = scratchbird::core::platform;
 namespace {
 unsigned checks = 0, failures = 0;
+
 void Check(bool ok, const char* why) {
   ++checks;
   if (!ok) { ++failures; std::cerr << "FAIL " << why << '\n'; }
+}
+bool SharedRetentionOrigin(const c::CatalogMetadataVersion& a,const c::CatalogMetadataVersion& b) {
+  const bool family=c::CatalogMetricRetentionPolicyPreservesOrigin(a,b);
+  const bool shared=c::CatalogMetadataPreservesFamilyOrigin(a,b);
+  Check(shared==family,"shared native origin dispatcher differs from family contract");
+  return family;
 }
 p::TypedUuid Id(p::UuidKind kind, unsigned char tag) {
   return {kind, p::Uuid{{1,2,3,4,5,6,0x71,8,0x89,10,11,12,13,14,15,tag}}};
@@ -151,12 +158,12 @@ void Binding() {
   successor.creator_transaction_uuid = Id(p::UuidKind::transaction, 12);
   successor.creator_local_transaction_id = 12;
   Check(c::EncodeCatalogMetadataVersion(successor).ok() &&
-        c::CatalogMetricRetentionPolicyPreservesOrigin(initial, successor), "valid successor refused");
+        SharedRetentionOrigin(initial, successor), "valid successor refused");
   successor.record.header.deleted = true; successor.lifecycle = c::CatalogObjectLifecycle::dropped;
   successor.status = c::CatalogObjectStatus::retired;
   successor.retired_transaction_uuid = successor.creator_transaction_uuid;
   Check(c::EncodeCatalogMetadataVersion(successor).ok() &&
-        c::CatalogMetricRetentionPolicyPreservesOrigin(initial, successor), "retirement lost original creation");
+        SharedRetentionOrigin(initial, successor), "retirement lost original creation");
   for (unsigned which = 0; which < 4; ++which) {
     auto changed = next;
     if (which == 0) changed.origin_transaction_uuid.value.bytes[15]++;
@@ -166,12 +173,12 @@ void Binding() {
     auto other = Metadata(changed);
     other.creator_transaction_uuid = successor.creator_transaction_uuid; other.creator_local_transaction_id = 12;
     Check(c::EncodeCatalogMetadataVersion(other).ok(), "individually valid changed-origin fixture rejected");
-    Check(!c::CatalogMetricRetentionPolicyPreservesOrigin(initial, other), "successor changed immutable origin");
+    Check(!SharedRetentionOrigin(initial, other), "successor changed immutable origin");
   }
   auto other = initial; other.object_subtype = "generic"; other.record.payload = "unrelated-family";
-  Check(!c::CatalogMetricRetentionPolicyPreservesOrigin(initial, other) &&
-        !c::CatalogMetricRetentionPolicyPreservesOrigin(other, initial), "family swap bypassed origin");
-  Check(c::CatalogMetricRetentionPolicyPreservesOrigin(other, other), "unrelated policy family redefined");
+  Check(!SharedRetentionOrigin(initial, other) &&
+        !SharedRetentionOrigin(other, initial), "family swap bypassed origin");
+  Check(SharedRetentionOrigin(other, other), "unrelated policy family redefined");
   const auto typed = c::EncodeCatalogTypedRecord(initial.record, 3);
   Check(typed.ok() && c::DecodeCatalogTypedRecord(typed.row).ok(), "typed policy header round trip failed");
   for (unsigned which = 0; which < 3; ++which) {

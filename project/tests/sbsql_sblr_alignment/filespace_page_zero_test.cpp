@@ -3056,7 +3056,8 @@ struct CatalogTestPin {
   }
   ~CatalogTestPin(){mga::RevokePublishedSnapshotVector(published.descriptor.snapshot_uuid);mga::ReleasePublishedSnapshotVector(published.descriptor.snapshot_uuid);}
 };
-void CanonicalCatalogVersionStaging(bool metric_policy=false){using E=db::NativeCatalogVersionStageError;using S=page::NativeAllocationState;
+void CanonicalCatalogVersionStaging(unsigned metric_family=0){using E=db::NativeCatalogVersionStageError;using S=page::NativeAllocationState;
+  const bool metric_policy=metric_family==1,metric_series=metric_family==2;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=5;++role){const unsigned q=(p+1)%5;const bool primary=role<=4;
     Fixture fixture;disk::FileDevice first,second;auto z1=Example(p,primary?role:1),z2=Example(q,5);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
     z1.free_pages=z2.free_pages=z1.preallocated_pages=z2.preallocated_pages=0;
@@ -3079,6 +3080,27 @@ void CanonicalCatalogVersionStaging(bool metric_policy=false){using E=db::Native
       const auto payload=catalog::EncodeCatalogMetricRetentionPolicy(record);Check(payload.ok(),"encode actual metric policy definition");
       metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
     };
+    const auto bind_series=[](auto& metadata,const catalog::CatalogMetricSeries* prior=nullptr){
+      catalog::CatalogMetricSeries record;
+      if(prior)record=*prior;
+      else {
+        record.origin_transaction_uuid=metadata.creator_transaction_uuid;record.origin_local_transaction_id=metadata.creator_local_transaction_id;
+        record.binding.database_uuid=Id(1);record.binding.node_uuid=Id(233);
+        record.binding.metric_uuid=Id(234);record.binding.descriptor_generation=1;
+        record.binding.label_schema_uuid=Id(235);record.binding.label_schema_generation=1;
+        record.binding.retention_policy_uuid=Id(236);record.binding.retention_policy_generation=1;
+        record.binding.visibility_policy_uuid=Id(237);record.binding.visibility_policy_generation=1;
+        record.labels={{"dimension",scratchbird::core::metrics::MetricLabelType::text,std::string("actual-native-series")}};
+      }
+      record.series_uuid=metadata.record.header.object_uuid.value;record.generation=metadata.definition_version;
+      metadata.record.header.kind=catalog::CatalogRecordKind::metric_series;metadata.record.header.parent_uuid.kind=platform::UuidKind::object;
+      metadata.default_name_uuid={platform::UuidKind::object,Id(231)};metadata.name_vector_uuid={platform::UuidKind::object,Id(232)};
+      metadata.object_subtype="metric_series";
+      const auto payload=catalog::EncodeCatalogMetricSeries(record);Check(payload.ok(),"encode native series definition");
+      metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
+    };
+    if(metric_series){auto metadata=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(metadata.ok(),"source metadata for native series");
+      bind_series(metadata.record);const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"native series source binding");source_leaf.body.rows[0].cells[0].value.payload=encoded.bytes;}
     if(metric_policy){auto metadata=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(metadata.ok(),"source metadata for native policy");
       bind_policy(metadata.record);const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"native metric family source binding");source_leaf.body.rows[0].cells[0].value.payload=encoded.bytes;}
     auto catalog_root=RootExample(p);catalog_root.creator_transaction_uuid=Id(98);
@@ -3112,6 +3134,7 @@ void CanonicalCatalogVersionStaging(bool metric_policy=false){using E=db::Native
     db::NativeCatalogVersionMutation request;request.relation_uuid=leaf.body.relation_uuid;request.page_number=21;request.transaction=owner;request.metadata=decoded.record;
     request.metadata.record.header.row_uuid.value=Id(210);request.metadata.record.header.object_uuid.value=Id(211);
     if(metric_policy)bind_policy(request.metadata);
+    if(metric_series)bind_series(request.metadata);
     const auto create=request;const auto source_bytes=actual(first,30,sizes[p]);const auto root_bytes=actual(first,12,sizes[p]);const auto zero_bytes=actual(first,0,sizes[p]);
     const auto stage=[&](u64 limit){return db::StageNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},snapshot.pin,request,leaf,limit);};
     const auto empty=[&](const auto& r){Check(!r.ok()&&!r.row&&!r.stage.receipt,"failed version staging returns no receipt");};
@@ -3132,9 +3155,46 @@ void CanonicalCatalogVersionStaging(bool metric_policy=false){using E=db::Native
     reset();auto result=stage(budget);verify(result,1,platform::Uuid{},false);
     reset();request.metadata=decoded.record;request.expected_version_uuid=Id(170);request.metadata.definition_version=2;
     if(metric_policy){const auto origin=catalog::DecodeCatalogMetricRetentionPolicy(decoded.record.record.payload);Check(origin.ok(),"load persisted policy origin");bind_policy(request.metadata,&*origin.record);}
+    if(metric_series){const auto origin=catalog::DecodeCatalogMetricSeries(decoded.record.record.payload);Check(origin.ok(),"load persisted series origin");bind_series(request.metadata,&*origin.record);}
     result=stage(budget);verify(result,2,Id(170),false);
     reset();request.metadata.record.header.deleted=true;request.metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;request.metadata.status=catalog::CatalogObjectStatus::retired;request.metadata.retired_transaction_uuid=owner.transaction_uuid;
     result=stage(budget);verify(result,2,Id(170),true);
+    if(metric_series){
+      const auto original=catalog::DecodeCatalogMetricSeries(decoded.record.record.payload);Check(original.ok(),"retained series origin");
+      request.metadata=decoded.record;request.metadata.definition_version=2;bind_series(request.metadata,&*original.record);
+      const auto replacement=request;
+      for(unsigned bad=0;bad<9;++bad){reset();request=replacement;
+        auto changed=catalog::DecodeCatalogMetricSeries(request.metadata.record.payload);Check(changed.ok(),"replacement series payload");
+        if(bad==0)changed.record->origin_transaction_uuid.value=Id(240);
+        if(bad==1)--changed.record->origin_local_transaction_id;
+        if(bad==2)changed.record->binding.database_uuid=Id(240);
+        if(bad==3)changed.record->binding.node_uuid=Id(240);
+        if(bad==4)changed.record->binding.metric_uuid=Id(240);
+        if(bad==5)changed.record->binding.label_schema_uuid=Id(240);
+        if(bad==6)changed.record->labels[0].key="changed dimension";
+        if(bad==7)changed.record->labels[0].value=std::string("changed value");
+        if(bad==8){request.metadata.record.header.kind=catalog::CatalogRecordKind::table_descriptor;request.metadata.object_subtype="table";request.metadata.record.payload="unrelated";}
+        else {const auto payload=catalog::EncodeCatalogMetricSeries(*changed.record);Check(payload.ok(),"changed series individually well-formed");request.metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());}
+        Check(catalog::EncodeCatalogMetadataVersion(request.metadata).ok(),"series attack has valid common envelope");
+        const auto refused=stage(budget);empty(refused);
+        Check(refused.error==(bad==8?E::row_reserved:E::stale_version)&&actual(target,21,sizes[profile])==blank,"native checkpoint writer refuses changed series origin/key before writes");unchanged();
+      }
+      request=replacement;
+      if(p==0&&role==1){
+        for(unsigned mode=1;mode<=2;++mode){reset();stage_write_fault=mode;empty(stage(budget));Check(!stage_write_fault,"series physical write failure consumed");unchanged();}
+        reset();stage_sync_fault=1;empty(stage(budget));Check(!stage_sync_fault,"series physical sync failure consumed");unchanged();
+      }
+      reset();auto updated=*original.record;updated.generation=2;updated.binding.retention_policy_generation++;
+      bind_series(request.metadata,&updated);result=stage(budget);verify(result,2,Id(170),false);
+      const auto retained=db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile]));
+      const auto stored=catalog::DecodeCatalogMetricSeries(retained.metadata.begin()->second.record.payload);
+      Check(stored.ok()&&stored.record->series_uuid==original.record->series_uuid&&stored.record->generation==2&&
+        stored.record->binding.retention_policy_generation==2&&stored.record->labels==original.record->labels&&
+        stored.record->origin_transaction_uuid.value==original.record->origin_transaction_uuid.value&&
+        stored.record->origin_local_transaction_id==original.record->origin_local_transaction_id,
+        "actual series successor retains binary key/origin across policy generation");
+      continue;
+    }
     if(metric_policy){
       const auto original=catalog::DecodeCatalogMetricRetentionPolicy(decoded.record.record.payload);Check(original.ok(),"retained metric origin");
       request.metadata=decoded.record;request.metadata.definition_version=2;bind_policy(request.metadata,&*original.record);
@@ -4338,6 +4398,9 @@ int main(int argc,char** argv) {
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--catalog-version-stage-only"){
     try{CanonicalCatalogVersionStaging();std::cout<<"catalog version stage checks="<<checks<<" failures=0\n";return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==2&&std::string_view(argv[1])=="--catalog-metric-series-stage-only"){
+    try{CanonicalCatalogVersionStaging(2);std::cout<<"metric series native stage checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==2&&std::string_view(argv[1])=="--row-data-stage-only"){
     try {CanonicalRowDataStaging();std::cout<<"PASS row-data-stage checks="<<checks<<'\n';return 0;}

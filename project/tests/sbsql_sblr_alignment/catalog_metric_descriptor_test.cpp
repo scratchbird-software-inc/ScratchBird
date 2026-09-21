@@ -36,7 +36,14 @@ namespace m=scratchbird::core::metrics;
 namespace p=scratchbird::core::platform;
 namespace {
 unsigned checks=0,failures=0;
+
 void Check(bool ok,const char* why){++checks;if(!ok){++failures;std::cerr<<"FAIL "<<why<<'\n';}}
+bool SharedDescriptorOrigin(const c::CatalogMetadataVersion& a,const c::CatalogMetadataVersion& b) {
+  const bool family=c::CatalogMetricDescriptorPreservesOrigin(a,b);
+  const bool shared=c::CatalogMetadataPreservesFamilyOrigin(a,b);
+  Check(shared==family,"shared native origin dispatcher differs from family contract");
+  return family;
+}
 p::TypedUuid Id(p::UuidKind kind,unsigned tag){return {kind,p::Uuid{{1,2,3,4,5,6,0x71,8,0x89,10,11,12,13,14,15,static_cast<p::byte>(tag)}}};}
 void Put(std::string& s,std::size_t at,p::u64 value,unsigned width){for(unsigned i=0;i<width;++i)s.at(at+i)=char(value>>(8*i));}
 p::u64 Get(const std::string& s,std::size_t at,unsigned width){p::u64 value=0;for(unsigned i=0;i<width;++i)value|=p::u64(static_cast<unsigned char>(s.at(at+i)))<<(8*i);return value;}
@@ -235,21 +242,21 @@ void Binding(){
   }
   auto next=Descriptor();next.binding.descriptor_generation=2;
   auto successor=Metadata(next);successor.creator_transaction_uuid=Id(p::UuidKind::transaction,22);successor.creator_local_transaction_id=12;
-  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&c::CatalogMetricDescriptorPreservesOrigin(initial,successor),"valid successor refused");
+  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&SharedDescriptorOrigin(initial,successor),"valid successor refused");
   successor.record.header.deleted=true;successor.lifecycle=c::CatalogObjectLifecycle::dropped;successor.status=c::CatalogObjectStatus::retired;
   successor.retired_transaction_uuid=successor.creator_transaction_uuid;
-  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&c::CatalogMetricDescriptorPreservesOrigin(initial,successor),"retirement lost origin");
+  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&SharedDescriptorOrigin(initial,successor),"retirement lost origin");
   for(unsigned i=0;i<4;++i){
     auto r=next;if(i==0)r.origin_transaction_uuid.value.bytes[15]++;if(i==1)r.origin_local_transaction_id--;
     if(i==2)r.binding.metric_uuid.bytes[15]++;
     if(i==3){r.definition.cluster_only=true;r.definition.namespace_path="cluster.sys.metrics.changed";}
     auto v=Metadata(r);v.creator_transaction_uuid=successor.creator_transaction_uuid;v.creator_local_transaction_id=12;
     Check(c::EncodeCatalogMetadataVersion(v).ok(),"individually valid changed-origin fixture refused");
-    Check(!c::CatalogMetricDescriptorPreservesOrigin(initial,v),"version changed immutable origin");
+    Check(!SharedDescriptorOrigin(initial,v),"version changed immutable origin");
   }
   auto other=initial;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype="table";other.record.payload="unrelated";
-  Check(!c::CatalogMetricDescriptorPreservesOrigin(initial,other)&&!c::CatalogMetricDescriptorPreservesOrigin(other,initial),"family swap bypassed origin");
-  Check(c::CatalogMetricDescriptorPreservesOrigin(other,other),"unrelated family redefined");
+  Check(!SharedDescriptorOrigin(initial,other)&&!SharedDescriptorOrigin(other,initial),"family swap bypassed origin");
+  Check(SharedDescriptorOrigin(other,other),"unrelated family redefined");
   const auto wrapped=c::EncodeCatalogMetadataVersion(initial);
   if(wrapped.ok())for(std::size_t at:{std::size_t(32),std::size_t(127)}){
     auto bytes=wrapped.bytes;bytes[at]++;std::fill(bytes.begin()+320,bytes.begin()+352,0);

@@ -92,6 +92,12 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
 CatalogMetadataVersionCodecResult DecodeCatalogMetadataVersion(
     const std::vector<scratchbird::core::platform::byte>& bytes);
 
+// Complete composition of the admitted definition-family continuity checks.
+// Callers retain common version/transaction checks and name-residency checks.
+// May propagate allocation failure; never converts it into successful admission.
+bool CatalogMetadataPreservesFamilyOrigin(
+    const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor);
+
 struct CatalogRecordCodecResult {
   Status status;
   CatalogTypedRecord record;

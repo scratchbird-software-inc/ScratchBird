@@ -18,6 +18,7 @@ void* operator new(std::size_t size) {
   throw std::bad_alloc();
 }
 void* operator new[](std::size_t n) { return ::operator new(n); }
+
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p,std::size_t) noexcept { std::free(p); }
@@ -27,6 +28,12 @@ namespace c=scratchbird::core::catalog;
 namespace p=scratchbird::core::platform;
 unsigned checks=0,failures=0;
 void Check(bool ok,const char* why) { ++checks; if(!ok) { ++failures; std::cerr<<"FAIL "<<why<<'\n'; } }
+bool SharedSchemaOrigin(const c::CatalogMetadataVersion& a,const c::CatalogMetadataVersion& b) {
+  const bool family=c::CatalogSchemaDefinitionPreservesOrigin(a,b);
+  const bool shared=c::CatalogMetadataPreservesFamilyOrigin(a,b);
+  Check(shared==family,"shared native origin dispatcher differs from family contract");
+  return family;
+}
 p::TypedUuid Id(p::UuidKind kind,unsigned char tag) {
   return {kind,p::Uuid{{1,2,3,4,5,6,0x71,8,0x89,10,11,12,13,14,15,tag}}};
 }
@@ -151,14 +158,28 @@ int main() {
     m.retired_transaction_uuid=m.creator_transaction_uuid;
     Check(c::EncodeCatalogMetadataVersion(m).ok(),"common quarantined retirement state remains representable");}
   auto successor=metadata;successor.definition_version=2;successor.creator_local_transaction_id=12;successor.creator_transaction_uuid=Id(p::UuidKind::transaction,21);
-  Check(c::CatalogSchemaDefinitionPreservesOrigin(metadata,successor),"successor preserves original creation independently of version creator");
+  Check(SharedSchemaOrigin(metadata,successor),"successor preserves original creation independently of version creator");
+  {auto retired=successor;retired.record.header.deleted=true;retired.lifecycle=c::CatalogObjectLifecycle::dropped;
+    retired.status=c::CatalogObjectStatus::retired;retired.retired_transaction_uuid=retired.creator_transaction_uuid;
+    Check(c::EncodeCatalogMetadataVersion(retired).ok()&&SharedSchemaOrigin(metadata,retired),"schema retirement preserves original creation");}
+  {auto other=metadata;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype="table";other.record.payload="unrelated";
+    Check(!SharedSchemaOrigin(metadata,other)&&!SharedSchemaOrigin(other,metadata),"shared schema origin refuses family swaps");
+    Check(SharedSchemaOrigin(other,other),"shared schema origin preserves unrelated families");}
+  unsigned origin_faults=0;
+  for(long n=0;n<1000;++n){bool threw=false;allocation_budget=n;
+    try {const bool admitted=c::CatalogMetadataPreservesFamilyOrigin(metadata,successor);allocation_budget=-1;
+      Check(admitted,"shared origin rejects unchanged schema after allocation recovery");}
+    catch(const std::bad_alloc&){allocation_budget=-1;threw=true;++origin_faults;}
+    if(!threw)break;
+  }
+  Check(origin_faults>0&&origin_faults<999,"shared origin propagates every injected allocation failure");
   for(unsigned fault=0;fault<3;++fault){auto changed=d;
     if(fault==0)changed.database_catalog_object_uuid=Id(p::UuidKind::object,20);
     if(fault==1)changed.origin_transaction_uuid=Id(p::UuidKind::transaction,20);
     if(fault==2)changed.origin_local_transaction_id=10;
     successor.record.payload=Golden(changed);
     Check(c::CatalogSchemaDefinitionMatchesMetadata(successor),"individually valid successor needs history check");
-    Check(!c::CatalogSchemaDefinitionPreservesOrigin(metadata,successor),"database/origin replacement refused");
+    Check(!SharedSchemaOrigin(metadata,successor),"database/origin replacement refused");
   }
   c::CatalogSchemaRecord seed;seed.schema_object_uuid=d.schema_object_uuid;seed.parent_object_uuid=d.database_catalog_object_uuid;
   seed.root_schema=true;seed.path_cache="users";seed.name_cache="users";

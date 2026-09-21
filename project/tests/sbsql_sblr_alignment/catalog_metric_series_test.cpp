@@ -45,6 +45,13 @@ c::CatalogMetadataVersion SeriesMetadata(const c::CatalogMetricSeries& r) {
   v.creator_transaction_uuid=r.origin_transaction_uuid;v.creator_local_transaction_id=r.origin_local_transaction_id;
   v.authority_scope=r.binding.cluster_uuid.is_nil()?c::CatalogAuthorityScope::local:c::CatalogAuthorityScope::cluster;return v;
 }
+bool SharedSeriesOrigin(const c::CatalogMetadataVersion& a,const c::CatalogMetadataVersion& b) {
+  const bool family=c::CatalogMetricSeriesPreservesOrigin(a,b);
+  const bool shared=c::CatalogMetadataPreservesFamilyOrigin(a,b);
+  Check(shared==family,"shared native origin dispatcher differs from family contract");
+  return family;
+}
+
 void SeriesRefused(std::string_view bytes) {
   const auto result=c::DecodeCatalogMetricSeries(bytes);Check(!result.ok()&&!result.record,"malformed series decoded");
 }
@@ -128,9 +135,9 @@ void SeriesBindings() {
   }
   auto next=base;next.generation=2;next.binding.retention_policy_generation++;
   auto successor=SeriesMetadata(next);successor.creator_transaction_uuid=Id(p::UuidKind::transaction,80);successor.creator_local_transaction_id=12;
-  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&c::CatalogMetricSeriesPreservesOrigin(metadata,successor),"policy generation incorrectly replaced series identity");
+  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&SharedSeriesOrigin(metadata,successor),"policy generation incorrectly replaced series identity");
   successor.record.header.deleted=true;successor.lifecycle=c::CatalogObjectLifecycle::dropped;successor.status=c::CatalogObjectStatus::retired;successor.retired_transaction_uuid=successor.creator_transaction_uuid;
-  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&c::CatalogMetricSeriesPreservesOrigin(metadata,successor),"series retirement lost origin");
+  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&SharedSeriesOrigin(metadata,successor),"series retirement lost origin");
   for(unsigned which=0;which<11;++which){auto r=next;
     if(which==0)r.series_uuid.bytes[15]++;if(which==1)r.binding.database_uuid.bytes[15]++;
     if(which==2)r.binding.node_uuid.bytes[15]++;if(which==3)r.binding.cluster_uuid=Id(p::UuidKind::object,90).value;
@@ -140,11 +147,11 @@ void SeriesBindings() {
     if(which==9)r.origin_transaction_uuid.value.bytes[15]++;if(which==10)r.origin_local_transaction_id--;
     auto v=SeriesMetadata(r);v.creator_transaction_uuid=successor.creator_transaction_uuid;v.creator_local_transaction_id=12;
     Check(c::EncodeCatalogMetadataVersion(v).ok(),"series changed-origin fixture invalid");
-    Check(!c::CatalogMetricSeriesPreservesOrigin(metadata,v),"series immutable key or origin changed");
+    Check(!SharedSeriesOrigin(metadata,v),"series immutable key or origin changed");
   }
   auto other=metadata;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype="other";other.record.payload="unrelated";
-  Check(c::CatalogMetricSeriesPreservesOrigin(other,other),"series changed unrelated family");
-  Check(!c::CatalogMetricSeriesPreservesOrigin(metadata,other)&&!c::CatalogMetricSeriesPreservesOrigin(other,metadata),"series family swap admitted");
+  Check(SharedSeriesOrigin(other,other),"series changed unrelated family");
+  Check(!SharedSeriesOrigin(metadata,other)&&!SharedSeriesOrigin(other,metadata),"series family swap admitted");
   auto d0=Descriptor();m::MetricDescriptor d;static_cast<m::MetricDescriptorDefinition&>(d)=d0.definition;static_cast<m::MetricDescriptorBinding&>(d)=d0.binding;
   m::MetricRetentionPolicy policy;policy.policy_name="fixture";policy.policy_uuid=base.binding.retention_policy_uuid;policy.generation=base.binding.retention_policy_generation;
   const auto bound=c::BindCatalogMetricSeries(base,d,policy);

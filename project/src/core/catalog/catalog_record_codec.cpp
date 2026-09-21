@@ -425,4 +425,13 @@ DiagnosticRecord MakeCatalogRecordCodecDiagnostic(Status status,
                         "core.catalog.record_codec");
 }
 
+bool CatalogMetadataPreservesFamilyOrigin(
+    const CatalogMetadataVersion& previous, const CatalogMetadataVersion& successor) {
+  return CatalogSchemaDefinitionPreservesOrigin(previous,successor) &&
+      CatalogMetricRetentionPolicyPreservesOrigin(previous,successor) &&
+      CatalogMetricDescriptorPreservesOrigin(previous,successor) &&
+      CatalogMetricLabelSchemaPreservesOrigin(previous,successor) &&
+      CatalogMetricSeriesPreservesOrigin(previous,successor);
+}
+
 }  // namespace scratchbird::core::catalog

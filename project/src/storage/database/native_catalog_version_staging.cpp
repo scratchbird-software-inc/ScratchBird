@@ -1,10 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "physical_mga_cow_store.hpp"
-#include "catalog_schema_definition.hpp"
-#include "catalog_metric_retention_policy.hpp"
-#include "catalog_metric_descriptor.hpp"
-#include "catalog_metric_label_schema.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <algorithm>
@@ -48,8 +44,12 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
     if(!validated.ok()){auto r=Fail(E::invalid_metadata);r.diagnostic=validated.diagnostic;return r;}
     auto devices=supplied;std::sort(devices.begin(),devices.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
     std::set<disk::FileDevice*> handles;std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(devices.size());
-    for(std::size_t i=0;i<devices.size();++i){const auto& f=devices[i];if(!f.device||!handles.insert(f.device).second||
-        (i&&devices[i-1].filespace_uuid==f.filespace_uuid))return Fail(E::invalid_request);guards.push_back(f.device->AcquireOperationGuard());}
+    for(std::size_t i=0;i<devices.size();++i){
+      const auto& f=devices[i];
+      if(!f.device||!handles.insert(f.device).second||
+          (i&&devices[i-1].filespace_uuid==f.filespace_uuid))return Fail(E::invalid_request);
+      guards.push_back(f.device->AcquireOperationGuard());
+    }
     auto source=ReadNativePinnedCatalogVersionsFromOpenDevices(h.database_uuid,devices,checkpoint,selector,role,binding,owner,pin,budget);
     if(!source.ok()){auto r=Fail(E::source_failure);r.source_error=source.error;r.diagnostic=source.diagnostic;return r;}
     const auto snapshot_uuid=source.snapshot_uuid;
@@ -79,10 +79,7 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
           previous->metadata.definition_version==std::numeric_limits<u64>::max()||desired.definition_version!=previous->metadata.definition_version+1||
           desired.schema_epoch<previous->metadata.schema_epoch||desired.security_epoch<previous->metadata.security_epoch||desired.resource_epoch<previous->metadata.resource_epoch||
           desired.catalog_generation<previous->metadata.catalog_generation||desired.dependency_generation<previous->metadata.dependency_generation||desired.invalidation_generation<previous->metadata.invalidation_generation||
-          !catalog::CatalogSchemaDefinitionPreservesOrigin(previous->metadata,desired)||
-          !catalog::CatalogMetricRetentionPolicyPreservesOrigin(previous->metadata,desired)||
-          !catalog::CatalogMetricDescriptorPreservesOrigin(previous->metadata,desired)||
-          !catalog::CatalogMetricLabelSchemaPreservesOrigin(previous->metadata,desired)||
+          !catalog::CatalogMetadataPreservesFamilyOrigin(previous->metadata,desired)||
           (name&&(!previous->name_payload||!catalog::CatalogNamePayloadPreservesIdentity(*previous->name_payload,*request.name_payload))))return Fail(E::stale_version);
     }
     if(maximum==std::numeric_limits<u64>::max())return Fail(E::version_overflow);

@@ -36,6 +36,13 @@ c::CatalogMetadataVersion LabelMetadata(const c::CatalogMetricLabelSchema& r) {
   m.object_subtype="metric_label_schema";
   m.authority_scope=r.cluster_only?c::CatalogAuthorityScope::cluster:c::CatalogAuthorityScope::local;return m;
 }
+bool SharedLabelOrigin(const c::CatalogMetadataVersion& a,const c::CatalogMetadataVersion& b) {
+  const bool family=c::CatalogMetricLabelSchemaPreservesOrigin(a,b);
+  const bool shared=c::CatalogMetadataPreservesFamilyOrigin(a,b);
+  Check(shared==family,"shared native origin dispatcher differs from family contract");
+  return family;
+}
+
 void LabelRefused(std::string_view bytes) {
   const auto result=c::DecodeCatalogMetricLabelSchema(bytes);
   Check(!result.ok()&&!result.record,"malformed label schema published");
@@ -142,10 +149,10 @@ void LabelBinding() {
   }
   auto next=LabelSchema();next.generation=2;next.labels[0].required=!next.labels[0].required;
   auto successor=LabelMetadata(next);successor.creator_transaction_uuid=Id(p::UuidKind::transaction,22);successor.creator_local_transaction_id=12;
-  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&c::CatalogMetricLabelSchemaPreservesOrigin(initial,successor),"valid schema generation mutation refused");
+  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&SharedLabelOrigin(initial,successor),"valid schema generation mutation refused");
   successor.record.header.deleted=true;successor.lifecycle=c::CatalogObjectLifecycle::dropped;successor.status=c::CatalogObjectStatus::retired;
   successor.retired_transaction_uuid=successor.creator_transaction_uuid;
-  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&c::CatalogMetricLabelSchemaPreservesOrigin(initial,successor),"label schema retirement lost origin");
+  Check(c::EncodeCatalogMetadataVersion(successor).ok()&&SharedLabelOrigin(initial,successor),"label schema retirement lost origin");
   for(unsigned which=0;which<4;++which){
     auto changed=next;
     if(which==0)changed.origin_transaction_uuid.value.bytes[15]++;
@@ -154,11 +161,11 @@ void LabelBinding() {
     if(which==3)changed.cluster_only=true;
     auto m=LabelMetadata(changed);m.creator_transaction_uuid=successor.creator_transaction_uuid;m.creator_local_transaction_id=12;
     Check(c::EncodeCatalogMetadataVersion(m).ok(),"changed origin fixture not individually valid");
-    Check(!c::CatalogMetricLabelSchemaPreservesOrigin(initial,m),"label schema changed immutable origin");
+    Check(!SharedLabelOrigin(initial,m),"label schema changed immutable origin");
   }
   auto other=initial;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype="other";other.record.payload="unrelated";
-  Check(c::CatalogMetricLabelSchemaPreservesOrigin(other,other),"label schema redefined unrelated family");
-  Check(!c::CatalogMetricLabelSchemaPreservesOrigin(initial,other)&&!c::CatalogMetricLabelSchemaPreservesOrigin(other,initial),"schema family swap bypassed origin");
+  Check(SharedLabelOrigin(other,other),"label schema redefined unrelated family");
+  Check(!SharedLabelOrigin(initial,other)&&!SharedLabelOrigin(other,initial),"schema family swap bypassed origin");
   const auto wrapped=c::EncodeCatalogMetadataVersion(initial);
   if(wrapped.ok())for(std::size_t at:{std::size_t(32),std::size_t(127)}){
     auto bytes=wrapped.bytes;bytes[at]++;std::fill(bytes.begin()+320,bytes.begin()+352,0);
