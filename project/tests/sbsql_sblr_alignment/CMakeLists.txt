@@ -1874,11 +1874,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_metric_binary_label_key
     metric_binary_label_key_test.cpp
     ../../src/core/metrics/metric_producer.cpp
-    ../../src/core/metrics/metric_registry.cpp)
+    ../../src/core/metrics/metric_registry.cpp
+    ../../src/core/metrics/metric_scalar.cpp
+    ../../src/core/metrics/metric_value_update.cpp)
   target_compile_features(sbsql_sblr_alignment_metric_binary_label_key PRIVATE cxx_std_23)
   target_include_directories(sbsql_sblr_alignment_metric_binary_label_key PRIVATE
     ../../src/core/metrics)
-  target_link_libraries(sbsql_sblr_alignment_metric_binary_label_key PRIVATE sb_core_platform)
+  target_link_libraries(sbsql_sblr_alignment_metric_binary_label_key PRIVATE sb_core_platform sbl_numeric Threads::Threads)
   target_compile_options(sbsql_sblr_alignment_metric_binary_label_key PRIVATE
     -ffunction-sections -fdata-sections)
   target_link_options(sbsql_sblr_alignment_metric_binary_label_key PRIVATE -Wl,--gc-sections)

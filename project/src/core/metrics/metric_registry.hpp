@@ -176,6 +176,9 @@ class MetricRegistry {
   MetricRegistry();
 
   MetricValidationResult RegisterDescriptor(MetricDescriptor descriptor);
+  // Entries remain immutable and pointers valid until registry destruction.
+  // Annotation lookup below is not native catalog name resolution/activation.
+  const MetricDescriptor* FindDescriptor(const MetricUuid& metric_uuid) const;
   const MetricDescriptor* FindDescriptor(const std::string& family) const;
   const MetricDescriptor* FindDescriptorOrAlias(const std::string& family_or_alias) const;
   std::vector<MetricDescriptor> Descriptors(bool include_cluster = true) const;
@@ -210,13 +213,15 @@ class MetricRegistry {
                                      std::string state_text,
                                      const std::string& producer_owner,
                                      MetricType operation_type);
-  MetricSeriesKey NormalizeKey(const std::string& family, const MetricLabelSet& labels) const;
+  using CurrentKey = std::pair<MetricUuid, std::vector<std::pair<std::string, MetricLabelValue>>>;
+  CurrentKey NormalizeKey(const MetricUuid& metric_uuid, const MetricLabelSet& labels) const;
   void LoadBuiltinDescriptors();
 
   mutable std::mutex mutex_;
-  std::map<std::string, MetricDescriptor> descriptors_;
-  std::map<std::string, std::string> aliases_;
-  std::map<MetricSeriesKey, MetricValue> current_values_;
+  std::map<MetricUuid, MetricDescriptor> descriptors_;
+  std::map<std::string, MetricUuid> families_;
+  std::map<std::string, MetricUuid> aliases_;
+  std::map<CurrentKey, MetricValue> current_values_;
   std::vector<MetricValue> history_values_;
 };
 

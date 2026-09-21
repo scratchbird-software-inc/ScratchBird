@@ -531,48 +531,53 @@ MetricValidationResult MetricRegistry::ValidateDescriptor(const MetricDescriptor
 MetricValidationResult MetricRegistry::RegisterDescriptor(MetricDescriptor descriptor) {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto validated = ValidateDescriptor(descriptor);
-  if (!validated.ok) {
-    return validated;
-  }
-  if (descriptors_.count(descriptor.family) != 0) {
+  if (!validated.ok) return validated;
+  if (descriptors_.contains(descriptor.metric_uuid))
+    return MetricError("METRIC.VALUE_INVALID", "metric UUID already registered");
+  if (families_.contains(descriptor.family) || aliases_.contains(descriptor.family))
     return MetricError("SB-METRICS-DESCRIPTOR-DUPLICATE-FAMILY", descriptor.family);
-  }
+
+  // Allocate every map node and the success result before publishing anything.
+  // The maps have identical allocators and nonthrowing key comparisons; node
+  // transfer under the retained mutex cannot expose a partial registration.
+  decltype(descriptors_) pending_descriptors;
+  decltype(families_) pending_families;
+  decltype(aliases_) pending_aliases;
   for (const auto& alias : descriptor.aliases) {
-    if (alias.empty() || descriptors_.count(alias) != 0 || aliases_.count(alias) != 0) {
+    if (alias.empty() || alias == descriptor.family || families_.contains(alias) ||
+        aliases_.contains(alias) ||
+        !pending_aliases.emplace(alias, descriptor.metric_uuid).second)
       return MetricError("SB-METRICS-DESCRIPTOR-DUPLICATE-ALIAS", alias);
-    }
   }
-  const std::string family = descriptor.family;
-  for (const auto& alias : descriptor.aliases) {
-    aliases_[alias] = family;
-  }
-  descriptors_[family] = std::move(descriptor);
-  return MetricOk();
+  const auto identity = descriptor.metric_uuid;
+  pending_families.emplace(descriptor.family, identity);
+  pending_descriptors.emplace(identity, std::move(descriptor));
+  auto success = MetricOk();
+  descriptors_.merge(pending_descriptors);
+  families_.merge(pending_families);
+  aliases_.merge(pending_aliases);
+  return success;
+}
+
+const MetricDescriptor* MetricRegistry::FindDescriptor(const MetricUuid& identity) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto it = descriptors_.find(identity);
+  return it == descriptors_.end() ? nullptr : &it->second;
 }
 
 const MetricDescriptor* MetricRegistry::FindDescriptor(const std::string& family) const {
-  const auto it = descriptors_.find(family);
-  if (it == descriptors_.end()) {
-    return nullptr;
-  }
-  return &it->second;
+  std::lock_guard<std::mutex> lock(mutex_);
+  const auto mapping = families_.find(family);
+  if (mapping == families_.end()) return nullptr;
+  return &descriptors_.at(mapping->second);
 }
 
 const MetricDescriptor* MetricRegistry::FindDescriptorOrAlias(const std::string& family_or_alias) const {
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto direct = descriptors_.find(family_or_alias);
-  if (direct != descriptors_.end()) {
-    return &direct->second;
-  }
+  const auto direct = families_.find(family_or_alias);
+  if (direct != families_.end()) return &descriptors_.at(direct->second);
   const auto alias = aliases_.find(family_or_alias);
-  if (alias == aliases_.end()) {
-    return nullptr;
-  }
-  const auto canonical = descriptors_.find(alias->second);
-  if (canonical == descriptors_.end()) {
-    return nullptr;
-  }
-  return &canonical->second;
+  return alias == aliases_.end() ? nullptr : &descriptors_.at(alias->second);
 }
 
 std::vector<MetricDescriptor> MetricRegistry::Descriptors(bool include_cluster) const {
@@ -663,7 +668,7 @@ MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descr
     return labels_valid;
   }
   std::lock_guard<std::mutex> lock(mutex_);
-  const auto key = NormalizeKey(descriptor.family, labels);
+  const auto key = NormalizeKey(descriptor.metric_uuid, labels);
   const auto existing = current_values_.find(key);
   auto staged = StageMetricValueUpdate(descriptor, labels,
       existing == current_values_.end() ? nullptr : &existing->second, value, state_text);
@@ -707,7 +712,7 @@ std::vector<MetricValue> MetricRegistry::SnapshotCurrent(bool include_cluster) c
   std::lock_guard<std::mutex> lock(mutex_);
   std::vector<MetricValue> out;
   for (const auto& [key, value] : current_values_) {
-    const auto descriptor = descriptors_.find(value.family);
+    const auto descriptor = descriptors_.find(key.first);
     if (descriptor != descriptors_.end() && !include_cluster && descriptor->second.cluster_only) {
       continue;
     }
@@ -722,7 +727,8 @@ std::vector<MetricValue> MetricRegistry::SnapshotHistory(bool include_cluster, u
   const u64 start = history_values_.size() > max_rows ? static_cast<u64>(history_values_.size()) - max_rows : 0;
   for (u64 i = start; i < history_values_.size(); ++i) {
     const auto& value = history_values_[static_cast<std::size_t>(i)];
-    const auto descriptor = descriptors_.find(value.family);
+    const auto mapping = families_.find(value.family);
+    const auto descriptor = mapping == families_.end() ? descriptors_.end() : descriptors_.find(mapping->second);
     if (descriptor != descriptors_.end() && !include_cluster && descriptor->second.cluster_only) {
       continue;
     }
@@ -731,9 +737,14 @@ std::vector<MetricValue> MetricRegistry::SnapshotHistory(bool include_cluster, u
   return out;
 }
 
-MetricSeriesKey MetricRegistry::NormalizeKey(const std::string& family,
-                                             const MetricLabelSet& labels) const {
-  return MakeMetricSeriesKey(family, labels);
+MetricRegistry::CurrentKey MetricRegistry::NormalizeKey(const MetricUuid& identity,
+                                                        const MetricLabelSet& labels) const {
+  CurrentKey key;
+  key.first = identity;
+  key.second.reserve(labels.size());
+  for (const auto& label : labels) key.second.emplace_back(label.key, label.value);
+  std::sort(key.second.begin(), key.second.end());
+  return key;
 }
 
 void MetricRegistry::LoadBuiltinDescriptors() {
