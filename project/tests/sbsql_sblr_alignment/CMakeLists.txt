@@ -1,6 +1,20 @@
 # Copyright (c) 2026 ScratchBird Software Inc.
 # SPDX-License-Identifier: MPL-2.0
 
+add_executable(sbsql_sblr_alignment_agent_session_control_result
+  agent_session_control_result_test.cpp)
+target_compile_features(sbsql_sblr_alignment_agent_session_control_result PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_agent_session_control_result PRIVATE
+  ../../src ../../include ../../src/server_engine_bridge ../../src/engine/internal_api ../../src/engine/sblr
+  ../../src/core/memory ../../src/core/agents ../../src/core/metrics
+  ../../src/core/catalog ../../src/core/datatypes ../../src/core/index
+  ../../src/core/resources ../../src/storage/database ../../src/transaction/mga)
+target_link_libraries(sbsql_sblr_alignment_agent_session_control_result PRIVATE sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_agent_session_control_result
+  COMMAND sbsql_sblr_alignment_agent_session_control_result)
+set_tests_properties(sbsql_sblr_alignment_agent_session_control_result PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;agent_session_control;result_consistency;not_runtime_acceptance")
+
 add_executable(sbsql_sblr_alignment_server_coordination_binary_uuid
   server_coordination_binary_uuid_test.cpp
   ../../src/server/session_identity_cache.cpp

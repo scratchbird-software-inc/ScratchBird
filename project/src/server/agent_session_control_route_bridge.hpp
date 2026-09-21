@@ -33,8 +33,26 @@ struct AgentSessionControlRouteResult {
   std::vector<std::string> evidence;
 
   bool ok() const {
-    return manager_result.ok() && !diagnostic_code.empty() &&
-           diagnostic_code != "SB_AGENT_SESSION_CONTROL_ROUTE.REFUSED";
+    // A successful manager decision is only a plan. In particular, a later
+    // missing-target/error diagnostic must not be treated as actuator success.
+    // This checks result consistency; the actuator still owns proving effects.
+    if (!manager_result.ok() || !registry_mutated) return false;
+    using Decision = scratchbird::core::agents::implemented_agents::
+        SessionControlManagerDecisionKind;
+    switch (manager_result.decision) {
+      case Decision::force_disconnect:
+        return session_removed && !reauth_required && !token_revoked &&
+               diagnostic_code == "SB_AGENT_SESSION_CONTROL_ROUTE.DISCONNECTED";
+      case Decision::require_reauth:
+        return reauth_required && !session_removed && !token_revoked &&
+               diagnostic_code == "SB_AGENT_SESSION_CONTROL_ROUTE.REAUTH_REQUIRED";
+      case Decision::revoke_session:
+        return token_revoked && !session_removed && !reauth_required &&
+               diagnostic_code == "SB_AGENT_SESSION_CONTROL_ROUTE.SESSION_REVOKED";
+      case Decision::refused:
+        return false;
+    }
+    return false;
   }
 };
 
