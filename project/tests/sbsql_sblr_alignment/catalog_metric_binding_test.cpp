@@ -6,6 +6,7 @@
 #include "catalog_metric_descriptor_test.cpp"
 #undef main
 #include "catalog_metric_binding.hpp"
+#include "metric_value_update.hpp"
 
 namespace {
 using BE=c::CatalogMetricBindingError;
@@ -165,10 +166,204 @@ void BindingAllocationFailures() {
   Check(completed&&injected>20,"dependency allocation sweep missed allocation sites");
   std::cout<<"binding allocation injected="<<injected<<'\n';
 }
+c::CatalogMetadataVersion SeriesRow(const Fixture& f,const c::CatalogMetricSeries& series) {
+  auto row=Metadata(f.descriptor);
+  row.record.header.kind=c::CatalogRecordKind::metric_series;
+  row.record.header.object_uuid={p::UuidKind::object,series.series_uuid};
+  row.record.header.row_uuid=Id(p::UuidKind::row,84);
+  row.default_name_uuid=Id(p::UuidKind::object,85);row.name_vector_uuid=Id(p::UuidKind::object,86);
+  row.object_subtype="metric_series";row.definition_version=series.generation;
+  row.authority_scope=series.binding.cluster_uuid.is_nil()?c::CatalogAuthorityScope::local:c::CatalogAuthorityScope::cluster;
+  row.creator_transaction_uuid=series.origin_transaction_uuid;row.creator_local_transaction_id=series.origin_local_transaction_id;
+  const auto bytes=c::EncodeCatalogMetricSeries(series);Check(bytes.ok(),"series fixture must encode");
+  row.record.payload.assign(bytes.bytes.begin(),bytes.bytes.end());return row;
+}
+Fixture SeriesCatalog(bool rate=false) {
+  auto f=rate?RateCatalog():Catalog();
+  c::CatalogMetricSeries series;series.series_uuid=Id(p::UuidKind::object,81).value;series.generation=1;
+  static_cast<m::MetricDescriptorBinding&>(series.binding)=f.descriptor.binding;
+  series.binding.database_uuid=Id(p::UuidKind::database,82).value;series.binding.node_uuid=Id(p::UuidKind::object,83).value;
+  auto user=Id(p::UuidKind::object,87).value;user.bytes[6]=0x41;
+  series.labels={{"tag",m::MetricLabelType::text,std::string("typed\0value",11)},
+    {"database",m::MetricLabelType::system_uuid,series.binding.database_uuid},
+    {"data-id",m::MetricLabelType::uuid_value,user}};
+  series.origin_transaction_uuid=f.descriptor.origin_transaction_uuid;series.origin_local_transaction_id=f.descriptor.origin_local_transaction_id;
+  f.rows.push_back(SeriesRow(f,series));return f;
+}
+c::CatalogMetricSeriesBindingResult ResolveSeries(const Fixture& f) {
+  return c::ResolveLocalCatalogMetricSeriesBinding(Views(f),Id(p::UuidKind::database,82).value,
+      Id(p::UuidKind::object,83).value,Id(p::UuidKind::object,81).value,1);
+}
+void SeriesBindingRefused(const c::CatalogMetricSeriesBindingResult& r,BE error) {
+  Check(!r.ok()&&!r.binding&&r.error==error,"series selection wrong failure or partial bundle");
+}
+void SeriesSelection() {
+  auto f=SeriesCatalog();const auto original=f.rows.back().record.payload;
+  auto result=ResolveSeries(f);
+  Check(result.ok(),"valid series dependency snapshot refused");
+  if(result.ok()) {
+    const auto& r=*result.binding;
+    Check(r.series.series_uuid==Id(p::UuidKind::object,81).value&&r.definition.series_uuid==r.series.series_uuid,
+          "series identity synthesized or replaced");
+    Check(r.series_metadata.record.payload==original&&r.dependencies.metric.visibility_policy.record.payload==f.rows[3].record.payload,
+          "selected series or opaque security metadata replaced");
+    Check(r.series.database_uuid==Id(p::UuidKind::database,82).value&&r.series.node_uuid==Id(p::UuidKind::object,83).value&&
+          r.series.cluster_uuid.is_nil()&&r.series.labels.size()==3,"series scope or labels lost");
+    Check(r.series.metric_family==f.descriptor.definition.family&&!r.dependencies.source_counter,"series annotation or source unexpected");
+    f.rows.clear();
+    Check(r.series_metadata.record.payload==original,"series bundle did not retain selected snapshot data");
+  }
+  f=SeriesCatalog();std::reverse(f.rows.begin(),f.rows.end());
+  Check(ResolveSeries(f).ok(),"series selection depended on catalog order");
+  for(unsigned which=0;which<4;++which) {
+    auto db=Id(p::UuidKind::database,82).value,node=Id(p::UuidKind::object,83).value,series=Id(p::UuidKind::object,81).value;
+    if(which==0)db={};if(which==1)node={};if(which==2)series={};
+    SeriesBindingRefused(c::ResolveLocalCatalogMetricSeriesBinding(Views(f),db,node,series,which==3?0:1),BE::invalid_request);
+  }
+  for(unsigned version=0;version<16;++version)if(version!=7)for(unsigned which=0;which<3;++which) {
+    auto db=Id(p::UuidKind::database,82).value,node=Id(p::UuidKind::object,83).value,series=Id(p::UuidKind::object,81).value;
+    (which==0?db:which==1?node:series).bytes[6]=p::byte(version<<4);
+    SeriesBindingRefused(c::ResolveLocalCatalogMetricSeriesBinding(Views(f),db,node,series,1),BE::invalid_request);
+  }
+  f=SeriesCatalog();
+  SeriesBindingRefused(c::ResolveLocalCatalogMetricSeriesBinding(Views(f),Id(p::UuidKind::database,82).value,
+      Id(p::UuidKind::object,83).value,Id(p::UuidKind::object,99).value,1),BE::missing_object);
+  for(unsigned index=0;index<5;++index) {
+    f=SeriesCatalog();f.rows.erase(f.rows.begin()+index);SeriesBindingRefused(ResolveSeries(f),BE::missing_object);
+    f=SeriesCatalog();f.rows.push_back(f.rows[index]);SeriesBindingRefused(ResolveSeries(f),BE::duplicate_identity);
+    f=SeriesCatalog();f.rows[index].definition_version++;SeriesBindingRefused(ResolveSeries(f),BE::stale_generation);
+    f=SeriesCatalog();f.rows[index].record.header.kind=c::CatalogRecordKind::table_descriptor;SeriesBindingRefused(ResolveSeries(f),BE::wrong_family);
+    f=SeriesCatalog();f.rows[index].authority_scope=c::CatalogAuthorityScope::cluster;SeriesBindingRefused(ResolveSeries(f),BE::nonlocal_scope);
+    f=SeriesCatalog();f.rows[index].record.header.deleted=true;SeriesBindingRefused(ResolveSeries(f),BE::inactive_object);
+    f=SeriesCatalog();f.rows[index].status=c::CatalogObjectStatus::disabled_by_policy;SeriesBindingRefused(ResolveSeries(f),BE::inactive_object);
+    f=SeriesCatalog();f.rows[index].lifecycle=c::CatalogObjectLifecycle::altering;SeriesBindingRefused(ResolveSeries(f),BE::inactive_object);
+    f=SeriesCatalog();auto views=Views(f);views[index].provisional=true;
+    SeriesBindingRefused(c::ResolveLocalCatalogMetricSeriesBinding(views,Id(p::UuidKind::database,82).value,
+      Id(p::UuidKind::object,83).value,Id(p::UuidKind::object,81).value,1),BE::inactive_object);
+  }
+  f=SeriesCatalog();auto views=Views(f);views.push_back({});
+  SeriesBindingRefused(c::ResolveLocalCatalogMetricSeriesBinding(views,Id(p::UuidKind::database,82).value,
+      Id(p::UuidKind::object,83).value,Id(p::UuidKind::object,81).value,1),BE::invalid_catalog);
+  for(unsigned which=0;which<11;++which) {
+    f=SeriesCatalog();auto r=*c::DecodeCatalogMetricSeries(f.rows.back().record.payload).record;
+    if(which==0)r.binding.database_uuid.bytes[15]++;
+    if(which==1)r.binding.node_uuid.bytes[15]++;
+    if(which==2)r.binding.cluster_uuid=Id(p::UuidKind::object,92).value;
+    if(which==3)r.binding.label_schema_generation++;
+    if(which==4)r.binding.retention_policy_generation++;
+    if(which==5)r.binding.visibility_policy_generation++;
+    if(which==6)r.labels.erase(r.labels.begin()+1); // decoded order: data-id,database,tag
+    if(which==7)r.labels[1].type=m::MetricLabelType::uuid_value;
+    if(which==8)r.binding.rate_source_counter_uuid=Id(p::UuidKind::object,90).value,r.binding.rate_source_counter_generation=1;
+    if(which==9)r.binding.metric_uuid=Id(p::UuidKind::object,95).value;
+    if(which==10)r.binding.descriptor_generation++;
+    f.rows.back()=SeriesRow(f,r);
+    SeriesBindingRefused(ResolveSeries(f),which<2?BE::scope_mismatch:which==2?BE::nonlocal_scope:
+        which==9?BE::missing_object:which==10?BE::stale_generation:BE::series_binding_mismatch);
+  }
+  for(unsigned version=1;version<=7;++version) {
+    f=SeriesCatalog();auto r=*c::DecodeCatalogMetricSeries(f.rows.back().record.payload).record;
+    std::get<p::Uuid>(r.labels[0].value).bytes[6]=p::byte(version<<4);f.rows.back()=SeriesRow(f,r);
+    result=ResolveSeries(f);Check(result.ok()&&std::get<p::Uuid>(result.binding->series.labels[0].value).bytes[6]==p::byte(version<<4),
+                                "series lookup coerced a user UUID");
+  }
+  f=SeriesCatalog();auto r=*c::DecodeCatalogMetricSeries(f.rows.back().record.payload).record;
+  r.labels.clear();r.binding.label_schema_uuid={};r.binding.label_schema_generation=0;
+  f.descriptor.definition.labels.clear();f.descriptor.binding.label_schema_uuid={};f.descriptor.binding.label_schema_generation=0;
+  f.rows[0]=Metadata(f.descriptor);f.rows.back()=SeriesRow(f,r);f.rows.erase(f.rows.begin()+1);
+  Check(ResolveSeries(f).ok(),"unlabelled native series failed selection");
+  f=SeriesCatalog();f.descriptor.definition.family="changed annotation";f.rows[0]=Metadata(f.descriptor);
+  result=ResolveSeries(f);Check(result.ok()&&result.binding->series.metric_family=="changed annotation",
+                              "metric annotation became durable series lookup authority");
+  f=SeriesCatalog(true);result=ResolveSeries(f);
+  Check(result.ok()&&result.binding->dependencies.source_counter&&
+        result.binding->dependencies.source_counter->descriptor.definition.type==m::MetricType::counter,
+        "series rate dependencies not resolved from same snapshot");
+  if(result.ok()) {
+    m::MetricDescriptor descriptor;
+    static_cast<m::MetricDescriptorDefinition&>(descriptor)=f.descriptor.definition;
+    static_cast<m::MetricDescriptorBinding&>(descriptor)=f.descriptor.binding;
+    Check(m::ValidateStoredMetricValueDescriptor(descriptor)&&!m::ValidateMetricValueDescriptor(descriptor),
+          "rate identity admission bypassed raw update distinction");
+    const auto& series=result.binding->series;
+    Check(!m::StageMetricValueUpdate(descriptor,series.labels,nullptr,p::u64(9007199254740993ULL)).ok(),
+          "catalog rate binding enabled a raw rate producer update");
+    m::MetricValue value;value.family=descriptor.family;value.type=m::MetricType::rate;
+    value.labels=series.labels;value.value=p::u64(9007199254740993ULL);
+    Check(m::ValidateStoredMetricValueShape(descriptor,value)&&
+          !m::MakeMetricRawSampleRecord(descriptor,series,value,1,1,1).ok(),
+          "rate identity binding fabricated raw rate evidence");
+    descriptor.rate_window_nanoseconds=0;Check(!m::ValidateStoredMetricValueDescriptor(descriptor),"rate missing window admitted");
+  }
+  f.rows.erase(f.rows.end()-2);SeriesBindingRefused(ResolveSeries(f),BE::missing_object);
+}
+void SeriesAmbiguity() {
+  const auto base=SeriesCatalog();
+  const auto original=*c::DecodeCatalogMetricSeries(base.rows.back().record.payload).record;
+  for(unsigned which=0;which<4;++which) {
+    auto f=base;auto other=original;other.series_uuid=Id(p::UuidKind::object,93).value;
+    if(which==1)other.binding.descriptor_generation++;
+    if(which==2)other.binding.retention_policy_generation++;
+    if(which==3)other.binding.visibility_policy_uuid=Id(p::UuidKind::object,94).value;
+    f.rows.push_back(SeriesRow(f,other));SeriesBindingRefused(ResolveSeries(f),BE::duplicate_series);
+    std::reverse(f.rows.begin(),f.rows.end());SeriesBindingRefused(ResolveSeries(f),BE::duplicate_series);
+  }
+  for(unsigned which=0;which<8;++which) {
+    auto f=base;auto other=original;other.series_uuid=Id(p::UuidKind::object,93).value;
+    if(which==0)other.binding.database_uuid.bytes[15]++;
+    if(which==1)other.binding.node_uuid.bytes[15]++;
+    if(which==2)other.binding.cluster_uuid=Id(p::UuidKind::object,94).value;
+    if(which==3)other.binding.metric_uuid.bytes[15]++;
+    if(which==4)other.binding.label_schema_uuid.bytes[15]++;
+    if(which==5)other.labels[2].value=std::string("different");
+    if(which==6)other.labels[1].type=m::MetricLabelType::uuid_value;
+    if(which==7)other.labels[2].key="different";
+    f.rows.push_back(SeriesRow(f,other));
+    Check(ResolveSeries(f).ok(),"different immutable typed series key collided");
+  }
+  for(unsigned which=0;which<4;++which) {
+    auto f=base;auto other=original;other.series_uuid=Id(p::UuidKind::object,93).value;f.rows.push_back(SeriesRow(f,other));
+    if(which==0)f.rows.back().status=c::CatalogObjectStatus::disabled_by_policy;
+    if(which==1)f.rows.back().lifecycle=c::CatalogObjectLifecycle::altering;
+    if(which==2){f.rows.back().record.header.deleted=true;f.rows.back().lifecycle=c::CatalogObjectLifecycle::dropped;
+      f.rows.back().status=c::CatalogObjectStatus::retired;f.rows.back().retired_transaction_uuid=f.rows.back().creator_transaction_uuid;}
+    auto views=Views(f);if(which==3)views.back().provisional=true;
+    Check(c::ResolveLocalCatalogMetricSeriesBinding(views,Id(p::UuidKind::database,82).value,
+      Id(p::UuidKind::object,83).value,Id(p::UuidKind::object,81).value,1).ok(),"inactive competitor supplied an active series");
+  }
+  for(unsigned which=0;which<5;++which) {
+    auto f=base;auto other=original;other.series_uuid=Id(p::UuidKind::object,93).value;
+    other.binding.node_uuid.bytes[15]++;f.rows.push_back(SeriesRow(f,other));
+    if(which==0)f.rows.back().record.payload="series=legacy";
+    if(which==1)f.rows.back().record.header.kind=c::CatalogRecordKind::table_descriptor;
+    if(which==2)f.rows.back().object_subtype="table";
+    if(which==3)f.rows.back().record.header.row_uuid={};
+    if(which==4)f.rows.back().definition_version++;
+    SeriesBindingRefused(ResolveSeries(f),BE::invalid_catalog);
+  }
+}
+void SeriesSelectionAllocationFailures() {
+  auto f=SeriesCatalog(true);const auto views=Views(f);const auto before=f.rows.back().record.payload;
+  unsigned injected=0;bool completed=false;
+  for(long index=0;index<4096;++index) {
+    descriptor_allocation_fault::remaining=index;descriptor_allocation_fault::fired=false;
+    const auto result=c::ResolveLocalCatalogMetricSeriesBinding(views,Id(p::UuidKind::database,82).value,
+        Id(p::UuidKind::object,83).value,Id(p::UuidKind::object,81).value,1);
+    descriptor_allocation_fault::remaining=-1;const bool fired=descriptor_allocation_fault::fired;
+    Check(f.rows.back().record.payload==before,"series selection allocation fault mutated source");
+    if(fired){++injected;Check(!result.ok()&&!result.binding&&result.error==BE::resource_exhausted,
+                             "series selection allocation fault exposed partial bundle or wrong error");}
+    else{completed=true;Check(result.ok(),"series selection did not recover from allocation faults");break;}
+  }
+  Check(completed&&injected>30,"series selection allocation sweep incomplete");
+  std::cout<<"series selection allocation injected="<<injected<<'\n';
+}
+
 }
 int main(){
   const int prior=MetricDescriptorBindingBaseMain();const auto before=checks;
   DependencySelection();RateDependencies();BindingAllocationFailures();
+  SeriesSelection();SeriesAmbiguity();SeriesSelectionAllocationFailures();
   std::cout<<"metric binding checks="<<checks-before<<" combined="<<checks<<" failures="<<failures<<'\n';
   return prior||failures?1:0;
 }

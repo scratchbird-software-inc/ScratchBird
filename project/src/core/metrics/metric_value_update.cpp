@@ -41,12 +41,15 @@ bool ValidateMetricValueDescriptor(const MetricDescriptorDefinition& d) noexcept
       (d.type==MetricType::counter||d.type==MetricType::gauge||d.type==MetricType::histogram||
        d.type==MetricType::state||d.type==MetricType::sample)&&!d.rate_window_nanoseconds;
 }
+bool ValidateStoredMetricValueDescriptor(const MetricDescriptorDefinition& d) noexcept {
+  return d.type==MetricType::rate ? Numeric(d.value_type)&&d.rate_window_nanoseconds&&
+      ValidateMetricScalarDescriptor(d)==MetricScalarError::none&&ValidateMetricHistogramDescriptor(d) :
+      ValidateMetricValueDescriptor(d);
+}
 namespace {
 bool ValueShape(const MetricDescriptorDefinition& d,const MetricValue& v,bool stored) {
   const bool rate=stored&&d.type==MetricType::rate;
-  const bool descriptor_valid=rate ? Numeric(d.value_type)&&d.rate_window_nanoseconds&&
-      ValidateMetricScalarDescriptor(d)==MetricScalarError::none&&ValidateMetricHistogramDescriptor(d) :
-      ValidateMetricValueDescriptor(d);
+  const bool descriptor_valid=stored?ValidateStoredMetricValueDescriptor(d):ValidateMetricValueDescriptor(d);
   if(!descriptor_valid||
       v.family!=d.family||v.type!=d.type||!ValidateMetricLabelSet(d,v.labels).ok||
       ValidateMetricObservationScalar(d,v.value)!=MetricScalarError::none)return false;

@@ -81,4 +81,58 @@ CatalogMetricBindingResult ResolveLocalCatalogMetricBindings(
     catch (const std::length_error&) { return {E::resource_exhausted,{}}; }
     catch (...) { return {E::invalid_catalog,{}}; }
 }
+
+CatalogMetricSeriesBindingResult ResolveLocalCatalogMetricSeriesBinding(
+    std::span<const CatalogMetricRowView> rows, const Uuid& database_uuid, const Uuid& node_uuid,
+    const Uuid& series_uuid, u64 generation) noexcept {
+  if (!uuid::IsEngineIdentityUuid(database_uuid) || !uuid::IsEngineIdentityUuid(node_uuid) ||
+      !uuid::IsEngineIdentityUuid(series_uuid) || !generation) return {};
+  try {
+    E error=E::none;
+    const auto* metadata=Find(rows,series_uuid,generation,CatalogRecordKind::metric_series,error);
+    if (!metadata) return {error,{}};
+    auto definition=DecodeCatalogMetricSeries(metadata->record.payload);
+    if (!definition.ok()) return {E::invalid_catalog,{}};
+    const auto& selected=*definition.record;
+    const auto& scope=selected.binding;
+    if (!scope.cluster_uuid.is_nil()) return {E::nonlocal_scope,{}};
+    if (scope.database_uuid!=database_uuid || scope.node_uuid!=node_uuid) return {E::scope_mismatch,{}};
+
+    // Validate advertised series before comparing keys. Do not conceal a
+    // malformed/relabelled series by treating it as an unrelated object.
+    for (const auto& row:rows) {
+      if (!row.metadata) return {E::invalid_catalog,{}};
+      const auto& m=*row.metadata;
+      if (m.record.header.kind!=CatalogRecordKind::metric_series && m.object_subtype!="metric_series" &&
+          !IsCatalogMetricSeriesPayload(m.record.payload)) continue;
+      if (!EncodeCatalogMetadataVersion(m).ok() || !CatalogMetricSeriesMatchesMetadata(m))
+        return {E::invalid_catalog,{}};
+      if (&m==metadata || row.provisional || m.record.header.deleted ||
+          m.lifecycle!=CatalogObjectLifecycle::active || m.status!=CatalogObjectStatus::active) continue;
+      const auto other=DecodeCatalogMetricSeries(m.record.payload);
+      if (!other.ok()) return {E::invalid_catalog,{}};
+      const auto& b=other.record->binding;
+      if (scope.database_uuid==b.database_uuid && scope.node_uuid==b.node_uuid &&
+          scope.cluster_uuid==b.cluster_uuid && scope.metric_uuid==b.metric_uuid &&
+          scope.label_schema_uuid==b.label_schema_uuid && selected.labels==other.record->labels)
+        return {E::duplicate_series,{}};
+    }
+    auto dependencies=ResolveLocalCatalogMetricBindings(rows,scope.metric_uuid,scope.descriptor_generation);
+    if (!dependencies.ok()) return {dependencies.error,{}};
+    const auto& metric=dependencies.binding->metric;
+    metrics::MetricDescriptor descriptor;
+    static_cast<metrics::MetricDescriptorDefinition&>(descriptor)=metric.descriptor.definition;
+    static_cast<metrics::MetricDescriptorBinding&>(descriptor)=metric.descriptor.binding;
+    auto series=BindCatalogMetricSeries(selected,descriptor,metric.retention.policy);
+    if (!series.ok()) return {E::series_binding_mismatch,{}};
+    CatalogMetricSeriesBinding result;
+    result.series_metadata=*metadata;
+    result.definition=std::move(*definition.record);
+    result.dependencies=std::move(*dependencies.binding);
+    result.series=std::move(*series.record);
+    return {E::none,std::move(result)};
+  } catch (const std::bad_alloc&) { return {E::resource_exhausted,{}}; }
+    catch (const std::length_error&) { return {E::resource_exhausted,{}}; }
+    catch (...) { return {E::invalid_catalog,{}}; }
+}
 }  // namespace scratchbird::core::catalog

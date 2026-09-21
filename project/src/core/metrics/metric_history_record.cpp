@@ -38,7 +38,7 @@ MetricHistoryRecordResult<MetricSeriesIdentity> MakeMetricSeriesIdentity(
     const MetricDescriptor& descriptor, MetricLabelSet labels, const MetricRetentionPolicy& policy,
     const MetricHistoryBinding& binding, const MetricUuid& series_uuid) {
   if (!MetricSystemUuidValid(series_uuid)) return {E::invalid_identity, {}};
-  if (!ValidateMetricValueDescriptor(descriptor) ||
+  if (!ValidateStoredMetricValueDescriptor(descriptor) ||
       !BindingValid(descriptor, binding) || !ValidateMetricRetentionPolicy(policy).ok ||
       policy.policy_uuid != binding.retention_policy_uuid || policy.generation != binding.retention_policy_generation ||
       (policy.scope == "cluster") != descriptor.cluster_only) return {E::invalid_binding, {}};

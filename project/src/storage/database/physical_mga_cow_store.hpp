@@ -393,6 +393,26 @@ NativeMetricCatalogReadResult ReadLocalNativeMetricCatalogFromOpenDevices(
     const scratchbird::core::platform::Uuid& metric_uuid, u64 descriptor_generation,
     u64 maximum_retained_image_bytes) noexcept;
 
+struct NativeMetricSeriesReadResult {
+  NativeMetricCatalogReadError error = NativeMetricCatalogReadError::invalid_request;
+  NativePinnedCatalogReadResult source;
+  scratchbird::core::catalog::CatalogMetricSeriesBindingResult binding;
+  DiagnosticRecord diagnostic;
+  bool ok() const noexcept {
+    return error == NativeMetricCatalogReadError::none && source.ok() && binding.ok();
+  }
+};
+NativeMetricSeriesReadResult ReadLocalNativeMetricSeriesFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const scratchbird::core::platform::Uuid& node_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding&,
+    const scratchbird::transaction::mga::TransactionIdentity& reader,
+    const scratchbird::transaction::mga::PublishedSnapshotPin&,
+    const scratchbird::core::platform::Uuid& series_uuid, u64 definition_generation,
+    u64 maximum_retained_image_bytes) noexcept;
+
 // Path-free mutation fields for an already-owned node device. A storage
 // operation cannot select or open a second node through this payload.
 struct NativeCatalogNameMaterialization {

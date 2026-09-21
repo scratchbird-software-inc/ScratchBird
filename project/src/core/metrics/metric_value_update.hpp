@@ -15,6 +15,7 @@ struct MetricValueUpdateResult {
 };
 bool ValidateMetricHistogramDescriptor(const MetricDescriptorDefinition&) noexcept;
 bool ValidateMetricValueDescriptor(const MetricDescriptorDefinition&) noexcept;
+bool ValidateStoredMetricValueDescriptor(const MetricDescriptorDefinition&) noexcept;
 bool ValidateMetricValueShape(const MetricDescriptorDefinition&, const MetricValue&);
 // Stored shape also admits a source-derived numeric rate. It does not establish
 // source/window/reset evidence and never authorizes a raw rate producer update.

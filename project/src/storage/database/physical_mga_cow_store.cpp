@@ -2354,6 +2354,47 @@ NativeMetricCatalogReadResult ReadLocalNativeMetricCatalogFromOpenDevices(
     catch (...) { return fail(E::read_failure); }
 }
 
+NativeMetricSeriesReadResult ReadLocalNativeMetricSeriesFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const scratchbird::core::platform::Uuid& node_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding& relation,
+    const scratchbird::transaction::mga::TransactionIdentity& reader,
+    const scratchbird::transaction::mga::PublishedSnapshotPin& pin,
+    const scratchbird::core::platform::Uuid& series_uuid, u64 definition_generation,
+    u64 maximum_retained_image_bytes) noexcept {
+  using E=NativeMetricCatalogReadError;
+  const auto fail=[](E error) { NativeMetricSeriesReadResult r; r.error=error; return r; };
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(database_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(node_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(series_uuid) || !definition_generation)
+    return fail(E::invalid_request);
+  try {
+    NativeMetricSeriesReadResult result;
+    result.source=ReadNativePinnedCatalogVersionsFromOpenDevices(database_uuid,devices,checkpoint,
+        catalog_selector,relation_role,relation,reader,pin,maximum_retained_image_bytes);
+    if (!result.source.ok()) { result.error=E::source_failure; return result; }
+    std::vector<scratchbird::core::catalog::CatalogMetricRowView> views;
+    views.reserve(result.source.rows.size());
+    for (const auto& row:result.source.rows) views.push_back({&row.metadata,row.provisional});
+    result.binding=scratchbird::core::catalog::ResolveLocalCatalogMetricSeriesBinding(
+        views,database_uuid,node_uuid,series_uuid,definition_generation);
+    if (!result.binding.ok()) { result.error=E::dependency_failure; return result; }
+    const auto final_pin=pin.Resolve();
+    if (!final_pin.ok() || final_pin.descriptor.snapshot_uuid.value!=result.source.snapshot_uuid) {
+      result.binding={};
+      result.diagnostic=final_pin.diagnostic;
+      result.error=E::snapshot_failure;
+      return result;
+    }
+    result.error=E::none;
+    return result;
+  } catch (const std::bad_alloc&) { return fail(E::resource_exhausted); }
+    catch (const std::length_error&) { return fail(E::resource_exhausted); }
+    catch (...) { return fail(E::read_failure); }
+}
+
 NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
     FileDevice& device, const TypedUuid& relation_uuid, u64 page_number,
     const VisibilitySnapshot& snapshot, bool latest_committed,
