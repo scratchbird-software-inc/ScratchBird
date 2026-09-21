@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -57,9 +58,9 @@ sbsql::ParserConfig TestConfig() {
 sbsql::SessionContext TestSession() {
   sbsql::SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "session.sml.language-control";
-  session.connection_uuid = "connection.sml.language-control";
-  session.database_uuid = "database.sml.language-control";
+  session.session_uuid = scratchbird::tests::FixtureUuid(1102, 1);
+  session.connection_uuid = scratchbird::tests::FixtureUuid(1102, 2);
+  session.database_uuid = scratchbird::tests::FixtureUuid(1102, 3);
   session.language_profile = "sbsql.builtin.recovery.en";
   session.language_tag = "en";
   session.language_resource_epoch = 17;

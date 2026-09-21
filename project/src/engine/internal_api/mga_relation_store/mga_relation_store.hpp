@@ -9,6 +9,7 @@
 #pragma once
 
 #include "api_types.hpp"
+#include "mga_relation_store/mga_bulk_import_publication.hpp"
 #include "crud_support/crud_store.hpp"
 #include "mga_relation_store/mga_contextual_text_sidecar_set_v2.hpp"
 #include "mga_relation_store/mga_relation_descriptor.hpp"
@@ -207,13 +208,13 @@ struct PreparedMgaHeapStatementAuthority {
   std::shared_ptr<const scratchbird::storage::database::
                             LocalTransactionInventorySnapshot>
       transaction_inventory_snapshot;
-  std::string database_uuid;
-  std::string statement_uuid;
-  std::string transaction_uuid;
-  std::string statement_snapshot_uuid;
-  std::string statement_metadata_snapshot_uuid;
-  std::string catalog_epoch_uuid;
-  std::string authorization_authority_uuid;
+  EngineUuid database_uuid;
+  EngineUuid statement_uuid;
+  EngineUuid transaction_uuid;
+  EngineUuid statement_snapshot_uuid;
+  EngineUuid statement_metadata_snapshot_uuid;
+  EngineUuid catalog_epoch_uuid;
+  EngineUuid authorization_authority_uuid;
   std::uint64_t catalog_generation{0};
   std::uint64_t security_epoch{0};
   std::uint64_t policy_epoch{0};
@@ -234,15 +235,15 @@ struct PreparedMgaHeapReadAuthority {
   std::shared_ptr<const PreparedMgaHeapStatementAuthority> statement;
   MgaRelationStorageDescriptor descriptor;
   std::uint64_t current_relation_base_generation{0};
-  std::string relation_uuid;
+  EngineUuid relation_uuid;
   bool temporary{false};
   std::string temporary_scope;
-  std::string temporary_session_uuid;
+  EngineUuid temporary_session_uuid;
 };
 
 struct PreparedMgaHeapReadAuthorityCohort {
   std::shared_ptr<const PreparedMgaHeapStatementAuthority> statement;
-  std::map<std::string, std::shared_ptr<const PreparedMgaHeapReadAuthority>>
+  std::map<EngineUuid, std::shared_ptr<const PreparedMgaHeapReadAuthority>>
       relations;
 };
 
@@ -254,10 +255,10 @@ struct PreparedMgaHeapReadAuthorityCohortResult {
 
 PreparedMgaHeapReadAuthorityCohortResult PrepareMgaHeapReadAuthorities(
     const EngineRequestContext& context,
-    std::span<const std::string> relation_uuids);
+    std::span<const EngineUuid> relation_uuids);
 PreparedMgaHeapReadAuthorityCohortResult PrepareMgaHeapReadAuthorities(
     const EngineRequestContext& context,
-    std::span<const std::string> relation_uuids,
+    std::span<const EngineUuid> relation_uuids,
     const scratchbird::transaction::mga::SnapshotVectorDescriptor&
         resolved_statement_snapshot);
 
@@ -310,8 +311,8 @@ struct MgaContextualTextTargetSelectionResultV2 {
 };
 
 struct MgaVisibleHeapRelationReadRequest {
-  std::string relation_uuid;
-  const std::string* borrowed_relation_uuid = nullptr;
+  EngineUuid relation_uuid;
+  const EngineUuid* borrowed_relation_uuid = nullptr;
   std::uint64_t maximum_scanned_row_versions = 0;
   std::uint64_t maximum_decoded_bytes = 0;
   std::uint64_t maximum_output_rows = 0;
@@ -365,8 +366,8 @@ struct MgaVisibleHeapRelationReadResult {
 // optimizer candidate/output-row estimate: physical segment size and the
 // operator-local memory grant are the authoritative finite resources.
 struct MgaVisibleHeapRelationCountRequest {
-  std::string relation_uuid;
-  const std::string* borrowed_relation_uuid = nullptr;
+  EngineUuid relation_uuid;
+  const EngineUuid* borrowed_relation_uuid = nullptr;
   std::uint64_t maximum_decoded_bytes = 0;
   std::uint64_t maximum_memory_bytes = 0;
   std::function<bool()> cancellation_requested;
@@ -402,8 +403,8 @@ struct MgaVisibleHeapRelationCountResult {
 // consumer publishes its retained-memory receipt so storage and operator state
 // share one engine-owned grant.
 struct MgaVisibleHeapRelationStreamRequest {
-  std::string relation_uuid;
-  const std::string* borrowed_relation_uuid = nullptr;
+  EngineUuid relation_uuid;
+  const EngineUuid* borrowed_relation_uuid = nullptr;
   std::uint64_t maximum_decoded_bytes_per_pass = 0;
   std::uint64_t maximum_memory_bytes = 0;
   // Absent requires complete value-row delivery.  A present bound limits only
@@ -548,14 +549,14 @@ struct MgaTemporaryRecoveryClassificationResult {
 };
 
 struct MgaIndexEntryRowInput {
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
   std::vector<std::pair<std::string, std::string>> values;
 };
 
 struct MgaIndexEntryAppendBatch {
   CrudIndexRecord index;
-  std::string table_uuid;
+  EngineUuid table_uuid;
   std::vector<MgaIndexEntryRowInput> rows;
   // Durable mutation classification for the common transactional index
   // provider.  "exact" remains the compatibility default for bulk/rebuild
@@ -566,13 +567,13 @@ struct MgaIndexEntryAppendBatch {
 struct MgaExactIndexEntryInput {
   std::string encoded_key;
   std::string payload_value;
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
 };
 
 struct MgaExactIndexEntryAppendBatch {
   CrudIndexRecord index;
-  std::string table_uuid;
+  EngineUuid table_uuid;
   std::vector<MgaExactIndexEntryInput> entries;
   std::string entry_kind = "exact";
 };
@@ -890,10 +891,10 @@ RelationReadSnapshot BuildCrudCompatibilityStateFromMga(
     MgaRelationStoreState&& state);
 MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
     const EngineRequestContext& context,
-    const std::string& table_uuid);
+    const EngineUuid& table_uuid);
 MgaTemporaryTableDropResult DropMgaTemporaryTable(
     const EngineRequestContext& context,
-    const std::string& table_uuid);
+    const EngineUuid& table_uuid);
 MgaRelationStatisticsResult EstimateMgaRelationStatistics(const EngineRequestContext& context,
                                                           const std::string& table_uuid,
                                                           bool include_indexes);
@@ -906,13 +907,13 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
 // active MGA transaction. This path never synthesizes or persists a descriptor.
 MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
     const EngineRequestContext& context,
-    const std::string& relation_uuid);
+    const EngineUuid& relation_uuid);
 
 MgaVisibleContextualTextSidecarSnapshotLoadResultV2
 LoadVisibleMgaContextualTextSidecarSnapshotV2(
     const EngineRequestContext& context,
-    const std::string& relation_uuid,
-    const std::string& relation_descriptor_uuid,
+    const EngineUuid& relation_uuid,
+    const EngineUuid& relation_descriptor_uuid,
     std::uint64_t relation_descriptor_generation);
 
 MgaContextualTextTargetSelectionResultV2
@@ -1490,97 +1491,6 @@ EngineApiDiagnostic ValidateMgaSavepointExists(const EngineRequestContext& conte
                                                const std::string& savepoint_name,
                                                const std::string& operation_id);
 
-// SEARCH_KEY: SB_MGA_BULK_IMPORT_PUBLICATION_V1
-// Transaction-local durable publication authority for an opcode-775 mutation.
-// This record proves statement publication inside the owning MGA transaction;
-// it is not transaction commit or cross-session visibility evidence.
-using MgaBulkImportSha256V1 = std::array<std::uint8_t, 32>;
-
-enum class MgaBulkImportPublicationLifecycleV1 : std::uint8_t {
-  prepared = 1,
-  published_uncommitted = 2,
-  aborted = 3,
-};
-
-struct MgaBulkImportPublicationRecordV1 {
-  MgaBulkImportPublicationLifecycleV1 lifecycle =
-      MgaBulkImportPublicationLifecycleV1::prepared;
-  std::string durable_publication_uuid;
-  std::uint64_t durable_publication_generation = 0;
-  MgaBulkImportSha256V1 recovery_idempotency_key{};
-  std::string stream_uuid;
-  std::uint64_t stream_generation = 0;
-  MgaBulkImportSha256V1 descriptor_evidence{};
-  std::string target_relation_uuid;
-  std::uint64_t target_relation_generation = 0;
-  std::string owning_transaction_uuid;
-  std::uint64_t owning_local_transaction_id = 0;
-  std::string authenticated_receipt_uuid;
-  std::string statement_uuid;
-  std::uint64_t savepoint_ordinal = 0;
-  std::string mutation_uuid;
-  std::string bulk_batch_uuid;
-  MgaBulkImportSha256V1 content_sha256{};
-  std::uint64_t total_stream_bytes = 0;
-  std::uint64_t chunk_count = 0;
-  std::uint64_t input_row_count = 0;
-  std::uint64_t affected_rows = 0;
-  std::uint64_t rejected_rows = 0;
-  std::uint64_t imported_row_postcondition_count = 0;
-  MgaBulkImportSha256V1 imported_row_postcondition_sha256{};
-  MgaBulkImportSha256V1 normalized_statement_effect_sha256{};
-  MgaBulkImportSha256V1 column_descriptor_set_sha256{};
-  MgaBulkImportSha256V1 import_policy_bundle_sha256{};
-  MgaBulkImportSha256V1 default_descriptor_set_sha256{};
-  MgaBulkImportSha256V1 constraint_set_sha256{};
-  MgaBulkImportSha256V1 trigger_set_sha256{};
-  MgaBulkImportSha256V1 index_set_sha256{};
-  std::uint64_t executor_availability_generation = 0;
-  MgaBulkImportSha256V1 record_evidence_sha256{};
-
-  bool operator==(const MgaBulkImportPublicationRecordV1&) const = default;
-};
-
-struct MgaBulkImportImportedRowEventV1 {
-  std::string durable_publication_uuid;
-  std::uint64_t durable_publication_generation = 0;
-  MgaBulkImportSha256V1 recovery_idempotency_key{};
-  std::string mutation_uuid;
-  std::string bulk_batch_uuid;
-  std::string owning_transaction_uuid;
-  std::uint64_t owning_local_transaction_id = 0;
-  std::string statement_uuid;
-  std::uint64_t savepoint_ordinal = 0;
-  std::string target_relation_uuid;
-  std::uint64_t target_relation_generation = 0;
-  std::uint64_t import_ordinal = 0;
-  std::string row_uuid;
-  std::string row_version_uuid;
-  std::string row_image_uuid;
-  std::uint64_t row_image_metadata_generation = 0;
-  MgaBulkImportSha256V1 row_image_domain_hash{};
-  MgaBulkImportSha256V1 row_image_value_hash{};
-  MgaBulkImportSha256V1 column_descriptor_set_sha256{};
-  MgaBulkImportSha256V1 canonical_typed_field_vector_sha256{};
-  MgaBulkImportSha256V1 event_evidence_sha256{};
-
-  bool operator==(const MgaBulkImportImportedRowEventV1&) const = default;
-};
-
-struct MgaBulkImportImportedRowEventResultV1 {
-  bool ok = false;
-  bool replayed = false;
-  EngineApiDiagnostic diagnostic;
-  std::vector<MgaBulkImportImportedRowEventV1> events;
-};
-
-struct MgaBulkImportPublicationResultV1 {
-  bool ok = false;
-  bool found = false;
-  bool replayed = false;
-  EngineApiDiagnostic diagnostic;
-  MgaBulkImportPublicationRecordV1 record;
-};
 
 struct MgaBulkImportRowLineageResultV1 {
   bool ok = false;

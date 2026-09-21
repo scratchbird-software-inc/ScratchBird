@@ -1240,7 +1240,8 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(FileDevi
 
 LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
     std::string path,
-    scratchbird::transaction::mga::LocalTransactionInventory inventory) {
+    scratchbird::transaction::mga::LocalTransactionInventory inventory,
+    InventoryPageSyncPolicy sync_policy) {
   InvalidateTransactionInventoryCache(path);
   FileDevice device;
   const auto open = device.Open(path, FileOpenMode::open_existing);
@@ -1252,7 +1253,7 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
   if (!parsed_header.ok()) { return StoreError(parsed_header.status, parsed_header.diagnostic); }
   auto result = PersistLocalTransactionInventoryToOpenDevice(&device,
                                                             parsed_header.header.page_size,
-                                                            std::move(inventory));
+                                                            std::move(inventory), sync_policy);
   if (result.ok()) {
     RefreshTransactionInventoryCache(path, result.inventory, result.horizons);
   } else {
@@ -1264,7 +1265,11 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
 LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     FileDevice* device,
     u32 page_size,
-    LocalTransactionInventory inventory) {
+    LocalTransactionInventory inventory,
+    InventoryPageSyncPolicy sync_policy) {
+  if (sync_policy != InventoryPageSyncPolicy::batched &&
+      sync_policy != InventoryPageSyncPolicy::per_page)
+    return StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.sync_policy_invalid");
   if (device == nullptr)
     return StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_page.null_device_or_context");
   const auto operation_guard = device->AcquireOperationGuard();
@@ -1378,11 +1383,25 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
       return trace_and_return(StorePageError("CATALOG.INVALID_INPUT", "transaction_inventory_snapshot.activation_invalid", why));
     const auto starting_horizons = ComputeLocalTransactionHorizons(starting);
     if (!starting_horizons.ok()) return trace_and_return(StoreError(starting_horizons.status, starting_horizons.diagnostic));
-    const auto allocated = PersistLocalTransactionInventoryToOpenDevice(device, page_size, std::move(starting));
+    const auto allocated = PersistLocalTransactionInventoryToOpenDevice(device, page_size, std::move(starting), sync_policy);
     mark_phase("publish_starting_allocation");
     if (!allocated.ok()) return trace_and_return(allocated);
     inventory.publication_base = allocated.inventory.publication_base;
-    auto activated = PersistLocalTransactionInventoryToOpenDevice(device, page_size, std::move(inventory));
+    auto activated = PersistLocalTransactionInventoryToOpenDevice(device, page_size, std::move(inventory), sync_policy);
+    if (activated.ok()) {
+      auto& io = activated.publication_io;
+      const auto& first = allocated.publication_io;
+      const auto add = [](std::uint64_t& to, std::uint64_t from) {
+        if (from > std::numeric_limits<std::uint64_t>::max() - to) return false;
+        to += from;
+        return true;
+      };
+      if (!io.complete || !first.complete ||
+          !add(io.publications, first.publications) ||
+          !add(io.page_body_writes, first.page_body_writes) ||
+          !add(io.body_bytes_written, first.body_bytes_written) ||
+          !add(io.page_sync_calls, first.page_sync_calls)) io = {};
+    }
     mark_phase("publish_reserved_activation");
     return trace_and_return(std::move(activated));
   }
@@ -1407,6 +1426,13 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
   mark_phase("publish_begin_journal");
   if (!publish_begin.ok()) { return trace_and_return(publish_begin); }
 
+  InventoryPublicationIo publication_io;
+  publication_io.sync_policy = sync_policy;
+  publication_io.database_uuid = context.database_uuid.value;
+  publication_io.filespace_uuid = context.filespace_uuid.value;
+  publication_io.inventory_generation = inventory_generation;
+  publication_io.publications = 1;
+  bool counters_complete = true;
   for (std::size_t page_index = 0; page_index < page_chain.size(); ++page_index) {
     if (page_index > 0) {
       const auto header = WriteInventoryPageHeader(device, context, page_chain[page_index], page_index);
@@ -1441,12 +1467,27 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
                                             built.serialized.data(),
                                             built.serialized.size());
     if (!write_body.ok()) { return trace_and_return(StoreError(write_body.status, write_body.diagnostic)); }
+    if (built.serialized.size() > std::numeric_limits<std::uint64_t>::max() - publication_io.body_bytes_written ||
+        publication_io.page_body_writes == std::numeric_limits<std::uint64_t>::max()) {
+      counters_complete = false;
+    } else {
+      ++publication_io.page_body_writes;
+      publication_io.body_bytes_written += built.serialized.size();
+    }
+    if (sync_policy == InventoryPageSyncPolicy::per_page) {
+      const auto page_sync = device->Sync();
+      if (!page_sync.ok()) return trace_and_return(StoreError(page_sync.status, page_sync.diagnostic));
+      ++publication_io.page_sync_calls;
+    }
   }
   mark_phase("write_inventory_pages");
 
-  const auto sync = device->Sync();
+  if (sync_policy == InventoryPageSyncPolicy::batched) {
+    const auto sync = device->Sync();
+    if (!sync.ok()) return trace_and_return(StoreError(sync.status, sync.diagnostic));
+    ++publication_io.page_sync_calls;
+  }
   mark_phase("device_sync");
-  if (!sync.ok()) { return trace_and_return(StoreError(sync.status, sync.diagnostic)); }
   const auto publish_commit = PersistPublishJournal(device,
                                                     "committed",
                                                     inventory_generation,
@@ -1459,6 +1500,8 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
   inventory.publication_base = next_base;
   result.inventory = std::move(inventory);
   result.horizons = horizons.horizons;
+  publication_io.complete = counters_complete;
+  result.publication_io = counters_complete ? publication_io : InventoryPublicationIo{};
   return trace_and_return(std::move(result));
 }
 

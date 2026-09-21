@@ -12,6 +12,7 @@
 #include "descriptor_value_runtime.hpp"
 #include "result_cursor_plan_memory_governance.hpp"
 #include "runtime_consumption_evidence.hpp"
+#include "../descriptor_content_encoding.hpp"
 
 #include <cstddef>
 #include <atomic>
@@ -30,10 +31,7 @@ namespace memory = scratchbird::core::memory;
 using PreparedUuid = internal_api::EngineUuid;
 
 enum class PreparedTemplateFailureKind { kNone, kAdmission, kAllocation, kContentHash, kIdentity };
-class PreparedContentHashFailure final : public std::exception {
- public:
-  const char* what() const noexcept override { return "prepared content SHA-256 calculation failed"; }
-};
+using PreparedContentHashFailure = metadata::ContentHashFailure;
 
 // SEARCH_KEY: SB_EXECUTOR_PREPARED_TEMPLATE_METADATA_ONLY
 // Prepared execution templates cache descriptor and slot metadata only.

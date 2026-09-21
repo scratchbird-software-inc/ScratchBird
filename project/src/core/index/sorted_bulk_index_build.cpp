@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <optional>
 #include <string_view>
+#include <type_traits>
 
 namespace scratchbird::core::index {
 namespace {
@@ -154,11 +155,11 @@ bool EntryLess(const SortedBulkIndexEntry& left,
   if (key_compare != 0) {
     return key_compare < 0;
   }
-  const int row_compare = CompareUnsignedText(left.row_uuid, right.row_uuid);
+  const int row_compare = scratchbird::core::uuid::CompareUuid128(left.row_uuid, right.row_uuid);
   if (row_compare != 0) {
     return row_compare < 0;
   }
-  return CompareUnsignedText(left.version_uuid, right.version_uuid) < 0;
+  return scratchbird::core::uuid::CompareUuid128(left.version_uuid, right.version_uuid) < 0;
 }
 
 bool KeyEqual(std::string_view left, std::string_view right) {
@@ -190,13 +191,12 @@ std::vector<byte> PhysicalEncodedKeyFor(const SortedBulkIndexMetadata& metadata,
   return encoded.ok() ? encoded.encoded : std::vector<byte>{};
 }
 
-std::optional<TypedUuid> ParseProofUuid(UuidKind kind,
-                                        const std::string& text) {
-  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(kind, text);
-  if (!parsed.ok()) {
+std::optional<TypedUuid> BindProofUuid(UuidKind kind,
+                                        const scratchbird::core::platform::Uuid& value) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(value)) {
     return std::nullopt;
   }
-  return parsed.value;
+  return TypedUuid{kind, value};
 }
 
 void AddReservationEvidence(
@@ -240,8 +240,8 @@ SortedBulkIndexBuildResult BuildCandidateRootGeneration(
 
   u64 covering_payload_count = 0;
   for (const auto& entry : result.entries) {
-    const auto row_uuid = ParseProofUuid(UuidKind::row, entry.row_uuid);
-    const auto version_uuid = ParseProofUuid(UuidKind::row, entry.version_uuid);
+    const auto row_uuid = BindProofUuid(UuidKind::row, entry.row_uuid);
+    const auto version_uuid = BindProofUuid(UuidKind::row, entry.version_uuid);
     if (!row_uuid || !version_uuid) {
       result.invalid_descriptor_refused = true;
       result.entries.clear();
@@ -515,8 +515,8 @@ SortedBulkIndexBuildResult ProveUniqueInputAndVisibleKeys(
   std::vector<SortedBulkIndexEntry> visible;
   visible.reserve(request.visible_unique_keys.size());
   for (const auto& row : request.visible_unique_keys) {
-    if (row.encoded_key.empty() || row.row_uuid.empty() ||
-        row.version_uuid.empty()) {
+    if (row.encoded_key.empty() || !scratchbird::core::uuid::IsEngineIdentityUuid(row.row_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(row.version_uuid)) {
       result.invalid_descriptor_refused = true;
       result.entries.clear();
       return RefuseWithEvidence(
@@ -592,7 +592,8 @@ SortedBulkIndexBuildResult ProveUniqueInputAndVisibleKeys(
     AddEvidence(&result, "sorted_bulk_unique_proof_reservation_ledger_used",
                 "true");
     if (request.unique_reservation_ledger == nullptr ||
-        !request.unique_constraint_uuid.valid()) {
+        request.unique_constraint_uuid.kind != UuidKind::object ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(request.unique_constraint_uuid.value)) {
       result.invalid_descriptor_refused = true;
       result.entries.clear();
       return RefuseWithEvidence(
@@ -601,7 +602,8 @@ SortedBulkIndexBuildResult ProveUniqueInputAndVisibleKeys(
           "index.sorted_bulk.unique_descriptor_invalid",
           "reservation-ledger unique proof requires a constraint UUID");
     }
-    if (!request.transaction_uuid.valid() ||
+    if (request.transaction_uuid.kind != UuidKind::transaction ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(request.transaction_uuid.value) ||
         request.local_transaction_id == 0) {
       result.missing_mga_proof_refused = true;
       result.entries.clear();
@@ -614,9 +616,9 @@ SortedBulkIndexBuildResult ProveUniqueInputAndVisibleKeys(
 
     UniqueIndexReservationLedger candidate = *request.unique_reservation_ledger;
     for (const auto& entry : effective_incoming) {
-      const auto row_uuid = ParseProofUuid(UuidKind::row, entry.row_uuid);
+      const auto row_uuid = BindProofUuid(UuidKind::row, entry.row_uuid);
       const auto version_uuid =
-          ParseProofUuid(UuidKind::row, entry.version_uuid);
+          BindProofUuid(UuidKind::row, entry.version_uuid);
       if (!row_uuid || !version_uuid) {
         result.invalid_descriptor_refused = true;
         result.entries.clear();
@@ -716,10 +718,12 @@ SortedBulkIndexBuildResult ProveUniqueInputAndVisibleKeys(
 
 }  // namespace
 
-SortedBulkIndexBuildResult BuildSortedExactBulkIndex(
+static SortedBulkIndexBuildResult BuildSortedExactBulkIndexStaged(
     const SortedBulkIndexBuildRequest& request) {
-  if (!request.metadata.index_uuid.valid() ||
-      !request.metadata.table_uuid.valid()) {
+  if (request.metadata.index_uuid.kind != UuidKind::object ||
+      request.metadata.table_uuid.kind != UuidKind::object ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.metadata.index_uuid.value) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.metadata.table_uuid.value)) {
     return Refuse("SB-INDEX-SORTED-BULK-IDENTITY-REQUIRED",
                   "index.sorted_bulk.identity_required");
   }
@@ -732,10 +736,12 @@ SortedBulkIndexBuildResult BuildSortedExactBulkIndex(
   auto result = SortedBulkIndexBuildResult{};
   result.entries.reserve(request.rows.size());
   for (const auto& row : request.rows) {
-    if (row.encoded_key.empty() || row.row_uuid.empty() ||
-        row.version_uuid.empty()) {
-      return Refuse("SB-INDEX-SORTED-BULK-ENTRY-INVALID",
-                    "index.sorted_bulk.entry_invalid");
+    if (row.encoded_key.empty() || !scratchbird::core::uuid::IsEngineIdentityUuid(row.row_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(row.version_uuid)) {
+      auto refused = Refuse("SB-INDEX-SORTED-BULK-ENTRY-INVALID",
+                            "index.sorted_bulk.entry_invalid");
+      refused.invalid_descriptor_refused = true;
+      return refused;
     }
     if (IsUnsafeLegacyIndexKeyEncoding(row.encoded_key)) {
       result.unsafe_key_refused = true;
@@ -900,6 +906,23 @@ SortedBulkIndexBuildResult BuildSortedExactBulkIndex(
                              "engine_transaction_inventory"});
   for (const auto& step : result.ordered_plan.steps) {
     result.evidence.push_back({"sorted_bulk_index_ordered_plan_step", step});
+  }
+  return result;
+}
+
+SortedBulkIndexBuildResult BuildSortedExactBulkIndex(
+    const SortedBulkIndexBuildRequest& request) {
+  static_assert(std::is_nothrow_move_assignable_v<UniqueIndexReservationLedger>);
+  static_assert(std::is_nothrow_move_constructible_v<SortedBulkIndexBuildResult>);
+  if (request.unique_reservation_ledger == nullptr) {
+    return BuildSortedExactBulkIndexStaged(request);
+  }
+  auto staged_request = request;
+  auto staged_ledger = *request.unique_reservation_ledger;
+  staged_request.unique_reservation_ledger = &staged_ledger;
+  auto result = BuildSortedExactBulkIndexStaged(staged_request);
+  if (result.ok()) {
+    *request.unique_reservation_ledger = std::move(staged_ledger);
   }
   return result;
 }

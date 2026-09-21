@@ -141,6 +141,20 @@ CanonicalOptimizerAdmissionResult AdmitCanonicalOptimizerPlanningRequest(
                   "QOW-DIAG-OPTIMIZER-ADMISSION-CATALOG-V1",
                   "catalog_snapshot_identity");
   }
+  std::set<planner::CanonicalPlannerUuid> generation_objects;
+  if (request.catalog.object_generations.size() > request.catalog.object_uuids.size()) {
+    return refuse(CanonicalOptimizerAdmissionStage::kCatalogEpoch,
+                  "QOW-DIAG-OPTIMIZER-ADMISSION-CATALOG-V1", "object_generation_coverage");
+  }
+  for (const auto& entry : request.catalog.object_generations) {
+    if (!IsCanonicalUuid(entry.object_uuid) || entry.generation == 0 ||
+        !generation_objects.insert(entry.object_uuid).second ||
+        std::ranges::find(request.catalog.object_uuids, entry.object_uuid) ==
+            request.catalog.object_uuids.end()) {
+      return refuse(CanonicalOptimizerAdmissionStage::kCatalogEpoch,
+                    "QOW-DIAG-OPTIMIZER-ADMISSION-CATALOG-V1", "object_generation_identity");
+    }
+  }
   for (const auto descriptor_id : required_descriptors) {
     if (std::ranges::find(request.catalog.descriptor_ids, descriptor_id) ==
         request.catalog.descriptor_ids.end()) {

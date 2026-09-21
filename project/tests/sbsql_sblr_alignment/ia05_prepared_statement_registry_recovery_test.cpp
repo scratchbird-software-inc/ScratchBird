@@ -405,7 +405,7 @@ int main() {
     const auto collision_result =
         PublishSblrPreparedStatementV1(context, collision);
     Require(!collision_result.ok &&
-                collision_result.diagnostic.code == "MGA.TRANSACTION.STALE",
+                collision_result.diagnostic.code == "PREPARED.REGISTRY.STALE",
             "changed PREPARE descriptor replaced durable identity");
 
     const auto execution_one = Execution(prepared, 7);
@@ -494,7 +494,7 @@ int main() {
             changed_execution);
     Require(!changed_execution_result.ok &&
                 changed_execution_result.diagnostic.code ==
-                    "MGA.TRANSACTION.STALE",
+                    "PREPARED.REGISTRY.STALE",
             "changed EXECUTE descriptor replaced a durable terminal");
     auto wrong_result_identity = Execution(prepared, 9);
     wrong_result_identity.terminal_api_result.operation_id =
@@ -506,7 +506,7 @@ int main() {
             wrong_result_identity);
     Require(!wrong_result_identity_publication.ok &&
                 wrong_result_identity_publication.diagnostic.code ==
-                    "MGA.TRANSACTION.STALE",
+                    "PREPARED.REGISTRY.STALE",
             "EXECUTE terminal with the wrong body identity was published");
     const auto execution_two = Execution(prepared, 11);
     const auto execution_two_published =
@@ -594,7 +594,7 @@ int main() {
         prepared.prepared_generation, prepared.descriptor_sha256, free_hash,
         conflicting_free);
     Require(!refused_free.ok &&
-                refused_free.diagnostic.code == "MGA.TRANSACTION.STALE",
+                refused_free.diagnostic.code == "PREPARED.REGISTRY.STALE",
             "conflicting FREE replay was admitted");
 
     auto parameterized_free = std::vector<std::uint8_t>(128, 31);
@@ -754,7 +754,7 @@ int main() {
     const auto corrupt =
         LoadSblrPreparedStatementRegistryV1(corrupt_context);
     Require(!corrupt.ok &&
-                corrupt.diagnostic.code == "CATALOG.SNAPSHOT_STALE",
+                corrupt.diagnostic.code == "PREPARED.REGISTRY.INVALID",
             "corrupt durable registry did not fail closed");
 
     const auto public_directory =

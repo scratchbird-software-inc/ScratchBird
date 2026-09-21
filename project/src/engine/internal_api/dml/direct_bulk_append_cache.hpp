@@ -10,8 +10,6 @@
 
 #include "crud_support/crud_store.hpp"
 #include "dml/mga_relation_read_view.hpp"
-#include "dml/transactional_index_provider.hpp"
-#include "insert_physical_integration.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 
 #include <cstdint>
@@ -40,11 +38,11 @@ struct DirectBulkAppendContextCacheRecord {
 // Drop only this database/table's advisory index entries. A caller already
 // holding a context snapshot must reload the missing entries from MGA.
 void DirectEvictAppendIndexEntryCache(const EngineRequestContext& context,
-                                     const std::string& table_uuid);
+                                     const EngineUuid& table_uuid);
 
 bool DirectAppendIndexEntryCacheAvailable(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_version_count,
     bool require_entry_lookup = false);
 
@@ -53,24 +51,24 @@ bool DirectAppendIndexEntryCacheAvailable(
 // of logical keys and physical SBKOHEX representations.
 bool DirectBuildAppendIndexConflictCaches(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_version_count,
     const std::vector<CrudIndexRecord>& indexes,
     const std::vector<std::vector<std::pair<std::string, std::string>>>&
         logical_value_batch,
-    std::map<std::string, std::set<std::string>>* keys_by_index,
-    std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>*
+    std::map<EngineUuid, std::set<std::string>>* keys_by_index,
+    std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>*
         entry_by_index_key);
 
 bool DirectLookupBulkAppendContextCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_version_count,
     DirectBulkAppendContextCacheRecord* record);
 
 void DirectStoreBulkAppendContextCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_version_count,
     const MgaRelationReadView& state,
     const std::vector<CrudIndexRecord>& visible_indexes,
@@ -80,7 +78,7 @@ void DirectStoreBulkAppendContextCache(
 
 bool DirectAdvanceBulkAppendContextCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t previous_row_version_count,
     std::uint64_t next_row_version_count,
     bool index_entries_authoritative,
@@ -88,14 +86,14 @@ bool DirectAdvanceBulkAppendContextCache(
 
 void DirectStoreAppendIndexEntryCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_version_count,
     const MgaRelationReadView& state,
     const std::vector<CrudIndexEntryRecord>& entries);
 
 void DirectAppendIndexBatchesToCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t previous_row_version_count,
     std::uint64_t appended_row_count,
     const std::vector<MgaExactIndexEntryAppendBatch>& exact_batches,
@@ -104,7 +102,7 @@ void DirectAppendIndexBatchesToCache(
 
 void DirectAppendIndexEntriesToCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t previous_row_version_count,
     std::uint64_t appended_row_count,
     const std::vector<CrudIndexEntryRecord>& appended_entries);

@@ -1014,6 +1014,14 @@ class SbpsClient {
   [[nodiscard]] bool UsesDedicatedV2ChannelForTest() const;
 
  private:
+  ServerExecutionResult ExecuteSblrWithRouting(
+      const ParserSessionContext& session,
+      const scratchbird::core::platform::Uuid& prepared_statement_uuid,
+      std::string_view encoded_sblr_envelope,
+      const std::vector<std::uint8_t>& data_packet,
+      const ParserTransactionRouting& transaction,
+      bool cursor_requested) const;
+
   bool SendHelloWithRequirements(bool require_transaction_routing_v2,
                                  bool* transaction_routing_v2_accepted,
                                  bool require_prepared_metadata_transfer_v1,

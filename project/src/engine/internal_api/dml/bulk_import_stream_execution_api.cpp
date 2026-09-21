@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/bulk_import_stream_execution_api.hpp"
+#include "dml/bulk_import_column_digest.hpp"
 
 #include "core/hash/hash_digest.hpp"
 #include "core/uuid/uuid.hpp"
@@ -37,8 +38,7 @@ namespace {
 using BulkUuid = engine::sblr::BulkImportUuid;
 using BulkSha = engine::sblr::BulkImportSha;
 
-constexpr std::string_view kConverterUuid =
-    "019d0000-0000-7000-8000-00000000b775";
+constexpr auto kConverterUuid = kBulkImportTextConverterUuidV1;
 constexpr std::uint64_t kConverterGeneration = 1;
 
 EngineExecuteBulkImportStreamResultV1 Failure(std::string code,
@@ -123,32 +123,19 @@ BulkSha HashMaterial(const std::vector<std::uint8_t>& material) {
   return digest.ok() ? digest.digest : BulkSha{};
 }
 
-bool ParseUuidText(std::string_view text, BulkUuid* output) {
-  if (output == nullptr) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
-      scratchbird::core::uuid::UuidToString(parsed.value) != text) {
-    return false;
-  }
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            output->begin());
-  return true;
-}
-
-std::string UuidText(const BulkUuid& uuid) {
-  scratchbird::core::platform::Uuid value;
-  std::copy(uuid.begin(), uuid.end(), value.bytes.begin());
-  return scratchbird::core::uuid::UuidToString(value);
-}
-
 void AppendUuid(std::vector<std::uint8_t>* out, const BulkUuid& uuid) {
   out->insert(out->end(), uuid.begin(), uuid.end());
 }
 
-bool AppendUuidText(std::vector<std::uint8_t>* out, std::string_view text) {
-  BulkUuid uuid{};
-  if (!ParseUuidText(text, &uuid)) return false;
-  AppendUuid(out, uuid);
+bool CopyEngineUuid(const EngineUuid& identity, BulkUuid* output) {
+  if (!output || !core::uuid::IsEngineIdentityUuid(identity)) return false;
+  *output=identity.bytes;
+  return true;
+}
+
+bool AppendEngineUuid(std::vector<std::uint8_t>* out, const EngineUuid& identity) {
+  if (!out || !core::uuid::IsEngineIdentityUuid(identity)) return false;
+  AppendUuid(out,identity.bytes);
   return true;
 }
 
@@ -343,13 +330,13 @@ bool ExactDescriptorContext(
   }
   BulkUuid receipt{}, transaction{}, snapshot{}, catalog{}, security{}, resource{};
   const bool parsed =
-      ParseUuidText(context.statement_receipt_uuid, &receipt) &&
-      ParseUuidText(context.transaction_uuid, &transaction) &&
-      ParseUuidText(context.statement_snapshot_uuid, &snapshot) &&
-      ParseUuidText(context.catalog_epoch_uuid, &catalog) &&
-      ParseUuidText(context.authorization_context.authority_uuid,
+      CopyEngineUuid(context.statement_receipt_uuid, &receipt) &&
+      CopyEngineUuid(context.transaction_uuid, &transaction) &&
+      CopyEngineUuid(context.statement_snapshot_uuid, &snapshot) &&
+      CopyEngineUuid(context.catalog_epoch_uuid, &catalog) &&
+      CopyEngineUuid(context.authorization_context.authority_uuid,
                     &security) &&
-      ParseUuidText(context.resource_admission_uuid, &resource);
+      CopyEngineUuid(context.resource_admission_uuid, &resource);
   if (!parsed || context.local_transaction_id == 0) {
     *diagnostic = Diagnostic(
         "MGA.TRANSACTION_INVALID",
@@ -384,13 +371,13 @@ bool ExactContext(const EngineRequestContext& context,
                   EngineApiDiagnostic* diagnostic) {
   BulkUuid receipt{}, transaction{}, snapshot{}, catalog{}, security{}, resource{};
   const bool parsed =
-      ParseUuidText(context.statement_receipt_uuid, &receipt) &&
-      ParseUuidText(context.transaction_uuid, &transaction) &&
-      ParseUuidText(context.statement_snapshot_uuid, &snapshot) &&
-      ParseUuidText(context.catalog_epoch_uuid, &catalog) &&
-      ParseUuidText(context.authorization_context.authority_uuid,
+      CopyEngineUuid(context.statement_receipt_uuid, &receipt) &&
+      CopyEngineUuid(context.transaction_uuid, &transaction) &&
+      CopyEngineUuid(context.statement_snapshot_uuid, &snapshot) &&
+      CopyEngineUuid(context.catalog_epoch_uuid, &catalog) &&
+      CopyEngineUuid(context.authorization_context.authority_uuid,
                     &security) &&
-      ParseUuidText(context.resource_admission_uuid, &resource);
+      CopyEngineUuid(context.resource_admission_uuid, &resource);
   if (!parsed || context.local_transaction_id == 0) {
     *diagnostic = Diagnostic("MGA.TRANSACTION_INVALID",
                              "sblr.bulk_import_stream.execution_context_invalid",
@@ -445,71 +432,8 @@ bool ExactExecutorAvailability(
   return true;
 }
 
-bool ColumnDigest(const MgaRelationStorageDescriptor& descriptor,
-                  BulkSha* output) {
-  if (output == nullptr || descriptor.columns.empty() ||
-      descriptor.columns.size() > 65535 ||
-      descriptor.relation_generation == 0 ||
-      descriptor.descriptor_generation == 0) {
-    return false;
-  }
-  std::vector<const MgaRelationColumnStorageDescriptor*> columns;
-  columns.reserve(descriptor.columns.size());
-  for (const auto& column : descriptor.columns) columns.push_back(&column);
-  std::sort(columns.begin(), columns.end(), [](const auto* left,
-                                               const auto* right) {
-    return left->ordinal < right->ordinal;
-  });
-  std::set<std::uint32_t> ordinals;
-  std::set<std::string> column_uuids;
-  std::vector<std::uint8_t> material;
-  constexpr std::string_view domain =
-      "ScratchBird.BulkImportStreamColumnDescriptorSet.V1";
-  material.insert(material.end(), domain.begin(), domain.end());
-  if (!AppendUuidText(&material, descriptor.relation_uuid))
-    return false;
-  AppendU64(&material, descriptor.relation_generation);
-  if (!AppendUuidText(&material, descriptor.descriptor_uuid))
-    return false;
-  AppendU64(&material, descriptor.descriptor_generation);
-  AppendU32(&material, static_cast<std::uint32_t>(columns.size()));
-  for (const auto* column : columns) {
-    if (!ordinals.insert(column->ordinal).second ||
-        !column_uuids.insert(column->column_uuid).second ||
-        column->column_generation == 0) {
-      return false;
-    }
-    AppendU32(&material, column->ordinal);
-    if (!AppendUuidText(&material, column->column_uuid)) return false;
-    AppendU64(&material, column->column_generation);
-    if (!AppendLp16(&material, column->canonical_name_key) ||
-        !AppendUuidText(&material,
-                        column->value_descriptor.descriptor_uuid) ||
-        !AppendLp16(&material, column->value_descriptor.descriptor_kind) ||
-        !AppendLp16(&material,
-                    column->value_descriptor.canonical_type_name) ||
-        !CanonicalUtf8(column->value_descriptor.encoded_descriptor)) {
-      return false;
-    }
-    const std::vector<std::uint8_t> encoded(
-        column->value_descriptor.encoded_descriptor.begin(),
-        column->value_descriptor.encoded_descriptor.end());
-    const auto encoded_hash = HashMaterial(encoded);
-    material.insert(material.end(), encoded_hash.begin(), encoded_hash.end());
-    material.push_back(column->nullable ? 1 : 0);
-    material.push_back(column->generated ? 1 : 0);
-    material.push_back(column->identity_column ? 1 : 0);
-    if (!AppendLp16(&material, column->storage_class) ||
-        !AppendLp16(&material, column->charset_uuid, true) ||
-        !AppendLp16(&material, column->collation_uuid, true)) {
-      return false;
-    }
-    AppendU32(&material, column->character_length);
-    AppendU64(&material, column->max_inline_bytes);
-    if (!AppendLp16(&material, column->overflow_policy)) return false;
-  }
-  *output = HashMaterial(material);
-  return Nonzero(*output);
+bool ColumnDigest(const MgaRelationStorageDescriptor& descriptor, BulkSha* output) {
+  return ComputeBulkImportColumnDigestV2(descriptor, output);
 }
 
 bool DescriptorHasForbiddenDefaultOrConstraint(std::string_view encoded) {
@@ -536,7 +460,7 @@ bool LoadTargetAuthority(const EngineRequestContext& context,
                          TargetAuthority* output,
                          EngineApiDiagnostic* diagnostic) {
   if (output == nullptr || diagnostic == nullptr) return false;
-  const std::string relation_uuid = UuidText(allocation.target_relation_uuid);
+  const EngineUuid relation_uuid{allocation.target_relation_uuid};
   const auto loaded =
       TransactionalRelationStore(context).LoadRelationDescriptor(relation_uuid);
   if (!loaded.ok) {
@@ -549,8 +473,8 @@ bool LoadTargetAuthority(const EngineRequestContext& context,
   }
   const auto& descriptor = loaded.descriptor;
   BulkUuid relation{}, row_shape{};
-  if (!ParseUuidText(descriptor.relation_uuid, &relation) ||
-      !ParseUuidText(descriptor.descriptor_uuid, &row_shape) ||
+  if (!CopyEngineUuid(descriptor.relation_uuid, &relation) ||
+      !CopyEngineUuid(descriptor.descriptor_uuid, &row_shape) ||
       relation != allocation.target_relation_uuid ||
       descriptor.relation_generation != allocation.target_relation_generation ||
       row_shape != allocation.row_shape_uuid ||
@@ -602,15 +526,15 @@ BulkSha ConverterEvidence(const MgaRelationColumnStorageDescriptor& column) {
   constexpr std::string_view domain =
       "ScratchBird.BulkImportStreamTextConverter.V1";
   material.insert(material.end(), domain.begin(), domain.end());
-  if (!AppendUuidText(&material, kConverterUuid)) {
+  if (!AppendEngineUuid(&material, kConverterUuid)) {
     return {};
   }
   AppendU64(&material, kConverterGeneration);
-  if (!AppendUuidText(&material, column.column_uuid)) {
+  if (!AppendEngineUuid(&material, column.column_uuid)) {
     return {};
   }
   AppendU64(&material, column.column_generation);
-  if (!AppendUuidText(&material,
+  if (!AppendEngineUuid(&material,
                       column.value_descriptor.descriptor_uuid) ||
       !AppendLp16(&material,
                   column.value_descriptor.canonical_type_name)) {
@@ -665,13 +589,13 @@ BulkSha PolicyBundleDigest(const BulkImportStreamAllocation& allocation,
   for (const auto* column : target.columns) {
     const auto converter_evidence = ConverterEvidence(*column);
     if (!Nonzero(converter_evidence) ||
-        !AppendUuidText(&material, column->column_uuid)) {
+        !AppendEngineUuid(&material, column->column_uuid)) {
       return {};
     }
     AppendU64(&material, column->column_generation);
-    if (!AppendUuidText(
+    if (!AppendEngineUuid(
             &material, column->value_descriptor.descriptor_uuid) ||
-        !AppendUuidText(&material, kConverterUuid)) {
+        !AppendEngineUuid(&material, kConverterUuid)) {
       return {};
     }
     AppendU64(&material, kConverterGeneration);
@@ -726,8 +650,8 @@ BulkSha TypedFieldVectorHash(
     const auto& column = *columns[index];
     const auto& typed = row.fields[index].second;
     AppendU32(&material, column.ordinal);
-    if (!AppendUuidText(&material, column.column_uuid) ||
-        !AppendUuidText(&material,
+    if (!AppendEngineUuid(&material, column.column_uuid) ||
+        !AppendEngineUuid(&material,
                         column.value_descriptor.descriptor_uuid)) {
       return {};
     }
@@ -902,7 +826,7 @@ class CanonicalCsvDecoder final {
         "ScratchBird.BulkImportStreamRowIdentity.V1",
         row_identity_material);
     EngineRowValue row;
-    row.requested_row_uuid = UuidText(row_uuid);
+    row.requested_row_uuid = EngineUuid{row_uuid};
     row.fields.reserve(columns_.size());
     for (std::size_t index = 0; index < columns_.size(); ++index) {
       const auto& column = *columns_[index];
@@ -1014,11 +938,8 @@ BulkSha ImportedRowEventEvidence(
     const MgaBulkImportImportedRowEventV1& event) {
   std::vector<std::uint8_t> material;
   material.insert(material.end(), {1, 0, 0, 0});
-  BulkUuid value{};
-  auto append = [&](std::string_view text) {
-    if (!ParseUuidText(text, &value)) return false;
-    AppendUuid(&material, value);
-    return true;
+  auto append = [&](const EngineUuid& id) {
+    return AppendEngineUuid(&material, id);
   };
   if (!append(event.durable_publication_uuid)) return {};
   AppendU64(&material, event.durable_publication_generation);
@@ -1088,11 +1009,11 @@ BulkSha PostconditionEvidence(
   std::vector<std::uint8_t> material;
   material.insert(material.end(), record.recovery_idempotency_key.begin(),
                   record.recovery_idempotency_key.end());
-  if (!AppendUuidText(&material, record.durable_publication_uuid)) return {};
+  if (!AppendEngineUuid(&material, record.durable_publication_uuid)) return {};
   AppendU64(&material, record.durable_publication_generation);
-  if (!AppendUuidText(&material, record.mutation_uuid) ||
-      !AppendUuidText(&material, record.bulk_batch_uuid) ||
-      !AppendUuidText(&material, record.target_relation_uuid)) {
+  if (!AppendEngineUuid(&material, record.mutation_uuid) ||
+      !AppendEngineUuid(&material, record.bulk_batch_uuid) ||
+      !AppendEngineUuid(&material, record.target_relation_uuid)) {
     return {};
   }
   AppendU64(&material, record.target_relation_generation);
@@ -1206,8 +1127,8 @@ std::vector<std::uint8_t> BuildBirs(
     const BulkImportStreamEntry& entry,
     const MgaBulkImportPublicationRecordV1& publication) {
   BulkUuid publication_uuid{}, transaction_uuid{};
-  if (!ParseUuidText(publication.durable_publication_uuid, &publication_uuid) ||
-      !ParseUuidText(publication.owning_transaction_uuid, &transaction_uuid)) {
+  if (!CopyEngineUuid(publication.durable_publication_uuid, &publication_uuid) ||
+      !CopyEngineUuid(publication.owning_transaction_uuid, &transaction_uuid)) {
     return {};
   }
   engine::sblr::SblrBulkImportStreamResultV1 result;
@@ -1238,7 +1159,7 @@ EngineExecuteBulkImportStreamResultV1 CompleteRegistryPublication(
     const BulkImportStreamEntry& entry,
     const MgaBulkImportPublicationRecordV1& publication, bool replayed) {
   BulkUuid publication_uuid{};
-  if (!ParseUuidText(publication.durable_publication_uuid, &publication_uuid)) {
+  if (!CopyEngineUuid(publication.durable_publication_uuid, &publication_uuid)) {
     return Failure("BULK.IMPORT.RECOVERY_CONFLICT",
                    "sblr.bulk_import_stream.publication_identity_invalid",
                    "the MGA publication identity is not canonical");
@@ -1310,25 +1231,25 @@ MgaBulkImportPublicationRecordV1 BuildPublicationRecord(
     const BulkSha& default_set, const BulkSha& constraint_set,
     const BulkSha& trigger_set, const BulkSha& index_set) {
   MgaBulkImportPublicationRecordV1 record;
-  record.durable_publication_uuid = UuidText(publication_uuid);
+  record.durable_publication_uuid = EngineUuid{publication_uuid};
   record.durable_publication_generation = 1;
   record.recovery_idempotency_key = entry.recovery_key_sha256;
-  record.stream_uuid = UuidText(entry.allocation.stream_uuid);
+  record.stream_uuid = EngineUuid{entry.allocation.stream_uuid};
   record.stream_generation = entry.allocation.stream_generation;
   record.descriptor_evidence = entry.allocation.descriptor_evidence;
-  record.target_relation_uuid = UuidText(entry.allocation.target_relation_uuid);
+  record.target_relation_uuid = EngineUuid{entry.allocation.target_relation_uuid};
   record.target_relation_generation =
       entry.allocation.target_relation_generation;
   record.owning_transaction_uuid =
-      UuidText(entry.allocation.owning_transaction_uuid);
+      EngineUuid{entry.allocation.owning_transaction_uuid};
   record.owning_local_transaction_id =
       entry.allocation.owning_local_transaction_id;
   record.authenticated_receipt_uuid =
-      UuidText(entry.allocation.authenticated_receipt_uuid);
+      EngineUuid{entry.allocation.authenticated_receipt_uuid};
   record.statement_uuid = context.statement_uuid;
   record.savepoint_ordinal = 1;
-  record.mutation_uuid = UuidText(mutation_uuid);
-  record.bulk_batch_uuid = UuidText(batch_uuid);
+  record.mutation_uuid = EngineUuid{mutation_uuid};
+  record.bulk_batch_uuid = EngineUuid{batch_uuid};
   record.content_sha256 = entry.seal.content_sha;
   record.total_stream_bytes = entry.seal.total_stream_bytes;
   record.chunk_count = entry.seal.final_chunk_count;
@@ -1367,9 +1288,9 @@ std::vector<MgaBulkImportImportedRowEventV1> BuildImportedRowEvents(
     const EngineRequestContext& context, const BulkImportStreamEntry& entry,
     const TargetAuthority& target, const ParsedExecution& parsed,
     const BulkUuid& publication_uuid, const BulkUuid& mutation_uuid,
-    const BulkUuid& batch_uuid, std::span<const std::string> row_uuids,
-    std::span<const std::string> version_uuids,
-    std::span<const std::string> image_uuids) {
+    const BulkUuid& batch_uuid, std::span<const EngineUuid> row_uuids,
+    std::span<const EngineUuid> version_uuids,
+    std::span<const EngineUuid> image_uuids) {
   if (row_uuids.size() != parsed.rows.size() ||
       version_uuids.size() != parsed.rows.size() ||
       image_uuids.size() != parsed.rows.size()) {
@@ -1382,13 +1303,13 @@ std::vector<MgaBulkImportImportedRowEventV1> BuildImportedRowEvents(
       return {};
     }
     MgaBulkImportImportedRowEventV1 event;
-    event.durable_publication_uuid = UuidText(publication_uuid);
+    event.durable_publication_uuid = EngineUuid{publication_uuid};
     event.durable_publication_generation = 1;
     event.recovery_idempotency_key = entry.recovery_key_sha256;
-    event.mutation_uuid = UuidText(mutation_uuid);
-    event.bulk_batch_uuid = UuidText(batch_uuid);
+    event.mutation_uuid = EngineUuid{mutation_uuid};
+    event.bulk_batch_uuid = EngineUuid{batch_uuid};
     event.owning_transaction_uuid =
-        UuidText(entry.allocation.owning_transaction_uuid);
+        EngineUuid{entry.allocation.owning_transaction_uuid};
     event.owning_local_transaction_id =
         entry.allocation.owning_local_transaction_id;
     event.statement_uuid = context.statement_uuid;
@@ -1433,7 +1354,14 @@ EngineApiDiagnostic FirstNativeDiagnostic(
       if (index != 0) evidence_detail.push_back(',');
       evidence_detail += result.evidence[index].evidence_kind;
       evidence_detail.push_back('=');
-      evidence_detail += result.evidence[index].evidence_id;
+      if (const auto* text=std::get_if<std::string>(
+              &result.evidence[index].evidence_id)) {
+        evidence_detail += *text;
+      } else {
+        // Diagnostic text is not an identity carrier. The native evidence
+        // retains its typed binary UUID; never serialize it as engine authority.
+        evidence_detail += "[binary identity]";
+      }
     }
   }
   return Diagnostic("BULK.IMPORT.ABORTED",
@@ -1619,12 +1547,12 @@ EngineExecuteBulkImportStreamResultV1 ExecuteBulkImportStreamV1(
   const BulkUuid batch_uuid = DerivedUuid(
       authority.entry.allocation.stream_uuid,
       "ScratchBird.BulkImportStreamBatchIdentity.V1", recovery_material);
-  std::set<std::string> operation_identities{
-      UuidText(authority.entry.allocation.stream_uuid),
-      UuidText(authority.entry.allocation.recovery_operation_uuid),
-      UuidText(publication_uuid), UuidText(mutation_uuid), UuidText(batch_uuid)};
+  std::set<BulkUuid> operation_identities{
+      authority.entry.allocation.stream_uuid,
+      authority.entry.allocation.recovery_operation_uuid,
+      publication_uuid, mutation_uuid, batch_uuid};
   for (const auto& row : parsed.rows) {
-    if (!operation_identities.insert(row.requested_row_uuid).second) {
+    if (!operation_identities.insert(row.requested_row_uuid.bytes).second) {
       return Failure("BULK.IMPORT.RECOVERY_CONFLICT",
                      "sblr.bulk_import_stream.derived_identity_collision",
                      "one deterministic operation identity collided");
@@ -1719,9 +1647,9 @@ EngineExecuteBulkImportStreamResultV1 ExecuteBulkImportStreamV1(
   native.option_envelopes.push_back("feature.strict_bulk_load=enabled");
   native.checkpoint_policy.checkpoint_mode = "disabled";
   native.before_row_publication =
-      [&](std::span<const std::string> row_uuids,
-          std::span<const std::string> version_uuids,
-          std::span<const std::string> image_uuids) {
+      [&](std::span<const EngineUuid> row_uuids,
+          std::span<const EngineUuid> version_uuids,
+          std::span<const EngineUuid> image_uuids) {
         state.events = BuildImportedRowEvents(
             request.context, authority.entry, target, parsed,
             publication_uuid, mutation_uuid, batch_uuid, row_uuids,

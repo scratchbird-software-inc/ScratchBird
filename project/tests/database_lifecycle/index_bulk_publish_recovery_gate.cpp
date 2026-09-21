@@ -43,10 +43,6 @@ platform::TypedUuid GeneratedUuid(platform::UuidKind kind,
   return generated.value;
 }
 
-std::string UuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(GeneratedUuid(kind, salt).value);
-}
-
 std::string Key(char group, char suffix) {
   std::string key = "SBKO";
   key.push_back(static_cast<char>(0x7f));
@@ -60,8 +56,8 @@ idx::SortedBulkIndexRowInput Row(char group,
                                  platform::u64 salt) {
   idx::SortedBulkIndexRowInput row;
   row.encoded_key = Key(group, suffix);
-  row.row_uuid = UuidText(platform::UuidKind::row, salt);
-  row.version_uuid = UuidText(platform::UuidKind::row, salt + 1000);
+  row.row_uuid = GeneratedUuid(platform::UuidKind::row, salt).value;
+  row.version_uuid = GeneratedUuid(platform::UuidKind::row, salt + 1000).value;
   row.payload_value = "payload";
   row.source_ordinal = salt;
   return row;

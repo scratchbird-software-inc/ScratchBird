@@ -1060,19 +1060,7 @@ PreparedSetOperationRoot PrepareSetOperationRoot(
       binding.resource_epoch =
           resolved.resource_descriptor.resource_epoch;
       binding.collation_epoch = resolved.resource_descriptor.family_epoch;
-      binding.text_seed.active = true;
-      binding.text_seed.seed_pack_name =
-          resolved.resource_descriptor.seed_pack_name;
-      binding.text_seed.seed_pack_version =
-          resolved.resource_descriptor.seed_pack_version;
-      binding.text_seed.charset_name =
-          resolved.resource_descriptor.parent_canonical_name;
-      binding.text_seed.collation_name =
-          resolved.resource_descriptor.canonical_name;
-      binding.text_seed.collation_case_insensitive =
-          resolved.resource_descriptor.case_insensitive;
-      binding.text_seed.collation_accent_insensitive =
-          resolved.resource_descriptor.accent_insensitive;
+      binding.text_seed = api::TextSeedFromResource(resolved.resource_descriptor);
       result.collation_bindings.push_back(std::move(binding));
 #endif
     } else if (descriptor->second->collation_uuid.has_value() &&

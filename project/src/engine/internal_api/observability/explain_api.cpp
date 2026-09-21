@@ -56,11 +56,11 @@ void CopyPlanEvidenceToExplain(const EnginePlanOperationResult& plan_result,
     if (evidence.evidence_kind.rfind("optimizer_", 0) == 0 ||
         evidence.evidence_kind == "logical_plan_id" ||
         evidence.evidence_kind == "query_plan") {
-      AddApiBehaviorRow(result,
+      std::visit([&](const auto& id) { AddApiBehaviorRow(result,
                         {{"operation_id", result->operation_id},
                          {"plan_kind", plan_result.plan_kind},
                          {"evidence_kind", evidence.evidence_kind},
-                         {"evidence_id", evidence.evidence_id}});
+                         {"evidence_id", id}}); }, evidence.evidence_id);
     }
   }
 }

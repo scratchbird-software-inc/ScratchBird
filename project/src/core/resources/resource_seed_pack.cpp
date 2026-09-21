@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "resource_seed_pack.hpp"
+#include "unicode_normalization.hpp"
+#include "unicode_collation.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -741,9 +743,12 @@ bool JsonU32Field(const std::string& object, const std::string& key, u32* value)
   }
   u64 parsed = 0;
   if (end == begin || !ParseU64(object.substr(begin, end - begin), &parsed) ||
+      (end - begin > 1 && object[begin] == '0') ||
       parsed > static_cast<u64>(std::numeric_limits<u32>::max())) {
     return false;
   }
+  while (end < object.size() && std::isspace(static_cast<unsigned char>(object[end])) != 0) ++end;
+  if (end == object.size() || (object[end] != ',' && object[end] != '}')) return false;
   *value = static_cast<u32>(parsed);
   return true;
 }
@@ -883,9 +888,18 @@ bool AccumulateCollationAliases(ResourceSeedCatalogImage* image,
     descriptor.description = JsonStringField(object, "description");
     descriptor.supported_by = JsonStringArrayField(object, "supported_by");
     descriptor.source_path = artifact.canonical_path;
+    u32 comparison_profile = 0;
+    if (JsonFieldPosition(object, "comparison_profile") != std::string::npos &&
+        !JsonU32Field(object, "comparison_profile", &comparison_profile)) {
+      if (conflict_detail != nullptr) *conflict_detail = artifact.canonical_path + ":collation_profile_invalid";
+      return false;
+    }
+    descriptor.comparison_profile = static_cast<CollationProfile>(comparison_profile);
     if (descriptor.canonical_name.empty() || descriptor.charset_name.empty() ||
         !JsonBoolField(object, "case_insensitive", &descriptor.case_insensitive) ||
-        !JsonBoolField(object, "accent_insensitive", &descriptor.accent_insensitive)) {
+        !JsonBoolField(object, "accent_insensitive", &descriptor.accent_insensitive) ||
+        !ValidCollationProfile(descriptor.comparison_profile, descriptor.case_insensitive,
+                               descriptor.accent_insensitive)) {
       if (conflict_detail != nullptr) {
         *conflict_detail = artifact.canonical_path + ":collation_descriptor_invalid";
       }
@@ -1402,6 +1416,10 @@ bool ValidateResourceSeedArtifactContent(const ResourceSeedArtifact& artifact) {
 
 ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSeedCatalogImage& image,
                                                                bool allow_minimal_bootstrap) {
+  std::shared_ptr<const UnicodeNormalizationData> normalization;
+  std::shared_ptr<const UnicodeCollationData> collation;
+  const std::string* unicode_weights = nullptr;
+  const std::string* unicode_properties = nullptr;
   if (!image.artifacts.empty()) {
     std::set<std::pair<ResourceSeedFamily, std::string>> paths;
     std::map<std::string, const std::string*> path_contents;
@@ -1429,6 +1447,15 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
       }
       aggregate += artifact.content_hash;
       AppendFamilyHash(&family_aggregates, artifact.family, artifact.content_hash);
+      if (artifact.family == ResourceSeedFamily::uca &&
+          artifact.canonical_path == "resources/collations/uca/UnicodeData.txt") {
+        if (UnicodeNormalizationData::Load17(*artifact.content, &normalization) != UnicodeNormalizationStatus::ok)
+          return ResourceSeedError("SB_RESOURCE_SEED_INVALID", "resource.seed_pack.unicode_normalization_invalid");
+      }
+      if (artifact.family == ResourceSeedFamily::uca) {
+        if (artifact.canonical_path == "resources/collations/uca/allkeys.txt") unicode_weights = artifact.content.get();
+        if (artifact.canonical_path == "resources/collations/uca/PropList.txt") unicode_properties = artifact.content.get();
+      }
     }
     if (image.resource_artifact_records != image.artifacts.size() ||
         Fnv1a64Hex(aggregate) != image.content_hash) {
@@ -1447,15 +1474,28 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
       }
     }
   }
+  if (normalization && unicode_weights && unicode_properties &&
+      UnicodeCollationData::Load17(*unicode_weights, *unicode_properties, normalization, &collation) !=
+          UnicodeNormalizationStatus::ok) {
+    return ResourceSeedError("SB_RESOURCE_SEED_INVALID", "resource.seed_pack.unicode_collation_invalid");
+  }
   if (image.minimal_bootstrap && allow_minimal_bootstrap) {
     ResourceSeedCatalogImageResult result;
     result.status = ResourceSeedOkStatus();
     result.image = image;
+    result.image.unicode_normalization = std::move(normalization);
+    result.image.unicode_collation = std::move(collation);
     return result;
   }
   if (image.artifacts.empty()) {
     return ResourceSeedError("SB_RESOURCE_SEED_INCOMPLETE",
                              "resource.seed_pack.no_artifacts");
+  }
+  if (!normalization) {
+    return ResourceSeedError("SB_RESOURCE_SEED_INCOMPLETE", "resource.seed_pack.unicode_normalization_missing");
+  }
+  if (!collation) {
+    return ResourceSeedError("SB_RESOURCE_SEED_INCOMPLETE", "resource.seed_pack.unicode_collation_missing");
   }
   if (image.content_hash.empty()) {
     return ResourceSeedError("SB_RESOURCE_SEED_INVALID",
@@ -1597,6 +1637,8 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
       const auto* parent_charset =
           FindResourceSeedCharset(image, collation.charset_name);
       if (collation.canonical_name.empty() || collation.charset_name.empty() ||
+          !ValidCollationProfile(collation.comparison_profile, collation.case_insensitive,
+                                 collation.accent_insensitive) ||
           collation.resource_epoch == 0 || collation.family_epoch == 0 ||
           collation.family_version.empty() ||
           parent_charset == nullptr ||
@@ -1654,6 +1696,8 @@ ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSe
   ResourceSeedCatalogImageResult result;
   result.status = ResourceSeedOkStatus();
   result.image = image;
+  result.image.unicode_normalization = std::move(normalization);
+  result.image.unicode_collation = std::move(collation);
   return result;
 }
 

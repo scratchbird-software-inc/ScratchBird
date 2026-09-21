@@ -105,6 +105,11 @@ add_executable(sb_engine_public_source_boundary_fixture
 target_compile_features(sb_engine_public_source_boundary_fixture PRIVATE cxx_std_23)
 add_test(NAME sb_engine_public_source_boundary_fixture
   COMMAND sb_engine_public_source_boundary_fixture ${PROJECT_SOURCE_DIR}/src/engine ${PROJECT_SOURCE_DIR}/src/server)
+add_test(NAME sb_engine_public_source_boundary_selftest
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/public_source_boundary_selftest.py"
+          $<TARGET_FILE:sb_engine_public_source_boundary_fixture>)
+set_tests_properties(sb_engine_public_source_boundary_selftest PROPERTIES
+  LABELS "public_abi;source_policy;negative_control;not_runtime_acceptance" TIMEOUT 30)
 
 add_executable(sb_engine_public_wire_stability_fixture
   public_wire_stability_fixture.cpp

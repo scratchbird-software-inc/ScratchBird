@@ -211,12 +211,15 @@ HashDigestResult ComputeHmacSha256Digest(const byte* key,
 }
 
 std::string HexLower(const Digest256& digest) {
-  std::ostringstream out;
-  out << std::hex << std::setfill('0');
-  for (const byte value : digest) {
-    out << std::setw(2) << static_cast<unsigned int>(value);
+  // Streams can swallow allocation failure into badbit and return a prefix.
+  // Evidence must be complete or fail; allocate once before populating it.
+  constexpr char alphabet[] = "0123456789abcdef";
+  std::string out(digest.size() * 2, '0');
+  for (std::size_t i = 0; i < digest.size(); ++i) {
+    out[2 * i] = alphabet[digest[i] >> 4];
+    out[2 * i + 1] = alphabet[digest[i] & 15];
   }
-  return out.str();
+  return out;
 }
 
 std::vector<byte> DigestVector(const Digest256& digest) {

@@ -38,6 +38,8 @@ TypedUpdateUuid Uuid(unsigned seed) {
     value[index] = static_cast<byte>((seed * 37u + index * 19u) & 0xffu);
   }
   value[0] |= 1u;
+  value[6] = static_cast<byte>((value[6] & 0x0fu) | 0x70u);
+  value[8] = static_cast<byte>((value[8] & 0x3fu) | 0x80u);
   return value;
 }
 
@@ -1441,6 +1443,41 @@ void TestJournalAndCutpoints() {
   auto provider_rollback_context = SuccessorContext(
       bound_bytes, TypedUpdateJournalState::bound, savepoint, 151,
       decoded_bound.embedded_descriptor_bytes);
+  for (unsigned version = 0; version != 16; ++version) {
+    for (unsigned variant = 0; variant != 4; ++variant) {
+      if (version == 7 && variant == 2) continue;
+      for (const u64 generation : {u64{0}, u64{151}}) {
+        auto malformed = intent;
+        malformed.statement_savepoint_uuid[6] = static_cast<byte>(version << 4);
+        malformed.statement_savepoint_uuid[8] = static_cast<byte>(variant << 6);
+        malformed.statement_savepoint_generation = generation;
+        std::vector<byte> untouched{0xde, 0xad};
+        Require(!EncodeTypedUpdateJournalRecord(malformed, intent_context,
+                                                &untouched, &error) &&
+                    untouched == std::vector<byte>({0xde, 0xad}),
+                "malformed optional journal savepoint admitted or changed output");
+        auto wire = intent_bytes;
+        std::copy(malformed.statement_savepoint_uuid.begin(),
+                  malformed.statement_savepoint_uuid.end(), wire.begin() + 152);
+        StoreLittle64(wire.data() + 168, generation);
+        RewriteJournalEvidence(&wire);
+        auto decoded = decoded_bound;
+        Require(!DecodeAndValidateTypedUpdateJournalRecord(
+                    wire, intent_context, &decoded, &error) &&
+                    decoded.exact_bytes == decoded_bound.exact_bytes,
+                "rehashed malformed journal savepoint admitted or changed output");
+        auto context = provider_rollback_context;
+        context.prior_savepoint_uuid = malformed.statement_savepoint_uuid;
+        context.prior_savepoint_generation = generation;
+        auto rolled_back = aborted;
+        rolled_back.statement_savepoint_uuid = malformed.statement_savepoint_uuid;
+        rolled_back.statement_savepoint_generation = generation;
+        Require(!EncodeTypedUpdateJournalRecord(rolled_back, context,
+                                                &untouched, &error),
+                "malformed provider rollback authority admitted");
+      }
+    }
+  }
   auto aborted_after_savepoint = aborted;
   aborted_after_savepoint.statement_savepoint_uuid = savepoint;
   aborted_after_savepoint.statement_savepoint_generation = 151;
@@ -2418,6 +2455,264 @@ void TestCarrierSetContradictions() {
           "DUOR/DUBR candidate limit contradiction is refused");
 }
 
+
+unsigned system_identity_mutations = 0;
+
+// Mutate authority fields only. In particular, never reinterpret canonical user
+// value bytes as identities, even when they happen to be sixteen bytes long.
+template<class Carrier, class Fields, class Encode>
+void CheckSystemIdentities(const Carrier& valid, Fields fields, Encode encode) {
+  TypedUpdateCarrierError error;
+  std::vector<byte> encoded;
+  Require(encode(valid, &encoded, &error), "UUID matrix valid seed: " + error.detail);
+  auto seed = valid;
+  for (std::size_t field = 0; field != fields(seed).size(); ++field) {
+    for (unsigned version = 0; version != 16; ++version) {
+      for (unsigned variant = 0; variant != 4; ++variant) {
+        if (version == 7 && variant == 2) continue;
+        auto bad = valid;
+        auto& uuid = *fields(bad)[field];
+        uuid[0] |= 1u; // malformed nonnil must not become optional absence
+        uuid[6] = static_cast<byte>((uuid[6] & 0x0f) | (version << 4));
+        uuid[8] = static_cast<byte>((uuid[8] & 0x3f) | (variant << 6));
+        std::vector<byte> output{0xde, 0xad};
+        Require(!encode(bad, &output, &error), "malformed system identity admitted");
+        Require(!error.diagnostic_code.empty(), "UUID refusal missing diagnostic");
+        Require(output == std::vector<byte>({0xde, 0xad}),
+                "UUID refusal changed output");
+        ++system_identity_mutations;
+      }
+    }
+  }
+}
+
+void TestSystemIdentityMatrix() {
+  const auto set = CarrierSet();
+  const auto security = MakeSecurityRecoveryFixture();
+  const auto datatypes = MakeDatatypeOperatorFixture(true);
+  CheckSystemIdentities(set.descriptor, [](auto& v) {
+    return std::array{&v.descriptor_uuid,
+                      &v.authenticated_statement_receipt_uuid,
+                      &v.operation_uuid,
+                      &v.owning_transaction_uuid,
+                      &v.statement_snapshot_uuid,
+                      &v.catalog_snapshot_uuid,
+                      &v.security_context_uuid,
+                      &v.security_snapshot_uuid,
+                      &v.target_relation_uuid,
+                      &v.target_relation_occurrence_uuid,
+                      &v.assignment_vector_uuid,
+                      &v.predicate_expression_uuid,
+                      &v.row_policy_set_uuid,
+                      &v.constraint_set_uuid,
+                      &v.trigger_set_uuid,
+                      &v.deterministic_target_order_uuid,
+                      &v.resource_budget_uuid,
+                      &v.recovery_token_uuid,
+                      &v.builtin_operator_snapshot_uuid};
+  }, EncodeTypedUpdateDescriptor);
+  CheckSystemIdentities(set.assignments, [](auto& v) {
+    return std::array{&v.identity.vector_uuid,
+                      &v.identity.owner_descriptor_uuid,
+                      &v.records.front().assignment_occurrence_uuid,
+                      &v.records.front().target_column_occurrence_uuid,
+                      &v.records.front().target_column_uuid,
+                      &v.records.front().value_descriptor_uuid,
+                      &v.records.front().value_type_uuid};
+  }, EncodeTypedUpdateAssignmentVector);
+  CheckSystemIdentities(set.predicate, [](auto& v) {
+    return std::array{&v.identity.vector_uuid,
+                      &v.identity.owner_descriptor_uuid,
+                      &v.records.front().node_occurrence_uuid,
+                      &v.records.front().output_descriptor_uuid,
+                      &v.records.front().output_type_uuid,
+                      &v.records.front().referenced_relation_occurrence_uuid,
+                      &v.records.front().referenced_column_occurrence_uuid,
+                      &v.records.front().referenced_column_uuid,
+                      &v.records.front().operator_uuid};
+  }, EncodeTypedUpdatePredicateVector);
+  CheckSystemIdentities(set.row_policies, [](auto& v) {
+    return std::array{&v.identity.vector_uuid,
+                      &v.identity.owner_descriptor_uuid,
+                      &v.records.front().effective_policy_uuid,
+                      &v.records.front().expression_uuid,
+                      &v.records.front().security_snapshot_uuid};
+  }, EncodeTypedUpdateRowPolicyVector);
+  CheckSystemIdentities(set.constraints, [](auto& v) {
+    return std::array{&v.identity.vector_uuid,
+                      &v.identity.owner_descriptor_uuid,
+                      &v.records.front().constraint_uuid,
+                      &v.records.front().expression_uuid,
+                      &v.records.front().reservation_profile_uuid};
+  }, EncodeTypedUpdateConstraintVector);
+  CheckSystemIdentities(set.triggers, [](auto& v) {
+    return std::array{&v.identity.vector_uuid,
+                      &v.identity.owner_descriptor_uuid,
+                      &v.records.front().trigger_uuid,
+                      &v.records.front().body_sblr_uuid,
+                      &v.records.front().execution_security_context_uuid,
+                      &v.records.front().recursion_profile_uuid};
+  }, EncodeTypedUpdateTriggerVector);
+  CheckSystemIdentities(set.target_order, [](auto& v) {
+    return std::array{&v.target_order_uuid,
+                      &v.authenticated_statement_receipt_uuid,
+                      &v.target_relation_occurrence_uuid,
+                      &v.statement_snapshot_uuid};
+  }, EncodeTypedUpdateTargetOrder);
+  CheckSystemIdentities(set.resource_budget, [](auto& v) {
+    return std::array{&v.resource_budget_uuid,
+                      &v.authenticated_statement_receipt_uuid,
+                      &v.owning_transaction_uuid,
+                      &v.cancellation_token_uuid,
+                      &v.grant_receipt_uuid};
+  }, EncodeTypedUpdateResourceBudget);
+  CheckSystemIdentities(set.recovery_token, [](auto& v) {
+    return std::array{&v.recovery_token_uuid,
+                      &v.authenticated_statement_receipt_uuid,
+                      &v.owning_transaction_uuid,
+                      &v.operation_uuid,
+                      &v.descriptor_uuid,
+                      &v.statement_savepoint_profile_uuid,
+                      &v.durable_registry_uuid};
+  }, EncodeTypedUpdateRecoveryToken);
+  CheckSystemIdentities(Result(set.descriptor), [](auto& v) {
+    return std::array{&v.update_descriptor_uuid,
+                      &v.operation_uuid,
+                      &v.owning_transaction_uuid,
+                      &v.relation_uuid,
+                      &v.publication_barrier_uuid};
+  }, EncodeTypedUpdateResult);
+  CheckSystemIdentities(security.source_policies, [](auto& v) {
+    return std::array{&v.identity.vector_uuid,
+                      &v.identity.owner_descriptor_uuid,
+                      &v.records.front().policy_uuid,
+                      &v.records.front().policy_version_uuid,
+                      &v.records.front().target_relation_uuid,
+                      &v.records.front().source_expression_uuid,
+                      &v.records.front().catalog_snapshot_uuid,
+                      &v.records.front().security_snapshot_uuid};
+  }, EncodeTypedUpdateSecurityPolicySourceVector);
+  CheckSystemIdentities(security.snapshot_proof, [](auto& v) {
+    return std::array{&v.security_snapshot_uuid,
+                      &v.security_context_uuid,
+                      &v.database_uuid,
+                      &v.authenticated_statement_receipt_uuid,
+                      &v.owning_transaction_uuid,
+                      &v.operation_uuid,
+                      &v.recovery_token_uuid,
+                      &v.statement_snapshot_uuid,
+                      &v.catalog_snapshot_uuid,
+                      &v.target_relation_uuid,
+                      &v.target_relation_occurrence_uuid,
+                      &v.descriptor_uuid,
+                      &v.row_policy_set_uuid,
+                      &v.source_policy_vector_uuid};
+  }, EncodeTypedUpdateSecuritySnapshotProof);
+  CheckSystemIdentities(security.recovery_observation, [](auto& v) {
+    return std::array{&v.observation_uuid,
+                      &v.validated_mga_durable_handle_uuid,
+                      &v.database_uuid,
+                      &v.descriptor_uuid,
+                      &v.operation_uuid,
+                      &v.authenticated_statement_receipt_uuid,
+                      &v.owning_transaction_uuid,
+                      &v.recovery_token_uuid,
+                      &v.statement_savepoint_uuid,
+                      &v.reserved_statement_barrier_uuid,
+                      &v.catalog_snapshot_uuid,
+                      &v.security_snapshot_uuid};
+  }, EncodeTypedUpdateMgaRecoveryObservation);
+  CheckSystemIdentities(datatypes.datatypes, [](auto& v) {
+    return std::array{&v.identity.vector_uuid,
+                      &v.identity.owner_descriptor_uuid,
+                      &v.records.front().descriptor_uuid,
+                      &v.records.front().type_uuid,
+                      &v.records.front().datatype_snapshot_uuid};
+  }, EncodeTypedUpdateDatatypeAuthorityVector);
+  CheckSystemIdentities(datatypes.operators, [](auto& v) {
+    return std::array{&v.identity.vector_uuid,
+                      &v.identity.owner_descriptor_uuid,
+                      &v.records.front().operator_uuid,
+                      &v.records.front().operator_snapshot_uuid,
+                      &v.records.front().left_descriptor_uuid,
+                      &v.records.front().left_type_uuid,
+                      &v.records.front().right_descriptor_uuid,
+                      &v.records.front().right_type_uuid,
+                      &v.records.front().result_descriptor_uuid,
+                      &v.records.front().result_type_uuid};
+  }, EncodeTypedUpdateBuiltinOperatorAuthorityVector);
+
+  // The optional constraint expression permits both exact nil/zero and a
+  // system UUID with its generation. Both branches reject malformed nonnil.
+  auto constraints = set.constraints;
+  constraints.records.front().expression_uuid = Uuid(220);
+  constraints.records.front().expression_generation = 1;
+  CheckSystemIdentities(constraints, [](auto& v) {
+    return std::array{&v.records.front().expression_uuid};
+  }, EncodeTypedUpdateConstraintVector);
+
+  // Carrier admission preserves user values byte-for-byte, regardless of UUID
+  // version/variant bit patterns. Datatype semantics remain a separate gate.
+  for (unsigned version = 0; version != 16; ++version) {
+    auto assignments = set.assignments;
+    auto& record = assignments.records.front();
+    record.canonical_value.assign(16, 0);
+    record.canonical_value[6] = static_cast<byte>(version << 4);
+    record.canonical_value[8] = 0x80;
+    std::vector<byte> encoded;
+    TypedUpdateCarrierError error;
+    TypedUpdateAssignmentVector decoded;
+    Require(EncodeTypedUpdateAssignmentVector(assignments, &encoded, &error) &&
+            DecodeAndValidateTypedUpdateAssignmentVector(encoded, &decoded, &error),
+            "user value rejected as a system UUID");
+    Require(decoded.records.front().canonical_value == record.canonical_value,
+            "user value bytes were normalized");
+  }
+}
+
+void TestSystemIdentityAdmission() {
+  const auto set = CarrierSet();
+  TypedUpdateCarrierError error;
+  std::vector<byte> descriptor_bytes;
+  Require(EncodeTypedUpdateDescriptor(set.descriptor, &descriptor_bytes, &error),
+          "descriptor wire identity seed");
+  TypedUpdateDescriptorCarrier decoded;
+  Require(DecodeAndValidateTypedUpdateDescriptor(descriptor_bytes, &decoded, &error),
+          "descriptor wire identity decoded seed");
+  for (const auto offset : {16, 40, 64, 88, 112, 128, 160, 176, 200, 224,
+                            248, 312, 384, 448, 512, 576, 600, 624, 656}) {
+    for (unsigned version = 0; version != 16; ++version) {
+      for (unsigned variant = 0; variant != 4; ++variant) {
+        if (version == 7 && variant == 2) continue;
+        auto malformed = descriptor_bytes;
+        malformed[offset + 6] = static_cast<byte>(version << 4);
+        malformed[offset + 8] = static_cast<byte>(variant << 6);
+        WriteHash(&malformed, 680,
+                  Evidence("ScratchBird.SblrDmlUpdateRowsDescriptor.V1",
+                           std::span<const byte>(malformed).first(680)));
+        Require(!DecodeAndValidateTypedUpdateDescriptor(malformed, &decoded, &error),
+                "rehashed malformed UPDATE descriptor identity admitted");
+        Require(decoded.exact_bytes == descriptor_bytes,
+                "invalid descriptor decode changed output");
+        ++system_identity_mutations;
+      }
+    }
+  }
+  for (unsigned version = 0; version != 16; ++version) {
+    for (unsigned variant = 0; variant != 4; ++variant) {
+      if (version == 7 && variant == 2) continue;
+      auto bad = set.descriptor;
+      bad.descriptor_uuid[6] = static_cast<byte>(version << 4);
+      bad.descriptor_uuid[8] = static_cast<byte>(variant << 6);
+      std::vector<byte> output{0xde, 0xad};
+      Require(!EncodeTypedUpdateDescriptor(bad, &output, &error),
+              "non-v7 UPDATE system identity admitted");
+      Require(output == std::vector<byte>({0xde, 0xad}),
+              "invalid UPDATE identity changed output");
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -2435,6 +2730,8 @@ int main() {
   static_assert(kTypedUpdateDatatypeAuthorityRecordBytes == 256);
   static_assert(kTypedUpdateBuiltinOperatorAuthorityRecordBytes == 288);
   TestRoundTripsAndDomains();
+  TestSystemIdentityAdmission();
+  TestSystemIdentityMatrix();
   TestExplicitNullAndInjectivity();
   TestResultInnerEvidence();
   TestEmptyFrozenSets();
@@ -2444,6 +2741,7 @@ int main() {
   TestDatatypeOperatorAuthorityCarriers();
   TestTextDatatypeAuthorityV2();
   TestCarrierSetContradictions();
+  std::cout << "System UUID shape mutations: " << system_identity_mutations << '\n';
   std::cout << "PASS typed update carrier codec exact layouts, hashes, "
                "injectivity, malformed precedence, journal, security "
                "snapshot, MGA recovery, datatype, and operator authority\n";

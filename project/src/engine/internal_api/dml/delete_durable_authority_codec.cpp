@@ -22,6 +22,9 @@ bool Fail(EngineApiDiagnostic* out, std::string detail) {
 template<class T> bool Present(const T& bytes) {
   return std::any_of(bytes.begin(), bytes.end(), [](auto b) { return b != 0; });
 }
+bool SystemIdentity(const w::TypedUpdateUuid& bytes) noexcept {
+  return core::uuid::IsEngineIdentityUuid(projection::UuidValue(bytes));
+}
 void Put(Bytes& bytes, std::size_t offset, std::uint64_t value, unsigned count = 8) {
   for (unsigned n = 0; n < count; ++n) bytes[offset + n] = static_cast<std::uint8_t>(value >> (8 * n));
 }
@@ -37,13 +40,13 @@ template<std::size_t N> void Get(std::span<const std::uint8_t> bytes, std::size_
                                std::array<std::uint8_t, N>* out) {
   std::copy_n(bytes.begin() + offset, N, out->begin());
 }
-bool Uuid(Bytes& bytes, std::size_t offset, const std::string& text) {
+bool Uuid(Bytes& bytes, std::size_t offset, const EngineUuid& identity) {
   w::TypedUpdateUuid value{};
-  if (!projection::TypedUuid(text, &value)) return false;
+  if (!projection::TypedUuid(identity, &value)) return false;
   Put(bytes, offset, value); return true;
 }
-std::string Uuid(std::span<const std::uint8_t> bytes, std::size_t offset) {
-  w::TypedUpdateUuid value{}; Get(bytes, offset, &value); return projection::UuidText(value);
+EngineUuid Uuid(std::span<const std::uint8_t> bytes, std::size_t offset) {
+  w::TypedUpdateUuid value{}; Get(bytes, offset, &value); return projection::UuidValue(value);
 }
 bool Hash(std::string_view domain, std::span<const std::uint8_t> first,
           std::span<const std::uint8_t> second, w::TypedUpdateHash* out) {
@@ -70,7 +73,7 @@ std::string HexHash(std::span<const std::uint8_t> bytes, std::size_t offset) {
   w::TypedUpdateHash hash{}; Get(bytes, offset, &hash); return "sha256:" + scratchbird::core::hash::HexLower(hash);
 }
 bool Security(const EngineSecurityPolicySnapshotAuthorityV1& s,
-              const std::vector<std::string>& grants, Bytes* out) {
+              const std::vector<EngineUuid>& grants, Bytes* out) {
   if (!s.snapshot_generation || !s.security_context_generation || !s.security_generation ||
       !s.policy_generation || !s.admitted_policy_rows.empty() || grants.size() > 1024) return false;
   out->assign(128 + grants.size() * 16, 0);
@@ -79,17 +82,17 @@ bool Security(const EngineSecurityPolicySnapshotAuthorityV1& s,
       !Uuid(b, 40, s.security_context_uuid) || !Uuid(b, 80, s.target_relation_uuid)) return false;
   Put(b, 16, s.snapshot_generation); Put(b, 56, s.security_context_generation);
   Put(b, 64, s.security_generation); Put(b, 72, s.policy_generation); Put(b, 96, grants.size(), 4);
-  std::string prior;
+  EngineUuid prior;
   for (std::size_t n = 0; n < grants.size(); ++n) {
-    if ((!prior.empty() && grants[n] <= prior) || !Uuid(b, 128 + n * 16, grants[n])) return false;
+    if ((!prior.is_nil() && grants[n] <= prior) || !Uuid(b, 128 + n * 16, grants[n])) return false;
     prior = grants[n];
   }
   return true;
 }
 bool Effects(const EngineDmlDeleteEffectSnapshotV1& s, Bytes* out) {
-  if (!Present(s.snapshot_uuid) || !s.generation || !Present(s.target_relation_uuid) || !s.target_relation_generation ||
-      !Present(s.relation_descriptor_uuid) || !s.relation_descriptor_generation || !Present(s.constraint_set_uuid) ||
-      !Present(s.trigger_set_uuid) || s.snapshot_uuid == s.constraint_set_uuid || s.snapshot_uuid == s.trigger_set_uuid ||
+  if (!SystemIdentity(s.snapshot_uuid) || !s.generation || !SystemIdentity(s.target_relation_uuid) || !s.target_relation_generation ||
+      !SystemIdentity(s.relation_descriptor_uuid) || !s.relation_descriptor_generation || !SystemIdentity(s.constraint_set_uuid) ||
+      !SystemIdentity(s.trigger_set_uuid) || s.snapshot_uuid == s.constraint_set_uuid || s.snapshot_uuid == s.trigger_set_uuid ||
       s.constraint_set_uuid == s.trigger_set_uuid || s.constraint_count || s.trigger_count || s.index_count > 1048576 ||
       !Present(s.relation_shape_sha256) || !Present(s.index_set_sha256)) return false;
   w::TypedUpdateHash empty_constraints{}, empty_triggers{};
@@ -156,9 +159,9 @@ bool Cross(const DmlDeleteDurableAuthorityBundleV1& v, const Bytes& security) {
   const auto& d = v.descriptor; const auto& r = v.resource_budget; const auto& t = v.target_order;
   const auto& recovery = v.recovery; const auto& e = v.effects; const auto& s = v.security;
   w::TypedDeleteCarrierError error; w::TypedUpdateHash security_hash{};
-  return Present(v.database_uuid) && Present(v.session_uuid) && Present(v.principal_uuid) &&
-      Present(v.bundle_uuid) && v.bundle_generation && Present(v.owner_context_sha256) &&
-      Present(v.reserved_statement_savepoint_uuid) && v.reserved_statement_savepoint_uuid != v.bundle_uuid &&
+  return SystemIdentity(v.database_uuid) && SystemIdentity(v.session_uuid) && SystemIdentity(v.principal_uuid) &&
+      SystemIdentity(v.bundle_uuid) && v.bundle_generation && Present(v.owner_context_sha256) &&
+      SystemIdentity(v.reserved_statement_savepoint_uuid) && v.reserved_statement_savepoint_uuid != v.bundle_uuid &&
       v.reserved_statement_savepoint_uuid != d.descriptor_uuid && v.reserved_statement_savepoint_uuid != d.operation_uuid &&
       w::ValidateTypedDeleteDatatypeOperatorAuthority(d, v.predicate, v.datatypes, v.operators, &error) &&
       d.deterministic_target_order_uuid == t.target_order_uuid && d.deterministic_target_order_generation == t.target_order_generation &&
@@ -175,21 +178,21 @@ bool Cross(const DmlDeleteDurableAuthorityBundleV1& v, const Bytes& security) {
       d.owning_transaction_uuid == recovery.owning_transaction_uuid && d.operation_uuid == recovery.operation_uuid &&
       d.descriptor_uuid == recovery.descriptor_uuid && d.descriptor_generation == recovery.descriptor_generation &&
       v.bundle_uuid == recovery.durable_registry_uuid && v.bundle_generation == recovery.durable_registry_generation &&
-      projection::UuidText(d.security_snapshot_uuid) == s.snapshot_uuid && projection::UuidText(d.security_context_uuid) == s.security_context_uuid &&
-      projection::UuidText(d.authenticated_statement_receipt_uuid) == s.authenticated_statement_receipt_uuid &&
-      projection::UuidText(d.target_relation_uuid) == s.target_relation_uuid && d.security_generation == s.security_generation &&
-      d.row_policy_count == 0 && projection::UuidText(d.row_policy_set_uuid) == s.snapshot_uuid && d.row_policy_set_generation == s.snapshot_generation &&
+      projection::UuidValue(d.security_snapshot_uuid) == s.snapshot_uuid && projection::UuidValue(d.security_context_uuid) == s.security_context_uuid &&
+      projection::UuidValue(d.authenticated_statement_receipt_uuid) == s.authenticated_statement_receipt_uuid &&
+      projection::UuidValue(d.target_relation_uuid) == s.target_relation_uuid && d.security_generation == s.security_generation &&
+      d.row_policy_count == 0 && projection::UuidValue(d.row_policy_set_uuid) == s.snapshot_uuid && d.row_policy_set_generation == s.snapshot_generation &&
       Hash("ScratchBird.DmlDelete.SecuritySnapshot.V1", security, {}, &security_hash) && d.row_policy_set_sha256 == security_hash &&
       d.target_relation_uuid == e.target_relation_uuid && d.target_relation_generation == e.target_relation_generation &&
       d.constraint_set_uuid == e.constraint_set_uuid && d.constraint_set_generation == e.generation && d.constraint_count == e.constraint_count &&
       d.ordered_constraint_set_sha256 == e.constraint_set_sha256 && d.trigger_set_uuid == e.trigger_set_uuid &&
       d.trigger_set_generation == e.generation && d.trigger_count == e.trigger_count && d.ordered_trigger_set_sha256 == e.trigger_set_sha256 &&
-      d.executor_availability_generation == v.executor.generation && projection::UuidText(v.database_uuid) == v.executor.database_uuid;
+      d.executor_availability_generation == v.executor.generation && projection::UuidValue(v.database_uuid) == v.executor.database_uuid;
 }
 }  // namespace
 
 bool ComputeDmlDeleteSecuritySnapshotHashV1(const EngineSecurityPolicySnapshotAuthorityV1& security,
-    const std::vector<std::string>& grants, w::TypedUpdateHash* out) {
+    const std::vector<EngineUuid>& grants, w::TypedUpdateHash* out) {
   Bytes bytes;
   return out && Security(security, grants, &bytes) && Hash("ScratchBird.DmlDelete.SecuritySnapshot.V1", bytes, {}, out);
 }

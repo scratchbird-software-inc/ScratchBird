@@ -12,40 +12,36 @@
 
 namespace scratchbird::core::metrics {
 
-MetricLabelSet Labels(std::initializer_list<std::pair<std::string, std::string>> labels) {
-  MetricLabelSet out;
-  for (const auto& label : labels) {
-    if (!label.first.empty() && !label.second.empty()) {
-      out.push_back({label.first, label.second});
-    }
-  }
-  return out;
+MetricLabelSet Labels(std::initializer_list<MetricLabel> labels) {
+  // Preserve invalid/empty input for schema validation; silently dropping a
+  // label would turn malformed producer input into a different metric series.
+  return MetricLabelSet(labels.begin(), labels.end());
 }
 
 MetricValidationResult IncrementCounter(const std::string& family,
                                         MetricLabelSet labels,
-                                        double delta,
+                                        MetricScalar delta,
                                         const std::string& producer_owner) {
   return DefaultMetricRegistry().IncrementCounter(family, std::move(labels), delta, producer_owner);
 }
 
 MetricValidationResult SetGauge(const std::string& family,
                                 MetricLabelSet labels,
-                                double value,
+                                MetricScalar value,
                                 const std::string& producer_owner) {
   return DefaultMetricRegistry().SetGauge(family, std::move(labels), value, producer_owner);
 }
 
 MetricValidationResult ObserveHistogram(const std::string& family,
                                         MetricLabelSet labels,
-                                        double value,
+                                        MetricScalar value,
                                         const std::string& producer_owner) {
   return DefaultMetricRegistry().ObserveHistogram(family, std::move(labels), value, producer_owner);
 }
 
 MetricValidationResult SetState(const std::string& family,
                                 MetricLabelSet labels,
-                                double value,
+                                MetricScalar value,
                                 std::string state_text,
                                 const std::string& producer_owner) {
   return DefaultMetricRegistry().SetState(family, std::move(labels), value, std::move(state_text), producer_owner);

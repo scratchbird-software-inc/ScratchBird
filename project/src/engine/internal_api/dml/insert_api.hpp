@@ -11,11 +11,20 @@
 #include "api_types.hpp"
 
 #include <span>
+#include <optional>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DML_INSERT_API
+struct EngineInsertDescriptorExpectation {
+  std::optional<EngineUuid> principal_uuid;
+  std::optional<EngineUuid> role_uuid;
+  std::optional<EngineUuid> session_uuid;
+  // Complete content key, not the printable diagnostic fingerprint.
+  std::optional<std::vector<std::uint8_t>> content_key;
+};
+
 struct EngineInsertRowsRequest : EngineApiRequest {
   EngineObjectReference target_table;
   std::vector<EngineRowValue> input_rows;
@@ -44,6 +53,7 @@ struct EngineInsertRowsRequest : EngineApiRequest {
   bool strict_bulk_load_requested = false;
   bool reference_unique_checks_relaxed = false;
   bool reference_foreign_key_checks_relaxed = false;
+  EngineInsertDescriptorExpectation prepared_descriptor_expectation;
 };
 struct EngineInsertRowsResult : EngineApiResult {
   EngineApiU64 inserted_count = 0;

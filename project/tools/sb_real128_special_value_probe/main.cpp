@@ -24,20 +24,22 @@ bool Expect(bool condition, const char* name) {
   return condition;
 }
 
-DatatypeCastResult CastReal128(const char* value) {
+DatatypeCastResult CastReal128(const char* value, bool allow_special_values = true) {
   DatatypeCastRequest request;
   request.value = {CanonicalTypeId::character, value, false};
   request.target_type_id = CanonicalTypeId::real128;
   request.explicit_cast = true;
+  request.numeric_context.allow_special_values = allow_special_values;
   return CastDatatypeValue(request);
 }
 
-DatatypeNumericOperationResult CompareReal128(const char* left, const char* right) {
+DatatypeNumericOperationResult CompareReal128(const char* left, const char* right, bool allow_special_values = true) {
   DatatypeNumericOperationRequest request;
   request.operation = DatatypeNumericOperationKind::compare;
   request.type_id = CanonicalTypeId::real128;
   request.left = {CanonicalTypeId::real128, left, false};
   request.right = {CanonicalTypeId::real128, right, false};
+  request.context.allow_special_values = allow_special_values;
   return ApplyNumericOperation(request);
 }
 
@@ -49,8 +51,7 @@ int main() {
 
   const std::string_view backend = numeric::Real128BackendName();
   const bool supported_backend =
-      backend == "libquadmath::__float128" ||
-      backend == "boost::multiprecision::cpp_bin_float_quad";
+      backend == "MPFR/GMP binary128 reference" && numeric::Real128BackendAvailable();
   std::size_t real128_capability_count = 0;
   std::string capability_provider;
   for (const auto& capability :
@@ -75,6 +76,14 @@ int main() {
   auto negative_infinity_compare = CompareReal128("-Infinity", "1");
   auto signed_zero_compare = CompareReal128("-0", "0");
   auto nan_compare = CompareReal128("NaN", "1");
+  bool forbidden_specials_rejected = true;
+  for (const auto* special : {"Infinity", "-Infinity", "NaN", "sNaN"}) {
+    const auto cast = CastReal128(special, false);
+    const auto comparison = CompareReal128(special, "1", false);
+    forbidden_specials_rejected = forbidden_specials_rejected && !cast.ok() && !comparison.ok() &&
+        cast.numeric_facts.invalid && comparison.numeric_facts.invalid &&
+        cast.diagnostic.diagnostic_code == "NUMERIC.REAL128.INVALID";
+  }
 
   DatatypeNumericOperationRequest backend_arithmetic;
   backend_arithmetic.operation = DatatypeNumericOperationKind::add;
@@ -83,7 +92,7 @@ int main() {
   backend_arithmetic.right = {CanonicalTypeId::real128, "2", false};
   auto arithmetic = ApplyNumericOperation(backend_arithmetic);
 
-  const bool ok = supported_backend && provider_truth &&
+  const bool ok = supported_backend && provider_truth && forbidden_specials_rejected &&
                   positive_zero.ok() && positive_zero.value.encoded_value == "0" &&
                   negative_zero.ok() && negative_zero.value.encoded_value == "-0" &&
                   infinity.ok() && infinity.value.encoded_value == "Infinity" &&
@@ -110,6 +119,7 @@ int main() {
   Expect(negative_infinity_compare.ok() && negative_infinity_compare.comparison == -1, "negative_infinity_compare");
   Expect(signed_zero_compare.ok() && signed_zero_compare.comparison == 0, "signed_zero_compare_equal");
   Expect(!nan_compare.ok(), "nan_compare_rejected");
+  Expect(forbidden_specials_rejected, "forbidden_specials_rejected");
   Expect(supported_backend, "real128_backend_supported");
   Expect(provider_truth, "real128_capability_backend_match");
   std::cout << "  \"real128_backend\": \"" << backend << "\",\n";
@@ -119,5 +129,6 @@ int main() {
                     : "false")
             << "\n";
   std::cout << "}\n";
+  numeric::ReleaseReal128ThreadCache();
   return ok ? 0 : 1;
 }

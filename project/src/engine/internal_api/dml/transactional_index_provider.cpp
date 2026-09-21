@@ -10,10 +10,10 @@
 #include "dml/test_optimization_profile.hpp"
 
 #include "api_diagnostics.hpp"
-#include "hash_digest.hpp"
 #include "index_family_registry.hpp"
 
 #include <algorithm>
+#include <iterator>
 #include <map>
 #include <set>
 #include <string_view>
@@ -22,9 +22,7 @@
 namespace scratchbird::engine::internal_api {
 namespace {
 
-namespace core_hash = scratchbird::core::hash;
 namespace core_index = scratchbird::core::index;
-using scratchbird::core::platform::byte;
 
 EngineApiDiagnostic OkDiagnostic() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
@@ -70,8 +68,8 @@ bool EntryKindIsMembership(std::string_view kind) {
 
 bool EntryMatches(const CrudIndexEntryRecord& entry,
                   const CrudIndexRecord& index,
-                  const std::string& row_uuid,
-                  const std::string& version_uuid,
+                  const EngineUuid& row_uuid,
+                  const EngineUuid& version_uuid,
                   const std::string& key,
                   std::string_view kind,
                   std::uint64_t creator_tx = 0) {
@@ -85,8 +83,8 @@ bool EntryMatches(const CrudIndexEntryRecord& entry,
 }
 
 const CrudRowVersionRecord* FindVersion(const RelationReadSnapshot& state,
-                                        const std::string& table_uuid,
-                                        const std::string& version_uuid) {
+                                        const EngineUuid& table_uuid,
+                                        const EngineUuid& version_uuid) {
   for (const auto& row : state.row_versions) {
     if (row.table_uuid == table_uuid && row.version_uuid == version_uuid) {
       return &row;
@@ -97,8 +95,8 @@ const CrudRowVersionRecord* FindVersion(const RelationReadSnapshot& state,
 
 bool HasEntry(const RelationReadSnapshot& state,
               const CrudIndexRecord& index,
-              const std::string& row_uuid,
-              const std::string& version_uuid,
+              const EngineUuid& row_uuid,
+              const EngineUuid& version_uuid,
               const std::string& key,
               std::string_view kind,
               std::uint64_t creator_tx = 0) {
@@ -132,19 +130,21 @@ void AddProviderEvidence(
                          ResolvedFamily(*index)});
     evidence->push_back({"transactional_index_generation",
                          std::to_string(index->event_sequence)});
-    evidence->push_back({"transactional_index_physical_identity",
-                         index->table_uuid + ".indexes"});
+    evidence->push_back({"transactional_index_table_uuid", index->table_uuid});
   }
 }
 
 DmlTransactionalIndexProviderResult Failure(const EngineRequestContext& context,
                                              const CrudIndexRecord* index,
                                              std::string operation,
-                                             EngineApiDiagnostic diagnostic) {
+                                             EngineApiDiagnostic diagnostic,
+                                             std::vector<EngineEvidenceReference> references = {}) {
   DmlTransactionalIndexProviderResult result;
   result.diagnostic = std::move(diagnostic);
   result.lifecycle_state = "refused";
   AddProviderEvidence(context, index, operation, &result.evidence);
+  result.evidence.insert(result.evidence.end(),
+      std::make_move_iterator(references.begin()), std::make_move_iterator(references.end()));
   return result;
 }
 
@@ -180,25 +180,6 @@ bool IsAdmittedMgaTransactionalIndexFamily(const CrudIndexRecord& index) {
              core_index::IndexPersistenceClass::policy_blocked;
 }
 
-std::string DmlTransactionalIndexMutationIdentity(
-    const EngineRequestContext& context,
-    const DmlTransactionalIndexEntryRequest& request,
-    std::string_view mutation_kind) {
-  const std::string material =
-      "SB_DML_TRANSACTIONAL_INDEX_MUTATION_V1\t" +
-      context.transaction_uuid + "\t" +
-      std::to_string(context.local_transaction_id) + "\t" +
-      request.index.index_uuid + "\t" +
-      std::to_string(request.index.event_sequence) + "\t" +
-      request.table_uuid + "\t" + request.row_uuid + "\t" +
-      request.version_uuid + "\t" + request.predecessor_version_uuid + "\t" +
-      std::string(mutation_kind) + "\t" + request.key_value + "\t" +
-      request.payload_value;
-  const auto digest = core_hash::ComputeSha256Digest(
-      reinterpret_cast<const byte*>(material.data()), material.size());
-  return digest.ok() ? core_hash::HexLower(digest.digest) : std::string{};
-}
-
 MgaOrderedBtreeTransactionalIndexProvider::
     MgaOrderedBtreeTransactionalIndexProvider(
         const EngineRequestContext& context,
@@ -216,11 +197,9 @@ MgaOrderedBtreeTransactionalIndexProvider::PrepareEntry(
                "index.transactional_provider.family_not_admitted",
                "family=" + ResolvedFamily(request.index)));
   }
-  if (append_context_ == nullptr || context_.local_transaction_id == 0 ||
-      context_.transaction_uuid.is_nil() ||
-      request.index.index_uuid.empty() || request.index.event_sequence == 0 ||
-      request.table_uuid.empty() || request.row_uuid.empty() ||
-      request.version_uuid.empty()) {
+  const auto mutation_identity =
+      DmlTransactionalIndexMutationIdentity(context_, request, entry_kind);
+  if (append_context_ == nullptr || mutation_identity.empty()) {
     return Failure(
         context_, &request.index, entry_kind,
         Refuse("INDEX.TRANSACTIONAL_PROVIDER.IDENTITY_INCOMPLETE",
@@ -257,8 +236,7 @@ MgaOrderedBtreeTransactionalIndexProvider::PrepareEntry(
                                              : "PrepareRetireEntry",
                       &result.evidence);
   result.evidence.push_back({"transactional_index_mutation_identity",
-                             DmlTransactionalIndexMutationIdentity(
-                                 context_, request, entry_kind)});
+                             mutation_identity});
   result.evidence.push_back({"transactional_index_entry_kind", entry_kind});
   result.evidence.push_back({"transactional_index_row_uuid", request.row_uuid});
   result.evidence.push_back({"transactional_index_version_uuid",
@@ -277,7 +255,7 @@ MgaOrderedBtreeTransactionalIndexProvider::PrepareInsertEntry(
 DmlTransactionalIndexProviderResult
 MgaOrderedBtreeTransactionalIndexProvider::PrepareRetireEntry(
     const DmlTransactionalIndexEntryRequest& request) {
-  if (request.predecessor_version_uuid.empty()) {
+  if (request.predecessor_version_uuid.is_nil()) {
     return Failure(
         context_, &request.index, "PrepareRetireEntry",
         Refuse("INDEX.TRANSACTIONAL_PROVIDER.PREDECESSOR_REQUIRED",
@@ -437,7 +415,7 @@ MgaOrderedBtreeTransactionalIndexProvider::ValidateAgainstRelation(
                "admitted provider requires a durable index generation"));
   }
 
-  std::map<std::string, std::string> unique_rows_by_key;
+  std::map<std::string, EngineUuid> unique_rows_by_key;
   std::uint64_t expected = 0;
   for (const auto& row :
        VisibleCrudRowsForContext(state, index.table_uuid, context_)) {
@@ -462,8 +440,8 @@ MgaOrderedBtreeTransactionalIndexProvider::ValidateAgainstRelation(
             context_, &index, "ValidateAgainstRelation",
             Refuse("INDEX.TRANSACTIONAL_PROVIDER.MISSING_VISIBLE_ENTRY",
                    "index.transactional_provider.missing_visible_entry",
-                   "index_uuid=" + index.index_uuid + ";row_uuid=" +
-                       row.row_uuid + ";key=" + key));
+                   "visible_relation_membership_missing"),
+            {{"row_uuid", row.row_uuid}, {"key", key}});
       }
       if (index.unique || ResolvedFamily(index) == "unique_btree") {
         const auto inserted = unique_rows_by_key.emplace(key, row.row_uuid);
@@ -472,7 +450,9 @@ MgaOrderedBtreeTransactionalIndexProvider::ValidateAgainstRelation(
               context_, &index, "ValidateAgainstRelation",
               Refuse("INDEX.TRANSACTIONAL_PROVIDER.UNIQUE_CONFLICT",
                      "index.transactional_provider.unique_conflict",
-                     "index_uuid=" + index.index_uuid + ";key=" + key));
+                     "visible_unique_key_conflict"),
+              {{"key", key}, {"row_uuid", row.row_uuid},
+               {"conflicting_row_uuid", inserted.first->second}});
         }
       }
     }
@@ -552,7 +532,7 @@ ValidateTransactionalIndexMutationSetForCommit(
   AddProviderEvidence(context, nullptr, "ValidateTransactionMutationSet",
                       &result.evidence);
 
-  std::map<std::string, std::vector<CrudIndexRecord>> indexes_by_table;
+  std::map<EngineUuid, std::vector<CrudIndexRecord>> indexes_by_table;
   for (const auto& index : state.indexes) {
     if (IsAdmittedMgaTransactionalIndexFamily(index) &&
         CrudCreatorVisible(state, index.creator_tx, index.event_sequence,
@@ -566,16 +546,17 @@ ValidateTransactionalIndexMutationSetForCommit(
     const auto found_indexes = indexes_by_table.find(row.table_uuid);
     if (found_indexes == indexes_by_table.end()) continue;
     const CrudRowVersionRecord* predecessor =
-        row.previous_version_uuid.empty()
+        row.previous_version_uuid.is_nil()
             ? nullptr
             : FindVersion(state, row.table_uuid, row.previous_version_uuid);
-    if (!row.previous_version_uuid.empty() && predecessor == nullptr) {
+    if (!row.previous_version_uuid.is_nil() && predecessor == nullptr) {
       return Failure(
           context, nullptr, "ValidateTransactionMutationSet",
           Refuse("INDEX.TRANSACTIONAL_PROVIDER.PREDECESSOR_MISSING",
                  "index.transactional_provider.predecessor_missing",
-                 "row_uuid=" + row.row_uuid + ";version_uuid=" +
-                     row.version_uuid));
+                 "predecessor_row_version_missing"),
+          {{"row_uuid", row.row_uuid}, {"version_uuid", row.version_uuid},
+           {"predecessor_version_uuid", row.previous_version_uuid}});
     }
     for (const auto& index : found_indexes->second) {
       if (index.event_sequence == 0) {
@@ -601,8 +582,8 @@ ValidateTransactionalIndexMutationSetForCommit(
                 context, &index, "ValidateTransactionMutationSet",
                 Refuse("INDEX.TRANSACTIONAL_PROVIDER.RETIRE_ENTRY_MISSING",
                        "index.transactional_provider.retire_entry_missing",
-                       "row_uuid=" + row.row_uuid + ";version_uuid=" +
-                           row.version_uuid + ";key=" + key));
+                       "required_retire_entry_missing"),
+                {{"row_uuid", row.row_uuid}, {"version_uuid", row.version_uuid}, {"key", key}});
           }
           ++result.prepared_retire_count;
         }
@@ -615,8 +596,8 @@ ValidateTransactionalIndexMutationSetForCommit(
                 context, &index, "ValidateTransactionMutationSet",
                 Refuse("INDEX.TRANSACTIONAL_PROVIDER.INSERT_ENTRY_MISSING",
                        "index.transactional_provider.insert_entry_missing",
-                       "row_uuid=" + row.row_uuid + ";version_uuid=" +
-                           row.version_uuid + ";key=" + key));
+                       "required_insert_entry_missing"),
+                {{"row_uuid", row.row_uuid}, {"version_uuid", row.version_uuid}, {"key", key}});
           }
           ++result.prepared_insert_count;
         }

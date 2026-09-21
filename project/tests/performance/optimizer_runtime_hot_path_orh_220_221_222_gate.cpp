@@ -28,6 +28,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <thread>
 #include <vector>
 
@@ -70,8 +71,9 @@ bool HasEngineEvidence(
   return std::any_of(evidence.begin(),
                      evidence.end(),
                      [&](const auto& item) {
+                       const auto* text = std::get_if<std::string>(&item.evidence_id);
                        return item.evidence_kind == kind &&
-                              item.evidence_id.find(id) != std::string::npos;
+                              text != nullptr && text->find(id) != std::string::npos;
                      });
 }
 
@@ -531,11 +533,11 @@ void PhysicalJoinSuiteConsumesNonIndexOperatorsAndBlocksIndexClaims() {
   Require(physical_merge.merge_pairs.size() == 2,
           "ORH-220 physical merge ordered pair count mismatch");
   Require(HasEngineEvidence(physical_merge.evidence,
-                            "merge_ordered_left_stream_evidence",
-                            "indexed_physical_operator_scan_kind=merge_ordered_left") &&
+                            "merge_ordered_left_stream_evidence.indexed_physical_operator_scan_kind",
+                            "merge_ordered_left") &&
               HasEngineEvidence(physical_merge.evidence,
-                                "merge_ordered_right_stream_evidence",
-                                "indexed_physical_operator_scan_kind=merge_ordered_right"),
+                                "merge_ordered_right_stream_evidence.indexed_physical_operator_scan_kind",
+                                "merge_ordered_right"),
           "ORH-220 physical merge stream evidence missing");
 
   auto missing_mga = IndexedRequest(

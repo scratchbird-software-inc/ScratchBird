@@ -28,12 +28,6 @@ namespace scratchbird::parser::sbsql {
 
 struct CstDocument;
 class EmbeddedEngineClient;
-struct ServerManagementCommand {
-  std::string operation_key;
-  std::string operation_id;
-  std::string mode;
-  std::string audit_reason;
-};
 
 struct CachedPublicNameResolution {
   std::string object_uuid;
@@ -721,7 +715,6 @@ class SbsqlTestWireSession {
       std::string_view statement_name,
       bool statement_name_quoted,
       const std::vector<PreparedParameterWireValue>& values);
-  PipelineResult RunServerManagementCommand(const ServerManagementCommand& command);
   int ServeSbwp(std::intptr_t fd);
 };
 

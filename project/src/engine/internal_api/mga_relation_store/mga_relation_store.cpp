@@ -968,10 +968,10 @@ EngineApiDiagnostic ValidateMgaMutatingTransactionAuthority(const EngineRequestC
 
 EngineApiDiagnostic ValidateMgaRowVersionRecordChains(
     const std::vector<CrudRowVersionRecord>& row_versions) {
-  std::unordered_map<std::string, const CrudRowVersionRecord*> by_version_uuid;
+  std::unordered_map<EngineUuid, const CrudRowVersionRecord*, EngineUuidHash> by_version_uuid;
   by_version_uuid.reserve(row_versions.size());
   for (const auto& row : row_versions) {
-    if (row.version_uuid.empty()) {
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(row.version_uuid)) {
       return MakeInvalidRequestDiagnostic("mga.row_version_chain", "row_version_uuid_required");
     }
     const auto inserted = by_version_uuid.emplace(row.version_uuid, &row);
@@ -980,7 +980,7 @@ EngineApiDiagnostic ValidateMgaRowVersionRecordChains(
     }
   }
   for (const auto& row : row_versions) {
-    if (row.previous_version_uuid.empty()) { continue; }
+    if (row.previous_version_uuid.is_nil()) { continue; }
     const auto previous = by_version_uuid.find(row.previous_version_uuid);
     if (previous == by_version_uuid.end()) {
       return MakeInvalidRequestDiagnostic("mga.row_version_chain", "previous_row_version_missing");
@@ -1009,7 +1009,7 @@ void FilterMgaTemporaryObjectsForSession(
     const EngineRequestContext& context,
     RelationReadSnapshot* state) {
   if (state == nullptr) { return; }
-  std::map<std::string, bool> purged_tables;
+  std::map<EngineUuid, bool> purged_tables;
   std::vector<CrudTableRecord> retained_tables;
   retained_tables.reserve(state->tables.size());
   for (const auto& table : state->tables) {
@@ -1045,9 +1045,9 @@ void FilterMgaTemporaryObjectsForSession(
 
 struct MgaStatementMetadataViewKey {
   MgaMetadataCacheKey metadata;
-  std::string database_uuid;
-  std::string session_uuid;
-  std::string transaction_uuid;
+  EngineUuid database_uuid;
+  EngineUuid session_uuid;
+  EngineUuid transaction_uuid;
   std::uint64_t local_transaction_id{0};
   std::uint64_t snapshot_visible_through_local_transaction_id{0};
   std::uint64_t catalog_generation{0};
@@ -1093,8 +1093,8 @@ struct MgaStatementMetadataView {
       transaction_inventory_snapshot;
   std::shared_ptr<const DescriptorFieldsByRelation> descriptor_fields;
   CrudState visible_metadata;
-  std::unordered_map<std::string, std::size_t> visible_table_ordinals;
-  std::unordered_map<std::string, std::vector<CrudIndexRecord>>
+  std::unordered_map<EngineUuid, std::size_t, EngineUuidHash> visible_table_ordinals;
+  std::unordered_map<EngineUuid, std::vector<CrudIndexRecord>, EngineUuidHash>
       visible_indexes_by_relation;
 };
 
@@ -1121,7 +1121,7 @@ MgaStatementMetadataViewCache() {
 
 MgaStatementMetadataViewLoadResult LoadMgaStatementMetadataView(
     const EngineRequestContext& context,
-    const std::span<const std::string> required_relation_uuids = {}) {
+    const std::span<const EngineUuid> required_relation_uuids = {}) {
   MgaStatementMetadataViewLoadResult result;
   EngineRequestContext statement_context = context;
   if (statement_context.statement_transaction_inventory_snapshot == nullptr) {
@@ -1179,7 +1179,7 @@ MgaStatementMetadataViewLoadResult LoadMgaStatementMetadataView(
         cached->second != nullptr &&
         cached->second->descriptor_fields != nullptr &&
         std::ranges::all_of(required_relation_uuids,
-                            [&cached](const std::string& relation_uuid) {
+                            [&cached](const EngineUuid& relation_uuid) {
           return cached->second->descriptor_fields->contains(relation_uuid);
         })) {
       result.view = cached->second;
@@ -1210,7 +1210,7 @@ MgaStatementMetadataViewLoadResult LoadMgaStatementMetadataView(
                                       &view->visible_metadata);
   view->descriptor_fields = LoadDescriptorFieldsSnapshot(statement_context);
   const auto missing_required = std::ranges::find_if(
-      required_relation_uuids, [&view](const std::string& relation_uuid) {
+      required_relation_uuids, [&view](const EngineUuid& relation_uuid) {
         return view->descriptor_fields == nullptr ||
                !view->descriptor_fields->contains(relation_uuid);
       });
@@ -2379,16 +2379,16 @@ EngineApiDiagnostic EnsureMgaRelationStorageDescriptor(const EngineRequestContex
 
 MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
     const EngineRequestContext& context,
-    const std::string& relation_uuid) {
+    const EngineUuid& relation_uuid) {
   MgaRelationStorageDescriptorLoadResult result;
   if (context.database_path.empty()) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "mga.relation_descriptor.load", "database_path_required");
     return result;
   }
-  if (relation_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(relation_uuid)) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
-        "mga.relation_descriptor.load", "relation_uuid_required");
+        "mga.relation_descriptor.load", "relation_uuid_v7_required");
     return result;
   }
   if (context.local_transaction_id == 0 ||
@@ -2399,10 +2399,10 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
     return result;
   }
 
-  const auto parsed_transaction = scratchbird::core::uuid::ParseTypedUuid(
+  const auto typed_transaction = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
       scratchbird::core::platform::UuidKind::transaction,
       context.transaction_uuid);
-  if (!parsed_transaction.ok()) {
+  if (!typed_transaction.ok()) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
         "mga.relation_descriptor.load", "transaction_uuid_invalid");
     return result;
@@ -2417,7 +2417,7 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
       MakeLocalTransactionId(context.local_transaction_id));
   if (!exact_transaction.ok() ||
       exact_transaction.entry.identity.transaction_uuid.value !=
-          parsed_transaction.value.value ||
+          typed_transaction.value.value ||
       (exact_transaction.entry.state != TransactionState::active &&
        exact_transaction.entry.state != TransactionState::read_only_active)) {
     result.diagnostic = MakeInvalidRequestDiagnostic(
@@ -2426,7 +2426,7 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
     return result;
   }
 
-  const std::array<std::string, 1> required_relations{relation_uuid};
+  const std::array<EngineUuid, 1> required_relations{relation_uuid};
   const auto metadata_view =
       LoadMgaStatementMetadataView(context, required_relations);
   if (!metadata_view.ok()) {
@@ -2484,8 +2484,8 @@ MgaRelationStorageDescriptorLoadResult LoadMgaRelationStorageDescriptor(
 MgaVisibleContextualTextSidecarSnapshotLoadResultV2
 LoadVisibleMgaContextualTextSidecarSnapshotV2(
     const EngineRequestContext& context,
-    const std::string& relation_uuid,
-    const std::string& relation_descriptor_uuid,
+    const EngineUuid& relation_uuid,
+    const EngineUuid& relation_descriptor_uuid,
     const std::uint64_t relation_descriptor_generation) {
   constexpr const char* kOperation =
       "mga.contextual_text_sidecar_snapshot.load";
@@ -2495,8 +2495,8 @@ LoadVisibleMgaContextualTextSidecarSnapshotV2(
         "CTB.TEXT.DESCRIPTOR_INVALID", kOperation, std::move(detail), true);
     return result;
   };
-  if (!CanonicalNonNilMigrationUuid(relation_uuid) ||
-      !CanonicalNonNilMigrationUuid(relation_descriptor_uuid) ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(relation_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(relation_descriptor_uuid) ||
       relation_descriptor_generation == 0) {
     return refuse("exact relation descriptor identity required");
   }
@@ -2515,7 +2515,7 @@ LoadVisibleMgaContextualTextSidecarSnapshotV2(
     return refuse("visible relation descriptor identity does not match claim");
   }
 
-  const std::array<std::string, 1> required_relations{relation_uuid};
+  const std::array<EngineUuid, 1> required_relations{relation_uuid};
   const auto metadata_view =
       LoadMgaStatementMetadataView(context, required_relations);
   if (!metadata_view.ok()) {
@@ -2551,16 +2551,13 @@ LoadVisibleMgaContextualTextSidecarSnapshotV2(
   MgaVisibleContextualTextSidecarSnapshotV2 snapshot;
   snapshot.table = table;
   snapshot.relation_descriptor = loaded_descriptor.descriptor;
-  const auto copy_uuid = [](const std::string& text,
+  const auto copy_uuid = [](const EngineUuid& identity,
                             MgaContextualTextUuidV2* output) {
-    if (output == nullptr) return false;
-    const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-    if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
-        scratchbird::core::uuid::UuidToString(parsed.value) != text) {
+    if (output == nullptr ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(identity)) {
       return false;
     }
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-              output->begin());
+    *output = identity.bytes;
     return true;
   };
   snapshot.owner.creator_transaction_id = persisted.creator_tx;
@@ -2660,15 +2657,12 @@ static MgaContextualTextTargetSelectionResultV2 SelectVisibleMgaTextColumnImplV2
         "CTB.TEXT.DESCRIPTOR_INVALID", kOperation, std::move(detail), true);
     return result;
   };
-  const std::string relation_uuid =
-      ContextualUuidTextV2(key.relation_uuid);
-  const std::string descriptor_uuid =
-      ContextualUuidTextV2(key.relation_descriptor_uuid);
-  const std::string column_uuid =
-      ContextualUuidTextV2(key.column_uuid);
-  if (!CanonicalNonNilMigrationUuid(relation_uuid) ||
-      !CanonicalNonNilMigrationUuid(descriptor_uuid) ||
-      !CanonicalNonNilMigrationUuid(column_uuid) ||
+  const auto relation_uuid = datatype_operator_projection::UuidValue(key.relation_uuid);
+  const auto descriptor_uuid = datatype_operator_projection::UuidValue(key.relation_descriptor_uuid);
+  const auto column_uuid = datatype_operator_projection::UuidValue(key.column_uuid);
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(relation_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(descriptor_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(column_uuid) ||
       key.relation_descriptor_generation == 0) {
     return refuse("contextual target structural identity is invalid");
   }
@@ -2758,15 +2752,12 @@ MgaContextualTextTargetSelectionResultV2 SelectVisibleMgaTextAssignmentColumnV2(
 
 EngineApiDiagnostic ValidateMgaHeapTemporaryRelationAuthorityForStoreModule(
     const EngineRequestContext& context, const CrudTableRecord& table) {
-  const auto exact_session_uuid = [](const std::string& value) {
-    const auto parsed = scratchbird::core::uuid::ParseTypedUuid(
-        scratchbird::core::platform::UuidKind::session, value);
-    return parsed.ok() &&
-           scratchbird::core::uuid::UuidToString(parsed.value.value) == value;
+  const auto exact_session_uuid = [](const EngineUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
   if (!table.temporary) {
     if (!table.temporary_scope.empty() ||
-        !table.temporary_session_uuid.empty()) {
+        !table.temporary_session_uuid.is_nil()) {
       return MakeInvalidRequestDiagnostic(
           "mga.heap_relation_read.prepare",
           "permanent_relation_temporary_authority_invalid");
@@ -2779,7 +2770,7 @@ EngineApiDiagnostic ValidateMgaHeapTemporaryRelationAuthorityForStoreModule(
         "temporary_relation_session_authority_required");
   }
   if (table.temporary_scope == "global") {
-    if (!table.temporary_session_uuid.empty()) {
+    if (!table.temporary_session_uuid.is_nil()) {
       return MakeInvalidRequestDiagnostic(
           "mga.heap_relation_read.prepare",
           "global_temporary_relation_owner_invalid");
@@ -2799,7 +2790,7 @@ EngineApiDiagnostic ValidateMgaHeapTemporaryRelationAuthorityForStoreModule(
 PreparedMgaHeapReadAuthorityCohortResult
 PrepareMgaHeapReadAuthoritiesForStoreModule(
     const EngineRequestContext& context,
-    const std::span<const std::string> relation_uuids,
+    const std::span<const EngineUuid> relation_uuids,
     const scratchbird::transaction::mga::SnapshotVectorDescriptor*
         resolved_statement_snapshot,
     const EngineDmlDeleteBindingAuthorityV1* delete_binding) {
@@ -2826,22 +2817,22 @@ PrepareMgaHeapReadAuthoritiesForStoreModule(
         "mga.heap_relation_read.prepare",
         "exact_statement_authority_cohort_required"));
   }
-  std::set<std::string> unique_relations;
+  std::set<EngineUuid> unique_relations;
   if (delete_binding) {
     const auto verified = RevalidateDmlDeleteBindingAuthorityV1(context, *delete_binding);
     if (verified.error) return refuse(verified);
     if (relation_uuids.size() != 1 || relation_uuids.front() !=
-        datatype_operator_projection::UuidText(delete_binding->bundle()->descriptor.target_relation_uuid)) {
+        datatype_operator_projection::UuidValue(delete_binding->bundle()->descriptor.target_relation_uuid)) {
       return refuse(MakeInvalidRequestDiagnostic("mga.heap_relation_read.prepare",
                                                 "DELETE_target_authority_mismatch"));
     }
   }
   for (const auto& relation_uuid : relation_uuids) {
-    if (relation_uuid.empty() || !unique_relations.insert(relation_uuid).second) {
-      if (!relation_uuid.empty()) continue;
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(relation_uuid)) {
       return refuse(MakeInvalidRequestDiagnostic(
           "mga.heap_relation_read.prepare", "exact_relation_uuid_required"));
     }
+    unique_relations.insert(relation_uuid);
   }
 
   const auto inventory_guard =
@@ -3015,9 +3006,9 @@ PrepareMgaHeapReadAuthoritiesForStoreModule(
 }
 
 PreparedMgaHeapReadAuthorityResult PrepareMgaHeapReadAuthorityForStoreModule(
-    const EngineRequestContext& context, const std::string& relation_uuid) {
+    const EngineRequestContext& context, const EngineUuid& relation_uuid) {
   PreparedMgaHeapReadAuthorityResult result;
-  const std::array<std::string, 1> relations{relation_uuid};
+  const std::array<EngineUuid, 1> relations{relation_uuid};
   auto prepared = PrepareMgaHeapReadAuthoritiesForStoreModule(context,
                                                               relations);
   if (!prepared.ok || prepared.cohort == nullptr) {

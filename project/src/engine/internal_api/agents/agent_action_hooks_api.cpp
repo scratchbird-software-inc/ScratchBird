@@ -313,7 +313,8 @@ AgentRuntimeContext AgentContextFromHookRequest(const EngineAgentActionHookReque
   context.database_uuid = request.context.database_uuid;
   context.cluster_uuid = request.context.cluster_uuid;
   agent_authorization::PopulateAgentRuntimeSecurityContext(request.context,
-                                                            &context);
+                                                            &context,
+                                                            agent_authorization::Scope::local_node);
   const auto wall = OptionValue(request, "wall_now_us:");
   const auto mono = OptionValue(request, "monotonic_now_us:");
   const auto cluster = OptionValue(request, "cluster_now_us:");

@@ -38,7 +38,7 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& c, std::string_v
   for (const auto* value : {&c.database_uuid, &c.session_uuid, &c.principal_uuid, &c.transaction_uuid,
                            &c.statement_receipt_uuid, &c.statement_snapshot_uuid,
                            &c.statement_metadata_snapshot_uuid, &c.authorization_context.authority_uuid})
-    if (!projection::TypedUuid(value->canonical, &id)) return Error("owner_identity", "MGA.TRANSACTION.STALE");
+    if (!projection::TypedUuid(*value, &id)) return Error("owner_identity", "MGA.TRANSACTION.STALE");
   if (!c.local_transaction_id || !c.catalog_generation_id || !c.security_epoch ||
       !c.authorization_context.security_context_generation ||
       c.authorization_context.principal_uuid != c.principal_uuid ||
@@ -65,9 +65,9 @@ void Number(std::vector<std::uint8_t>* bytes, std::uint64_t value) {
 void Text(std::vector<std::uint8_t>* bytes, std::string_view value) {
   Number(bytes, value.size()); bytes->insert(bytes->end(), value.begin(), value.end());
 }
-bool Identity(std::vector<std::uint8_t>* bytes, const std::string& value, bool optional = false) {
+bool Identity(std::vector<std::uint8_t>* bytes, const EngineUuid& value, bool optional = false) {
   wire::TypedUpdateUuid id{};
-  if (!(optional && value.empty()) && !projection::TypedUuid(value, &id)) return false;
+  if (!(optional && value.is_nil()) && !projection::TypedUuid(value, &id)) return false;
   bytes->insert(bytes->end(), id.begin(), id.end()); return true;
 }
 wire::TypedUpdateHash Hash(std::string_view domain, const std::vector<std::uint8_t>& bytes) {
@@ -79,7 +79,7 @@ wire::TypedUpdateHash Hash(std::string_view domain, const std::vector<std::uint8
 bool Nonzero(const wire::TypedUpdateHash& hash) {
   return std::any_of(hash.begin(), hash.end(), [](auto b) { return b != 0; });
 }
-EngineApiDiagnostic Project(const EngineRequestContext& context, const std::string& target,
+EngineApiDiagnostic Project(const EngineRequestContext& context, const EngineUuid& target,
                             EngineDmlDeleteEffectSnapshotV1* snapshot) {
   auto diagnostic = AdmitMgaDmlSavepointMutation(context, target, MgaDmlMutationKind::delete_rows, true);
   if (diagnostic.error) return diagnostic;
@@ -138,7 +138,7 @@ EngineApiDiagnostic Project(const EngineRequestContext& context, const std::stri
   std::sort(indexes.begin(), indexes.end(), [](const auto& a, const auto& b) { return a.index_uuid < b.index_uuid; });
   std::vector<std::uint8_t> index_bytes;
   Number(&index_bytes, indexes.size());
-  std::string prior;
+  EngineUuid prior;
   for (const auto& index : indexes) {
     if (!IsAdmittedMgaSavepointIndexProfile(index) || index.index_uuid == prior ||
         index.table_uuid != target || !Identity(&index_bytes, index.index_uuid) ||
@@ -167,7 +167,7 @@ EngineApiDiagnostic Project(const EngineRequestContext& context, const std::stri
 }  // namespace
 
 EngineDmlDeleteEffectAuthorityResultV1 CaptureDmlDeleteEffectAuthorityV1(
-    const EngineRequestContext& context, const std::string& target) {
+    const EngineRequestContext& context, const EngineUuid& target) {
   EngineDmlDeleteEffectAuthorityResultV1 result;
   result.diagnostic = ValidateContext(context, "private_dml_delete_rows_binder");
   if (result.diagnostic.error) return result;
@@ -200,7 +200,7 @@ EngineApiDiagnostic RevalidateDmlDeleteEffectAuthorityV1(
   if (Owner(context) != Owner(authority.owner) || captured.snapshot != authority.snapshot)
     return Error("owner_or_projection_changed", "MGA.TRANSACTION.STALE");
   EngineDmlDeleteEffectSnapshotV1 current;
-  const auto resolved = Project(context, projection::UuidText(authority.snapshot.target_relation_uuid), &current);
+  const auto resolved = Project(context, projection::UuidValue(authority.snapshot.target_relation_uuid), &current);
   if (resolved.error) return resolved;
   current.snapshot_uuid = authority.snapshot.snapshot_uuid; current.generation = authority.snapshot.generation;
   current.constraint_set_uuid = authority.snapshot.constraint_set_uuid;
@@ -220,7 +220,7 @@ EngineApiDiagnostic RevalidateRecoveredDmlDeleteEffectProjectionV1(
       supplied.constraint_set_uuid == supplied.trigger_set_uuid)
     return Error("recovered_effect_identity", "MGA.TRANSACTION.STALE");
   EngineDmlDeleteEffectSnapshotV1 current;
-  const auto resolved = Project(context, projection::UuidText(supplied.target_relation_uuid), &current);
+  const auto resolved = Project(context, projection::UuidValue(supplied.target_relation_uuid), &current);
   if (resolved.error) return resolved;
   current.snapshot_uuid = supplied.snapshot_uuid; current.generation = supplied.generation;
   current.constraint_set_uuid = supplied.constraint_set_uuid; current.trigger_set_uuid = supplied.trigger_set_uuid;

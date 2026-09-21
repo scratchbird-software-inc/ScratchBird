@@ -4,6 +4,7 @@
 #include "catalog/resource_catalog_admission.hpp"
 #include "api_diagnostics.hpp"
 #include "uuid.hpp"
+#include "../../../core/datatypes/canonical_utf8.hpp"
 #include <algorithm>
 #include <utility>
 
@@ -84,10 +85,15 @@ EngineResourceCatalogAdmission OpenEngineResourceCatalog(const EngineRequestCont
   return result;
 }
 
-EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
+namespace {
+// Both public catalog entry points project the same already-admitted image.
+// Do not reopen between alias resolution and descriptor publication: identity,
+// epochs and compiled comparison tables must belong to one resource cohort.
+EngineResourceDescriptorLookupResult ProjectResourceDescriptor(
     const EngineRequestContext& context,
+    const scratchbird::core::resources::ResourceSeedCatalogImage& image,
     const EngineUuid& resource_uuid,
-    const std::string& expected_resource_family) {
+    const std::string& resource_family) {
   EngineResourceDescriptorLookupResult result;
   auto fail = [&](std::string code,
                   std::string message_key,
@@ -98,30 +104,9 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
     return result;
   };
 
-  const std::string resource_family =
-      LowerResourceClass(expected_resource_family);
-  if (!IsEngineResourceClass(resource_family)) {
-    return fail("CATALOG.INVALID_INPUT",
-                "catalog.resource.family_invalid",
-                expected_resource_family);
-  }
-  if (resource_uuid.is_nil()) {
-    return fail("CATALOG.INVALID_INPUT",
-                "catalog.resource.uuid_required",
-                resource_family + "_uuid_required");
-  }
-  if (!scratchbird::core::uuid::IsEngineIdentityUuid(resource_uuid)) {
-    return fail("CATALOG.INVALID_INPUT",
-                "catalog.resource.uuid_invalid",
-                resource_family + "_uuid_malformed");
-  }
-
-  auto admission = OpenEngineResourceCatalog(context);
-  if (!admission.ok()) { result.diagnostic = std::move(admission.diagnostic); return result; }
-  const auto& image = admission.state->resource_seed_catalog;
-
   EngineResolvedResourceDescriptor descriptor;
   descriptor.present = true;
+  descriptor.database_uuid = context.database_uuid;
   descriptor.resource_family = resource_family;
   descriptor.seed_pack_name = image.seed_pack_name;
   descriptor.seed_pack_version = image.seed_pack_version;
@@ -187,6 +172,9 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
     descriptor.default_for_parent = matched->default_for_charset;
     descriptor.case_insensitive = matched->case_insensitive;
     descriptor.accent_insensitive = matched->accent_insensitive;
+    descriptor.comparison_profile = matched->comparison_profile;
+    if (scratchbird::core::resources::UsesUnicodeRoot(matched->comparison_profile))
+      descriptor.unicode_collation = image.unicode_collation;
   }
 
   if (descriptor.resource_uuid.is_nil() ||
@@ -207,6 +195,77 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
       MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
   result.resource_descriptor = std::move(descriptor);
   return result;
+}
+} // namespace
+
+EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
+    const EngineRequestContext& context,
+    const EngineUuid& resource_uuid,
+    const std::string& expected_resource_family) {
+  EngineResourceDescriptorLookupResult result;
+  const auto family = LowerResourceClass(expected_resource_family);
+  if (!IsEngineResourceClass(family)) {
+    result.diagnostic = MakeEngineApiDiagnostic("CATALOG.INVALID_INPUT",
+        "catalog.resource.family_invalid", expected_resource_family);
+    return result;
+  }
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(resource_uuid)) {
+    result.diagnostic = MakeEngineApiDiagnostic("CATALOG.INVALID_INPUT",
+        resource_uuid.is_nil() ? "catalog.resource.uuid_required" : "catalog.resource.uuid_invalid",
+        family + (resource_uuid.is_nil() ? "_uuid_required" : "_uuid_malformed"));
+    return result;
+  }
+  auto admission = OpenEngineResourceCatalog(context);
+  if (!admission.ok()) { result.diagnostic = std::move(admission.diagnostic); return result; }
+  return ProjectResourceDescriptor(context, admission.state->resource_seed_catalog,
+                                   resource_uuid, family);
+}
+
+EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByName(
+    const EngineRequestContext& context,
+    const std::string& name,
+    const std::string& expected_resource_family) {
+  EngineResourceDescriptorLookupResult result;
+  const auto family = LowerResourceClass(expected_resource_family);
+  if (!IsEngineResourceClass(family)) {
+    result.diagnostic = MakeEngineApiDiagnostic("CATALOG.INVALID_INPUT",
+        "catalog.resource.family_invalid", expected_resource_family);
+    return result;
+  }
+  if (name.empty() || name.find('\0') != std::string::npos ||
+      !scratchbird::core::datatypes::ValidateCanonicalUtf8(
+          reinterpret_cast<const std::uint8_t*>(name.data()), name.size())) {
+    result.diagnostic = MakeEngineApiDiagnostic("CATALOG.INVALID_INPUT",
+        "catalog.resource.name_invalid", "resource_name_must_be_nonempty_canonical_utf8");
+    return result;
+  }
+  auto admission = OpenEngineResourceCatalog(context);
+  if (!admission.ok()) { result.diagnostic = std::move(admission.diagnostic); return result; }
+  const auto& image = admission.state->resource_seed_catalog;
+  EngineUuid identity;
+  if (family == "charset") {
+    if (const auto* row = scratchbird::core::resources::FindResourceSeedCharset(image, name))
+      identity = row->resource_uuid;
+  } else {
+    if (const auto* row = scratchbird::core::resources::FindResourceSeedCollation(image, name))
+      identity = row->resource_uuid;
+  }
+  if (identity.is_nil()) {
+    const auto alias = scratchbird::core::resources::ResolveResourceSeedAlias(image,
+        family == "charset" ? scratchbird::core::resources::ResourceSeedFamily::charset
+                            : scratchbird::core::resources::ResourceSeedFamily::collation, name);
+    if (!alias.ok() && alias.diagnostic.diagnostic_code == "SB_RESOURCE_ALIAS_AMBIGUOUS") {
+      result.diagnostic = MakeEngineApiDiagnostic(alias.diagnostic.diagnostic_code,
+                                                  alias.diagnostic.message_key, {});
+      for (const auto& field : alias.diagnostic.arguments)
+        result.diagnostic.fields.push_back({field.key, field.value});
+    } else {
+      result.diagnostic = MakeEngineApiDiagnostic("CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE",
+          "message_vector.item_not_found_or_does_not_exist", family + "_not_found_or_not_visible");
+    }
+    return result;
+  }
+  return ProjectResourceDescriptor(context, image, identity, family);
 }
 
 EngineTimezoneSeedAuthorityLookupResult LookupEngineTimezoneSeedAuthority(

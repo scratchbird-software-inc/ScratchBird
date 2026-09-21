@@ -87,6 +87,7 @@ RowVersionMetadata VersionFor(const TransactionInventoryEntry& entry,
   metadata.identity.version_sequence = sequence;
   metadata.state = version_state;
   metadata.creator_transaction_state = transaction_state;
+  metadata.creator_commit_sequence = entry.commit_sequence;
   metadata.payload_present = payload_present;
   return metadata;
 }
@@ -128,6 +129,14 @@ bool CaseInventoryVisibility() {
   const auto committed_visible = EvaluateVisibility(
       VersionFor(commit1.entry, row, 1, RowVersionState::committed, TransactionState::committed),
       snapshot3.visibility_snapshot);
+  const auto committed_metadata = VersionFor(
+      commit1.entry, row, 1, RowVersionState::committed, TransactionState::committed);
+  const auto committed_after_snapshot = EvaluateVisibility(
+      committed_metadata, snapshot2.visibility_snapshot);
+  auto missing_sequence = committed_metadata;
+  missing_sequence.creator_commit_sequence = 0;
+  const auto missing_sequence_visibility = EvaluateVisibility(
+      missing_sequence, snapshot3.visibility_snapshot);
   const auto tx4 = Begin(&manager, 4);
   const auto rollback4 = manager.Rollback(tx4.entry.identity.local_id, 1779002000300ull);
   const auto tx5 = Begin(&manager, 5);
@@ -150,6 +159,13 @@ bool CaseInventoryVisibility() {
                  "peer_waits_for_uncommitted_creator");
   checks.Require(commit1.ok() && committed_visible.ok() && committed_visible.decision == VisibilityDecision::visible,
                  "committed_version_visible_to_later_reader");
+  checks.Require(committed_after_snapshot.ok() &&
+                 committed_after_snapshot.decision == VisibilityDecision::invisible,
+                 "commit_after_snapshot_remains_invisible");
+  checks.Require(!missing_sequence_visibility.ok() &&
+                 missing_sequence_visibility.decision == VisibilityDecision::unknown &&
+                 missing_sequence_visibility.diagnostic.message_key == "row_version.creator_commit_sequence_missing",
+                 "committed_version_without_inventory_sequence_rejected");
   checks.Require(rollback4.ok() && rolled_back_invisible.ok() &&
                  rolled_back_invisible.decision == VisibilityDecision::invisible,
                  "rolled_back_version_invisible");
@@ -261,6 +277,10 @@ bool CaseRecoveryClassification() {
   inventory.entries.push_back(RecoveryEntry(7, TransactionState::limbo, false));
   inventory.entries.push_back(RecoveryEntry(8, TransactionState::committing, false));
   inventory.entries.push_back(RecoveryEntry(9, TransactionState::active, false, true));
+  // Explicit persisted-history fixture: transaction 5 is the sole published
+  // commit. Transaction numbers are not commit-order authority.
+  inventory.entries[4].commit_sequence = 1;
+  inventory.next_commit_sequence = 2;
 
   const auto classified = ClassifyLocalTransactionInventoryForRecovery(inventory);
   const auto recovered = ApplyLocalTransactionInventoryRecovery(inventory, 1779005000000ull);
@@ -293,10 +313,27 @@ bool CaseRecoveryClassification() {
                  "active_transaction_recovered_as_rolled_back");
   checks.Require(lookup3.ok() && lookup3.entry.state == TransactionState::committed,
                  "committing_with_evidence_recovered_as_committed");
+  checks.Require(lookup3.ok() && lookup3.entry.commit_sequence == 2 &&
+                 recovered.recovered_inventory.next_commit_sequence == 3 &&
+                 recovered.recovered_inventory.entries[4].commit_sequence == 1,
+                 "recovery_allocates_commit_order_without_rewriting_prior_commit");
   checks.Require(lookup8.ok() && lookup8.entry.state == TransactionState::committing,
                  "committing_without_evidence_remains_fenced");
   checks.Require(lookup9.ok() && lookup9.entry.state == TransactionState::rolled_back,
                  "rollback_only_transaction_recovered_as_rolled_back");
+  auto missing_sequence = inventory;
+  missing_sequence.entries[4].commit_sequence = 0;
+  const auto rejected = ApplyLocalTransactionInventoryRecovery(missing_sequence, 1779005000000ull);
+  checks.Require(!rejected.ok() && rejected.write_admission_must_remain_fenced &&
+                 !rejected.inventory_changed && rejected.classifications.empty() &&
+                 rejected.diagnostic.message_key == "transaction.recovery.inventory_invalid",
+                 "missing_persisted_commit_sequence_fences_recovery");
+  auto exhausted_boundary = inventory;
+  exhausted_boundary.next_commit_sequence = 1;
+  const auto rejected_boundary = ClassifyLocalTransactionInventoryForRecovery(exhausted_boundary);
+  checks.Require(!rejected_boundary.ok() && rejected_boundary.write_admission_must_remain_fenced &&
+                 rejected_boundary.classifications.empty(),
+                 "commit_at_next_sequence_boundary_rejected");
   return checks.ok;
 }
 
@@ -347,6 +384,7 @@ bool CaseStressInvariant() {
         if (version.metadata.identity.creator_transaction.local_id.value == tx.entry.identity.local_id.value) {
           version.metadata.state = RowVersionState::committed;
           version.metadata.creator_transaction_state = TransactionState::committed;
+          version.metadata.creator_commit_sequence = commit.entry.commit_sequence;
         }
       }
     }

@@ -10,7 +10,13 @@
 #include "core/uuid/diagnostic_identity.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
 #include "engine/public_abi_typed_result.hpp"
+#include "engine/public_abi_diagnostic_severity.hpp"
+#include "engine/statement_management_ack_codec.hpp"
 #include "engine/statement_context_receipt_retention.hpp"
+#include "engine/statement_identity_binding.hpp"
+#include "dml/bulk_import_column_digest.hpp"
+#include "engine/statement_snapshot_acquisition_guard.hpp"
+#include "engine/statement_relation_occurrence_mapping.hpp"
 #include "engine/internal_api/query/result_metadata.hpp"
 #include "canonical_aggregate_registry.hpp"
 #include "core/agents/resource_governance_admission.hpp"
@@ -35,6 +41,7 @@
 #include "sblr_executor_availability_registry.hpp"
 #include "sblr_literal_runtime.hpp"
 #include "sblr_parameter_runtime.hpp"
+#include "engine/sblr/prepared_relational_query.hpp"
 #include "sblr_parameter_bind_runtime.hpp"
 #include "sblr_result_page_runtime.hpp"
 #include "sblr_query_explain_runtime.hpp"
@@ -391,6 +398,7 @@
 #include "server_engine_bridge/diagnostic_fields.hpp"
 #include "server_engine_bridge/prepared_metadata_binding.hpp"
 #include "server_engine_bridge/statement_context.hpp"
+#include "server_engine_bridge/admission_token_binding.hpp"
 #include "query/contextual_text_graph_authority_verifier_v2.hpp"
 #include "query/contextual_text_target_authority_resolver_v2.hpp"
 #include "catalog/name_resolution_api.hpp"
@@ -809,6 +817,7 @@ struct StatementContextReceiptOpaque {
   scratchbird::engine::internal_api::EngineUuid variable_admission_token_uuid;
   std::array<std::uint8_t, 32> variable_admission_binding_sha256{};
   bool source_map_bound_ast_frozen = false;
+  bool source_map_registry_touched = false;
   std::array<std::uint8_t, 32> source_map_bound_ast_sha256{};
   scratchbird::engine::internal_api::SblrExecutorAvailabilitySnapshot
       source_map_executor_availability_snapshot;
@@ -867,6 +876,18 @@ struct StatementParameterCoordinationOpaque {
 }  // namespace scratchbird::server_engine_bridge
 
 namespace {
+
+// Registered scalar-bigint descriptor identity; this is binary authority,
+// not UUID text interpreted by the engine.
+constexpr scratchbird::engine::internal_api::EngineUuid
+    kParameterBigintDescriptor{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
+                               0x80, 0, 0, 0, 0, 0, 0xd7, 0x11}};
+constexpr scratchbird::engine::internal_api::EngineUuid
+    kCanonicalDatatypeCatalogUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
+                                  0x80, 0, 0, 0, 0, 0, 0xd7, 0x01}};
+constexpr scratchbird::engine::internal_api::EngineUuid
+    kCanonicalTextDescriptorUuid{{0x01, 0x9d, 0, 0, 0, 0, 0x70, 0,
+                                 0x80, 0, 0, 0, 0, 0, 0xd7, 0x18}};
 
 std::array<std::uint8_t, 16> TextToUuid(const std::string& text) {
   std::array<std::uint8_t, 16> bytes{};
@@ -946,7 +967,6 @@ std::map<std::uint64_t, std::shared_ptr<
 // Ordinary bridge APIs only see the live map, never retained private owners.
 decltype(g_live_statement_context_receipts) g_retired_statement_context_receipts;
 std::atomic<std::uint64_t> g_next_statement_context_receipt_id{1};
-std::atomic<std::uint64_t> g_statement_context_identity_ordinal{1};
 std::map<std::uint64_t, scratchbird::server_engine_bridge::
     StatementPackageAdmissionReservationOpaque>
     g_package_admission_reservations;
@@ -1060,19 +1080,10 @@ bool generate_distinct_statement_context_uuid(
     scratchbird::engine::internal_api::EngineUuid* generated_uuid) {
   if (identities == nullptr || generated_uuid == nullptr) return false;
   constexpr std::uint64_t kMaximumAttempts = 32;
-  const auto now_millis = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
   for (std::uint64_t attempt = 0; attempt < kMaximumAttempts; ++attempt) {
-    const auto ordinal = g_statement_context_identity_ordinal.fetch_add(
-        1, std::memory_order_relaxed);
-    const auto generated =
-        scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
-            scratchbird::core::platform::UuidKind::object,
-            now_millis + ordinal + attempt);
-    if (!generated.ok()) return false;
-    const auto candidate = generated.value.value;
+    const auto generated = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+    if (!generated) return false;
+    const auto candidate = *generated;
     if (identities->insert(candidate).second) {
       *generated_uuid = candidate;
       return true;
@@ -2057,459 +2068,14 @@ bool statement_management_exact_parameter_bind_request(
   return true;
 }
 
-std::vector<std::uint8_t> statement_management_prepare_ack(
-    StatementPrepareBindAckV1* acknowledgement) {
-  if (acknowledgement == nullptr ||
-      !valid_engine_identity(
-          acknowledgement->authenticated_receipt_uuid) ||
-      acknowledgement->occurrence == 0 ||
-      !valid_engine_identity(acknowledgement->binding_uuid) ||
-      acknowledgement->binding_generation == 0 ||
-      !valid_engine_identity(acknowledgement->statement_name_uuid) ||
-      !bulk_import_nonzero_hash(acknowledgement->descriptor_sha256) ||
-      !bulk_import_nonzero_hash(acknowledgement->request_evidence_sha256)) {
-    return {};
-  }
-  std::vector<std::uint8_t> bytes;
-  bytes.insert(bytes.end(), {'S', 'P', 'B', 'A'});
-  bulk_import_append_u16(&bytes, 1);
-  bulk_import_append_u16(&bytes, 176);
-  bulk_import_append_u32(&bytes, 176);
-  bulk_import_append_u32(&bytes, 0);
-  for (const auto& text : {acknowledgement->authenticated_receipt_uuid,
-                           acknowledgement->binding_uuid}) {
-    if (!bulk_import_append_uuid(&bytes, text)) return {};
-    if (text == acknowledgement->authenticated_receipt_uuid) {
-      bulk_import_append_u64(&bytes, acknowledgement->occurrence);
-    } else {
-      bulk_import_append_u64(&bytes,
-                             acknowledgement->binding_generation);
-    }
-  }
-  if (!bulk_import_append_uuid(&bytes,
-                               acknowledgement->statement_name_uuid)) {
-    return {};
-  }
-  bytes.insert(bytes.end(), acknowledgement->descriptor_sha256.begin(),
-               acknowledgement->descriptor_sha256.end());
-  bytes.insert(bytes.end(), acknowledgement->request_evidence_sha256.begin(),
-               acknowledgement->request_evidence_sha256.end());
-  bytes.insert(bytes.end(), 32, 0);
-  if (bytes.size() != 176) return {};
-  acknowledgement->acknowledgement_evidence_sha256 =
-      bulk_import_sha256(bytes);
-  std::copy(acknowledgement->acknowledgement_evidence_sha256.begin(),
-            acknowledgement->acknowledgement_evidence_sha256.end(),
-            bytes.begin() + 144);
-  return bytes;
-}
-
-std::vector<std::uint8_t> statement_management_execute_direct_ack(
-    StatementExecuteDirectBindAckV1* acknowledgement) {
-  if (acknowledgement == nullptr ||
-      !valid_engine_identity(
-          acknowledgement->authenticated_receipt_uuid) ||
-      acknowledgement->occurrence == 0 ||
-      !valid_engine_identity(acknowledgement->binding_uuid) ||
-      acknowledgement->binding_generation == 0 ||
-      !bulk_import_nonzero_hash(acknowledgement->descriptor_sha256) ||
-      !bulk_import_nonzero_hash(acknowledgement->request_evidence_sha256)) {
-    return {};
-  }
-  if (!acknowledgement->result_descriptor_uuid.empty() &&
-      !valid_engine_identity(
-          acknowledgement->result_descriptor_uuid)) {
-    return {};
-  }
-  std::vector<std::uint8_t> bytes;
-  bytes.insert(bytes.end(), {'S', 'D', 'B', 'A'});
-  bulk_import_append_u16(&bytes, 1);
-  bulk_import_append_u16(&bytes, 176);
-  bulk_import_append_u32(&bytes, 176);
-  bulk_import_append_u32(&bytes, 0);
-  if (!bulk_import_append_uuid(
-          &bytes, acknowledgement->authenticated_receipt_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->occurrence);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->binding_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->binding_generation);
-  if (acknowledgement->result_descriptor_uuid.empty()) {
-    bytes.insert(bytes.end(), 16, 0);
-  } else if (!bulk_import_append_uuid(
-                 &bytes, acknowledgement->result_descriptor_uuid)) {
-    return {};
-  }
-  bytes.insert(bytes.end(), acknowledgement->descriptor_sha256.begin(),
-               acknowledgement->descriptor_sha256.end());
-  bytes.insert(bytes.end(), acknowledgement->request_evidence_sha256.begin(),
-               acknowledgement->request_evidence_sha256.end());
-  bytes.insert(bytes.end(), 32, 0);
-  if (bytes.size() != 176) return {};
-  acknowledgement->acknowledgement_evidence_sha256 =
-      bulk_import_sha256(bytes);
-  std::copy(acknowledgement->acknowledgement_evidence_sha256.begin(),
-            acknowledgement->acknowledgement_evidence_sha256.end(),
-            bytes.begin() + 144);
-  return bytes;
-}
-
-std::vector<std::uint8_t> statement_management_name_resolve_ack(
-    StatementNameResolveBindAckV1* acknowledgement) {
-  if (acknowledgement == nullptr ||
-      !valid_engine_identity(
-          acknowledgement->authenticated_receipt_uuid) ||
-      acknowledgement->occurrence == 0 ||
-      !valid_engine_identity(acknowledgement->binding_uuid) ||
-      acknowledgement->binding_generation == 0 ||
-      !valid_engine_identity(acknowledgement->resolution_uuid) ||
-      !bulk_import_nonzero_hash(acknowledgement->descriptor_sha256) ||
-      !bulk_import_nonzero_hash(acknowledgement->request_evidence_sha256)) {
-    return {};
-  }
-  std::vector<std::uint8_t> bytes;
-  bytes.insert(bytes.end(), {'S', 'N', 'B', 'A'});
-  bulk_import_append_u16(&bytes, 1);
-  bulk_import_append_u16(&bytes, 176);
-  bulk_import_append_u32(&bytes, 176);
-  bulk_import_append_u32(&bytes, 0);
-  if (!bulk_import_append_uuid(
-          &bytes, acknowledgement->authenticated_receipt_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->occurrence);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->binding_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->binding_generation);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->resolution_uuid)) {
-    return {};
-  }
-  bytes.insert(bytes.end(), acknowledgement->descriptor_sha256.begin(),
-               acknowledgement->descriptor_sha256.end());
-  bytes.insert(bytes.end(), acknowledgement->request_evidence_sha256.begin(),
-               acknowledgement->request_evidence_sha256.end());
-  bytes.insert(bytes.end(), 32, 0);
-  if (bytes.size() != 176) return {};
-  acknowledgement->acknowledgement_evidence_sha256 =
-      bulk_import_sha256(bytes);
-  std::copy(acknowledgement->acknowledgement_evidence_sha256.begin(),
-            acknowledgement->acknowledgement_evidence_sha256.end(),
-            bytes.begin() + 144);
-  acknowledgement->exact_bind_ack_bytes = bytes;
-  return bytes;
-}
-
-std::vector<std::uint8_t> statement_management_parse_text_ack(
-    StatementParseTextBindAckV1* acknowledgement) {
-  if (acknowledgement == nullptr ||
-      !valid_engine_identity(
-          acknowledgement->authenticated_receipt_uuid) ||
-      acknowledgement->occurrence == 0 ||
-      !valid_engine_identity(acknowledgement->binding_uuid) ||
-      acknowledgement->binding_generation == 0 ||
-      !valid_engine_identity(acknowledgement->parse_uuid) ||
-      !bulk_import_nonzero_hash(acknowledgement->descriptor_sha256) ||
-      !bulk_import_nonzero_hash(
-          acknowledgement->canonical_input_sha256) ||
-      !bulk_import_nonzero_hash(
-          acknowledgement->request_evidence_sha256)) {
-    return {};
-  }
-  std::vector<std::uint8_t> bytes;
-  bytes.insert(bytes.end(), {'P', 'T', 'B', 'A'});
-  bulk_import_append_u16(&bytes, 1);
-  bulk_import_append_u16(&bytes, 208);
-  bulk_import_append_u32(&bytes, 208);
-  bulk_import_append_u32(&bytes, 0);
-  if (!bulk_import_append_uuid(
-          &bytes, acknowledgement->authenticated_receipt_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->occurrence);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->binding_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->binding_generation);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->parse_uuid)) {
-    return {};
-  }
-  bytes.insert(bytes.end(), acknowledgement->descriptor_sha256.begin(),
-               acknowledgement->descriptor_sha256.end());
-  bytes.insert(bytes.end(), acknowledgement->canonical_input_sha256.begin(),
-               acknowledgement->canonical_input_sha256.end());
-  bytes.insert(bytes.end(), acknowledgement->request_evidence_sha256.begin(),
-               acknowledgement->request_evidence_sha256.end());
-  bytes.insert(bytes.end(), 32, 0);
-  if (bytes.size() != 208) return {};
-  acknowledgement->acknowledgement_evidence_sha256 =
-      bulk_import_sha256(bytes);
-  std::copy(acknowledgement->acknowledgement_evidence_sha256.begin(),
-            acknowledgement->acknowledgement_evidence_sha256.end(),
-            bytes.begin() + 176);
-  acknowledgement->exact_bind_ack_bytes = bytes;
-  return bytes;
-}
-
-std::vector<std::uint8_t> statement_management_catalog_epoch_check_ack(
-    StatementCatalogEpochCheckBindAckV1* acknowledgement) {
-  if (acknowledgement == nullptr ||
-      !valid_engine_identity(
-          acknowledgement->authenticated_receipt_uuid) ||
-      acknowledgement->occurrence == 0 ||
-      !valid_engine_identity(acknowledgement->binding_uuid) ||
-      acknowledgement->binding_generation == 0 ||
-      !valid_engine_identity(acknowledgement->check_uuid) ||
-      (acknowledgement->object_uuid.empty() !=
-       (acknowledgement->object_generation == 0)) ||
-      (!acknowledgement->object_uuid.empty() &&
-       !valid_engine_identity(acknowledgement->object_uuid)) ||
-      !valid_engine_identity(acknowledgement->schema_tree_uuid) ||
-      acknowledgement->schema_tree_generation == 0 ||
-      !bulk_import_nonzero_hash(
-          acknowledgement->visibility_scope_sha256) ||
-      !bulk_import_nonzero_hash(acknowledgement->descriptor_sha256) ||
-      !bulk_import_nonzero_hash(
-          acknowledgement->request_evidence_sha256)) {
-    return {};
-  }
-  std::vector<std::uint8_t> bytes;
-  bytes.insert(bytes.end(), {'C', 'E', 'B', 'A'});
-  bulk_import_append_u16(&bytes, 1);
-  bulk_import_append_u16(&bytes, 256);
-  bulk_import_append_u32(&bytes, 256);
-  bulk_import_append_u32(&bytes, 0);
-  if (!bulk_import_append_uuid(
-          &bytes, acknowledgement->authenticated_receipt_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->occurrence);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->binding_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->binding_generation);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->check_uuid)) {
-    return {};
-  }
-  if (acknowledgement->object_uuid.empty()) {
-    bytes.insert(bytes.end(), 16, 0);
-  } else if (!bulk_import_append_uuid(&bytes, acknowledgement->object_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->object_generation);
-  if (!bulk_import_append_uuid(&bytes,
-                               acknowledgement->schema_tree_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes,
-                         acknowledgement->schema_tree_generation);
-  bytes.insert(bytes.end(),
-               acknowledgement->visibility_scope_sha256.begin(),
-               acknowledgement->visibility_scope_sha256.end());
-  bytes.insert(bytes.end(),
-               acknowledgement->descriptor_sha256.begin(),
-               acknowledgement->descriptor_sha256.end());
-  bytes.insert(bytes.end(),
-               acknowledgement->request_evidence_sha256.begin(),
-               acknowledgement->request_evidence_sha256.end());
-  bytes.insert(bytes.end(), 32, 0);
-  if (bytes.size() != 256) return {};
-  acknowledgement->acknowledgement_evidence_sha256 =
-      bulk_import_sha256(bytes);
-  std::copy(acknowledgement->acknowledgement_evidence_sha256.begin(),
-            acknowledgement->acknowledgement_evidence_sha256.end(),
-            bytes.begin() + 224);
-  acknowledgement->exact_bind_ack_bytes = bytes;
-  return bytes;
-}
-
-std::vector<std::uint8_t> statement_management_database_attach_ack(
-    StatementDatabaseAttachBindAckV1* acknowledgement) {
-  if (acknowledgement == nullptr ||
-      !valid_engine_identity(
-          acknowledgement->authenticated_receipt_uuid) ||
-      acknowledgement->occurrence == 0 ||
-      !valid_engine_identity(acknowledgement->binding_uuid) ||
-      acknowledgement->binding_generation == 0 ||
-      !valid_engine_identity(acknowledgement->attach_uuid) ||
-      !valid_engine_identity(acknowledgement->storage_uuid) ||
-      !valid_engine_identity(acknowledgement->alias_uuid) ||
-      !valid_engine_identity(acknowledgement->database_uuid) ||
-      !valid_engine_identity(
-          acknowledgement->catalog_snapshot_uuid) ||
-      acknowledgement->catalog_generation == 0 ||
-      !bulk_import_nonzero_hash(acknowledgement->descriptor_sha256) ||
-      !bulk_import_nonzero_hash(
-          acknowledgement->request_evidence_sha256)) {
-    return {};
-  }
-  std::vector<std::uint8_t> bytes;
-  bytes.insert(bytes.end(), {'D', 'A', 'B', 'A'});
-  bulk_import_append_u16(&bytes, 1);
-  bulk_import_append_u16(&bytes, 256);
-  bulk_import_append_u32(&bytes, 256);
-  bulk_import_append_u32(&bytes, 0);
-  if (!bulk_import_append_uuid(
-          &bytes, acknowledgement->authenticated_receipt_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->occurrence);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->binding_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->binding_generation);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->attach_uuid) ||
-      !bulk_import_append_uuid(&bytes, acknowledgement->storage_uuid) ||
-      !bulk_import_append_uuid(&bytes, acknowledgement->alias_uuid) ||
-      !bulk_import_append_uuid(&bytes, acknowledgement->database_uuid) ||
-      !bulk_import_append_uuid(&bytes,
-                               acknowledgement->catalog_snapshot_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->catalog_generation);
-  bytes.insert(bytes.end(), acknowledgement->descriptor_sha256.begin(),
-               acknowledgement->descriptor_sha256.end());
-  bytes.insert(bytes.end(), acknowledgement->request_evidence_sha256.begin(),
-               acknowledgement->request_evidence_sha256.end());
-  bytes.insert(bytes.end(), 32, 0);
-  bytes.insert(bytes.end(), 8, 0);
-  if (bytes.size() != 256) return {};
-  acknowledgement->acknowledgement_evidence_sha256 =
-      bulk_import_sha256(bytes);
-  std::copy(acknowledgement->acknowledgement_evidence_sha256.begin(),
-            acknowledgement->acknowledgement_evidence_sha256.end(),
-            bytes.begin() + 216);
-  acknowledgement->exact_bind_ack_bytes = bytes;
-  return bytes;
-}
-
-std::vector<std::uint8_t> statement_management_free_ack(
-    StatementFreeBindAckV1* acknowledgement) {
-  if (acknowledgement == nullptr ||
-      !valid_engine_identity(
-          acknowledgement->authenticated_receipt_uuid) ||
-      acknowledgement->occurrence == 0 ||
-      !valid_engine_identity(acknowledgement->binding_uuid) ||
-      acknowledgement->binding_generation == 0 ||
-      !valid_engine_identity(acknowledgement->statement_uuid) ||
-      !valid_engine_identity(acknowledgement->statement_name_uuid) ||
-      acknowledgement->prepared_generation == 0 ||
-      !bulk_import_nonzero_hash(acknowledgement->descriptor_sha256) ||
-      !bulk_import_nonzero_hash(acknowledgement->request_evidence_sha256)) {
-    return {};
-  }
-  std::vector<std::uint8_t> bytes;
-  bytes.insert(bytes.end(), {'S', 'F', 'B', 'A'});
-  bulk_import_append_u16(&bytes, 1);
-  bulk_import_append_u16(&bytes, 208);
-  bulk_import_append_u32(&bytes, 208);
-  bulk_import_append_u32(&bytes, 0);
-  if (!bulk_import_append_uuid(
-          &bytes, acknowledgement->authenticated_receipt_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->occurrence);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->binding_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->binding_generation);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->statement_uuid) ||
-      !bulk_import_append_uuid(&bytes,
-                               acknowledgement->statement_name_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->prepared_generation);
-  bytes.insert(bytes.end(), acknowledgement->descriptor_sha256.begin(),
-               acknowledgement->descriptor_sha256.end());
-  bytes.insert(bytes.end(), acknowledgement->request_evidence_sha256.begin(),
-               acknowledgement->request_evidence_sha256.end());
-  bytes.insert(bytes.end(), 32, 0);
-  bytes.insert(bytes.end(), 8, 0);
-  if (bytes.size() != 208) return {};
-  acknowledgement->acknowledgement_evidence_sha256 =
-      bulk_import_sha256(bytes);
-  std::copy(acknowledgement->acknowledgement_evidence_sha256.begin(),
-            acknowledgement->acknowledgement_evidence_sha256.end(),
-            bytes.begin() + 168);
-  return bytes;
-}
-
-std::vector<std::uint8_t> statement_management_cancel_ack(
-    StatementCancelBindAckV1* acknowledgement) {
-  if (acknowledgement == nullptr ||
-      !valid_engine_identity(
-          acknowledgement->authenticated_receipt_uuid) ||
-      acknowledgement->occurrence == 0 ||
-      !valid_engine_identity(acknowledgement->binding_uuid) ||
-      acknowledgement->binding_generation == 0 ||
-      !valid_engine_identity(acknowledgement->target_execution_uuid) ||
-      !valid_engine_identity(acknowledgement->target_statement_uuid) ||
-      !valid_engine_identity(
-          acknowledgement->target_statement_receipt_uuid) ||
-      !valid_engine_identity(acknowledgement->cancel_operation_uuid) ||
-      (!acknowledgement->target_transaction_uuid.empty() &&
-       !valid_engine_identity(
-           acknowledgement->target_transaction_uuid)) ||
-      acknowledgement->target_execution_generation == 0 ||
-      acknowledgement->reason < 1 || acknowledgement->reason > 4 ||
-      acknowledgement->mode < 1 || acknowledgement->mode > 2 ||
-      acknowledgement->executor_availability_generation == 0 ||
-      !bulk_import_nonzero_hash(acknowledgement->descriptor_sha256) ||
-      !bulk_import_nonzero_hash(acknowledgement->request_evidence_sha256)) {
-    return {};
-  }
-  std::vector<std::uint8_t> bytes;
-  bytes.insert(bytes.end(), {'S', 'C', 'B', 'A'});
-  bulk_import_append_u16(&bytes, 1);
-  bulk_import_append_u16(&bytes, 272);
-  bulk_import_append_u32(&bytes, 272);
-  bulk_import_append_u32(&bytes, 0);
-  if (!bulk_import_append_uuid(
-          &bytes, acknowledgement->authenticated_receipt_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->occurrence);
-  if (!bulk_import_append_uuid(&bytes, acknowledgement->binding_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(&bytes, acknowledgement->binding_generation);
-  for (const auto& identity : {
-           acknowledgement->target_execution_uuid,
-           acknowledgement->target_statement_uuid,
-           acknowledgement->target_statement_receipt_uuid,
-           acknowledgement->cancel_operation_uuid}) {
-    if (!bulk_import_append_uuid(&bytes, identity)) return {};
-  }
-  if (acknowledgement->target_transaction_uuid.empty()) {
-    bytes.insert(bytes.end(), 16, 0);
-  } else if (!bulk_import_append_uuid(
-                 &bytes, acknowledgement->target_transaction_uuid)) {
-    return {};
-  }
-  bulk_import_append_u64(
-      &bytes, acknowledgement->target_execution_generation);
-  bytes.push_back(acknowledgement->reason);
-  bytes.push_back(acknowledgement->mode);
-  bytes.insert(bytes.end(), 2, 0);
-  bulk_import_append_u64(&bytes, acknowledgement->deadline_monotonic_ns);
-  bulk_import_append_u64(
-      &bytes, acknowledgement->executor_availability_generation);
-  bytes.insert(bytes.end(), acknowledgement->descriptor_sha256.begin(),
-               acknowledgement->descriptor_sha256.end());
-  bytes.insert(bytes.end(), acknowledgement->request_evidence_sha256.begin(),
-               acknowledgement->request_evidence_sha256.end());
-  bytes.insert(bytes.end(), 32, 0);
-  bytes.insert(bytes.end(), 4, 0);
-  if (bytes.size() != 272) return {};
-  acknowledgement->acknowledgement_evidence_sha256 =
-      bulk_import_sha256(bytes);
-  std::copy(acknowledgement->acknowledgement_evidence_sha256.begin(),
-            acknowledgement->acknowledgement_evidence_sha256.end(),
-            bytes.begin() + 236);
-  return bytes;
-}
+using scratchbird::engine::statement_management::statement_management_prepare_ack;
+using scratchbird::engine::statement_management::statement_management_execute_direct_ack;
+using scratchbird::engine::statement_management::statement_management_name_resolve_ack;
+using scratchbird::engine::statement_management::statement_management_parse_text_ack;
+using scratchbird::engine::statement_management::statement_management_catalog_epoch_check_ack;
+using scratchbird::engine::statement_management::statement_management_database_attach_ack;
+using scratchbird::engine::statement_management::statement_management_free_ack;
+using scratchbird::engine::statement_management::statement_management_cancel_ack;
 
 struct StatementManagementBodyV1 {
   std::string operation_id;
@@ -2526,618 +2092,54 @@ struct StatementManagementBodyV1 {
   bool source_free_parameterized_query_template = false;
 };
 
-bool statement_management_typed_payload(
-    const scratchbird::engine::sblr::SblrOperand& operand,
-    std::string_view* payload) {
-  if (payload == nullptr ||
-      operand.value_kind !=
-          scratchbird::engine::sblr::SblrValueKind::literal_typed ||
-      operand.value_body.size() < 24) {
-    return false;
-  }
-  std::uint64_t payload_size = 0;
-  for (unsigned index = 0; index < 8; ++index) {
-    payload_size |= static_cast<std::uint64_t>(operand.value_body[16 + index])
-                    << (index * 8);
-  }
-  if (payload_size != operand.value_body.size() - 24 ||
-      payload_size >
-          scratchbird::engine::sblr::kSblrOperationMaximumScalarBytes) {
-    return false;
-  }
-  *payload = std::string_view(
-      reinterpret_cast<const char*>(operand.value_body.data() + 24),
-      static_cast<std::size_t>(payload_size));
-  return bulk_import_canonical_utf8(*payload, true);
-}
-
-bool statement_management_replace_typed_payload(
-    scratchbird::engine::sblr::SblrOperand* operand,
-    std::string_view payload) {
-  std::string_view prior_payload;
-  if (operand == nullptr ||
-      !statement_management_typed_payload(*operand, &prior_payload) ||
-      !bulk_import_canonical_utf8(payload, true) ||
-      payload.size() >
-          scratchbird::engine::sblr::kSblrOperationMaximumScalarBytes) {
-    return false;
-  }
-  const std::array<std::uint8_t, 16> descriptor_uuid = [&] {
-    std::array<std::uint8_t, 16> value{};
-    std::copy_n(operand->value_body.begin(), value.size(), value.begin());
-    return value;
-  }();
-  if (std::ranges::none_of(descriptor_uuid,
-                           [](std::uint8_t value) { return value != 0; })) {
-    return false;
-  }
-  operand->value_body.assign(descriptor_uuid.begin(), descriptor_uuid.end());
-  bulk_import_append_u64(&operand->value_body, payload.size());
-  operand->value_body.insert(operand->value_body.end(), payload.begin(),
-                             payload.end());
-  // Canonical SBOP carries typed data only in value_body.  Preflight derives
-  // the transient string view after validating the complete envelope.
-  operand->value.clear();
-  return true;
-}
-
 bool statement_management_source_free_parameterless_query_template(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation,
     std::string* detail) {
-  const auto fail = [&](std::string_view reason) {
-    if (detail != nullptr) *detail = std::string(reason);
-    return false;
-  };
-  using scratchbird::engine::sblr::SblrValueKind;
-  struct ExpectedOperand {
-    std::string_view type;
-    std::string_view name;
-    SblrValueKind value_kind;
-  };
-  static constexpr std::array<ExpectedOperand, 18> kExactOperands{{
-      {"uint16", "relational_wire_version", SblrValueKind::literal_typed},
-      {"uuid", "relational_bound_sblr_tree_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_catalog_epoch_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_security_context_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_statement_uuid", SblrValueKind::literal_typed},
-      {"uuid", "relational_owning_transaction_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_statement_snapshot_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_statement_metadata_snapshot_uuid",
-       SblrValueKind::literal_typed},
-      {"uint64", "relational_local_transaction_id",
-       SblrValueKind::literal_typed},
-      {"uint64", "relational_snapshot_visible_through_local_transaction_id",
-       SblrValueKind::literal_typed},
-      {"uint32", "relational_root_node_id", SblrValueKind::literal_typed},
-      {"relational_descriptor_v1", "slot_1",
-       SblrValueKind::literal_typed},
-      {"relational_expression_v1", "1", SblrValueKind::expression_node_ref},
-      {"relational_output_v1", "slot_1", SblrValueKind::literal_typed},
-      {"relational_values_row_v1", "slot_1", SblrValueKind::literal_typed},
-      {"relational_node_v1", "slot_1", SblrValueKind::literal_typed},
-      {"relational_node_binding_v1", "slot_1",
-       SblrValueKind::literal_typed},
-      {"expression.node_table.v1", "expression_nodes",
-       SblrValueKind::expression_node_table},
-  }};
-  if (operation.operation_id != "query.execute" ||
-      operation.opcode != "SBLR_QUERY_EXECUTE" ||
-      operation.opcode_code != 4615 ||
-      operation.operation_version_major != 1 ||
-      operation.operation_version_minor != 0 ||
-      operation.result_shape != "query_execute_result" ||
-      operation.contains_sql_text ||
-      operation.operands.size() != kExactOperands.size()) {
-    return fail("stmt_prepare_bind.body_template_profile_invalid");
+  if (scratchbird::engine::sblr::ValidatePreparedRelationalQueryV1(
+          operation, scratchbird::engine::sblr::PreparedRelationalQueryProfileV1::kLiteralValues)) {
+    return true;
   }
-  for (std::size_t index = 0; index < kExactOperands.size(); ++index) {
-    const auto& operand = operation.operands[index];
-    const auto& expected = kExactOperands[index];
-    if (operand.ordinal != index + 1 || operand.type != expected.type ||
-        operand.name != expected.name ||
-        operand.value_kind != expected.value_kind || operand.value_flags != 0) {
-      return fail("stmt_prepare_bind.body_template_operand_invalid");
-    }
-  }
-  std::string_view root;
-  std::string_view values_row;
-  std::string_view node;
-  std::string_view node_binding;
-  if (!statement_management_typed_payload(operation.operands[10], &root) ||
-      !statement_management_typed_payload(operation.operands[14], &values_row) ||
-      !statement_management_typed_payload(operation.operands[15], &node) ||
-      !statement_management_typed_payload(operation.operands[16],
-                                          &node_binding) ||
-      root != "1" || values_row != "1" || node != "13|0|-|1|1" ||
-      node_binding !=
-          "76616c7565732e6c69746572616c2d7461626c652e7631|1|-|-|-") {
-    return fail("stmt_prepare_bind.body_template_source_free_shape_invalid");
-  }
-  return true;
+  if (detail != nullptr) *detail = "stmt_prepare_bind.body_template_profile_invalid";
+  return false;
 }
 
 bool statement_management_source_free_parameterized_query_template(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation,
     std::string* detail) {
-  const auto fail = [&](std::string_view reason) {
-    if (detail != nullptr) *detail = std::string(reason);
-    return false;
-  };
-  using scratchbird::engine::sblr::SblrValueKind;
-  struct ExpectedOperand {
-    std::string_view type;
-    std::string_view name;
-    SblrValueKind value_kind;
-  };
-  static constexpr std::array<ExpectedOperand, 11> kExactPrefix{{
-      {"uint16", "relational_wire_version", SblrValueKind::literal_typed},
-      {"uuid", "relational_bound_sblr_tree_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_catalog_epoch_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_security_context_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_statement_uuid", SblrValueKind::literal_typed},
-      {"uuid", "relational_owning_transaction_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_statement_snapshot_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_statement_metadata_snapshot_uuid",
-       SblrValueKind::literal_typed},
-      {"uint64", "relational_local_transaction_id",
-       SblrValueKind::literal_typed},
-      {"uint64", "relational_snapshot_visible_through_local_transaction_id",
-       SblrValueKind::literal_typed},
-      {"uint32", "relational_root_node_id", SblrValueKind::literal_typed},
-  }};
-  if (operation.operation_id != "query.execute" ||
-      operation.opcode != "SBLR_QUERY_EXECUTE" ||
-      operation.opcode_code != 4615 ||
-      operation.operation_version_major != 1 ||
-      operation.operation_version_minor != 0 ||
-      operation.result_shape != "query_execute_result" ||
-      operation.contains_sql_text ||
-      operation.operands.size() < 18) {
-    return fail("stmt_prepare_bind.parameterized_template_profile_invalid");
+  if (scratchbird::engine::sblr::ValidatePreparedRelationalQueryV1(
+          operation, scratchbird::engine::sblr::PreparedRelationalQueryProfileV1::kParameterValues)) {
+    return true;
   }
-  for (std::size_t index = 0; index < kExactPrefix.size(); ++index) {
-    const auto& operand = operation.operands[index];
-    const auto& expected = kExactPrefix[index];
-    if (operand.ordinal != index + 1 || operand.type != expected.type ||
-        operand.name != expected.name ||
-        operand.value_kind != expected.value_kind || operand.value_flags != 0) {
-      return fail("stmt_prepare_bind.parameterized_template_operand_invalid");
-    }
-  }
-
-  const auto& table_operand = operation.operands.back();
-  if (table_operand.ordinal != operation.operands.size() ||
-      table_operand.type != "expression.parameter_node_table.v1" ||
-      table_operand.name != "parameter_nodes" ||
-      table_operand.value_kind != SblrValueKind::parameter_node_table ||
-      table_operand.value_flags != 0) {
-    return fail("stmt_prepare_bind.parameterized_template_operand_invalid");
-  }
-  const auto table =
-      scratchbird::engine::sblr::DecodeSblrParameterNodeTableV1(
-          table_operand.value_body.data(), table_operand.value_body.size());
-  const std::size_t parameter_count = table.ok ? table.table.nodes.size() : 0;
-  if (parameter_count == 0 || parameter_count > 4096 ||
-      operation.operands.size() != 15 + parameter_count * 3) {
-    return fail("stmt_prepare_bind.parameterized_template_sbpn_invalid");
-  }
-
-  const std::size_t descriptor_begin = kExactPrefix.size();
-  const std::size_t expression_begin = descriptor_begin + parameter_count;
-  const std::size_t output_begin = expression_begin + parameter_count;
-  const std::size_t tail_begin = output_begin + parameter_count;
-  std::vector<scratchbird::engine::sblr::SblrParameterNodeReferenceV1>
-      references;
-  references.reserve(parameter_count);
-  std::string canonical_handles;
-  for (std::size_t index = 0; index < parameter_count; ++index) {
-    const auto ordinal = index + 1;
-    const std::string slot_name = "slot_" + std::to_string(ordinal);
-    const std::string expression_name = std::to_string(ordinal);
-    if (index != 0) canonical_handles.push_back(',');
-    canonical_handles.append(expression_name);
-
-    const auto& descriptor = operation.operands[descriptor_begin + index];
-    const auto& expression = operation.operands[expression_begin + index];
-    const auto& output = operation.operands[output_begin + index];
-    if (descriptor.ordinal != descriptor_begin + index + 1 ||
-        descriptor.type != "relational_descriptor_v1" ||
-        descriptor.name != slot_name ||
-        descriptor.value_kind != SblrValueKind::literal_typed ||
-        descriptor.value_flags != 0 ||
-        expression.ordinal != expression_begin + index + 1 ||
-        expression.type != "relational_expression_v1" ||
-        expression.name != expression_name ||
-        expression.value_kind != SblrValueKind::parameter_node_ref ||
-        expression.value_flags != 0 ||
-        output.ordinal != output_begin + index + 1 ||
-        output.type != "relational_output_v1" || output.name != slot_name ||
-        output.value_kind != SblrValueKind::literal_typed ||
-        output.value_flags != 0) {
-      return fail("stmt_prepare_bind.parameterized_template_operand_invalid");
-    }
-    scratchbird::engine::sblr::SblrParameterNodeReferenceV1 reference;
-    if (!scratchbird::engine::sblr::DecodeSblrParameterNodeReferenceV1(
-            expression.value_body.data(), expression.value_body.size(),
-            &reference)) {
-      return fail("stmt_prepare_bind.parameterized_template_sbpn_invalid");
-    }
-    references.push_back(reference);
-  }
-
-  const auto& values_row_operand = operation.operands[tail_begin];
-  const auto& node_operand = operation.operands[tail_begin + 1];
-  const auto& node_binding_operand = operation.operands[tail_begin + 2];
-  const auto exact_tail_operand = [](const auto& operand,
-                                     const std::size_t ordinal,
-                                     const std::string_view type) {
-    return operand.ordinal == ordinal && operand.type == type &&
-           operand.name == "slot_1" &&
-           operand.value_kind == SblrValueKind::literal_typed &&
-           operand.value_flags == 0;
-  };
-  if (!exact_tail_operand(values_row_operand, tail_begin + 1,
-                          "relational_values_row_v1") ||
-      !exact_tail_operand(node_operand, tail_begin + 2,
-                          "relational_node_v1") ||
-      !exact_tail_operand(node_binding_operand, tail_begin + 3,
-                          "relational_node_binding_v1")) {
-    return fail("stmt_prepare_bind.parameterized_template_operand_invalid");
-  }
-  std::string_view root;
-  std::string_view values_row;
-  std::string_view node;
-  std::string_view node_binding;
-  const std::string expected_node =
-      "13|0|-|" + canonical_handles + "|1";
-  const std::string expected_node_binding =
-      "76616c7565732e6c69746572616c2d7461626c652e7631|" +
-      canonical_handles + "|-|-|-";
-  if (!statement_management_typed_payload(operation.operands[10], &root) ||
-      !statement_management_typed_payload(values_row_operand, &values_row) ||
-      !statement_management_typed_payload(node_operand, &node) ||
-      !statement_management_typed_payload(node_binding_operand,
-                                          &node_binding) ||
-      root != "1" || values_row != canonical_handles ||
-      node != expected_node || node_binding != expected_node_binding) {
-    return fail("stmt_prepare_bind.parameterized_template_source_free_shape_invalid");
-  }
-  const auto nonzero = [](const auto& bytes) {
-    return std::ranges::any_of(bytes,
-                               [](std::uint8_t byte) { return byte != 0; });
-  };
-  if (!scratchbird::engine::sblr::ValidateSblrParameterReferenceBijectionV1(
-          table, references)) {
-    return fail("stmt_prepare_bind.parameterized_template_sbpn_invalid");
-  }
-  for (std::size_t index = 0; index < parameter_count; ++index) {
-    const auto& parameter_node = table.table.nodes[index];
-    const auto& parameter_reference = references[index];
-    if (parameter_node.node_id != index + 1 ||
-        parameter_node.parent_operand_ordinal != index + 1 ||
-        parameter_node.slot_ordinal != index ||
-        !nonzero(parameter_node.parameter_set_descriptor_uuid) ||
-        parameter_node.parameter_set_generation == 0 ||
-        !nonzero(parameter_node.datatype_descriptor_uuid) ||
-        parameter_node.datatype_descriptor_generation == 0 ||
-        parameter_reference.occurrence_ordinal != index + 1 ||
-        parameter_reference.node_id != index + 1 ||
-        parameter_reference.slot_ordinal != index) {
-      return fail("stmt_prepare_bind.parameterized_template_binding_invalid");
-    }
-  }
-  return true;
+  if (detail != nullptr) *detail = "stmt_prepare_bind.parameterized_template_profile_invalid";
+  return false;
 }
 
 bool statement_management_source_free_match_recognize_parameterized_query_template(
     const scratchbird::engine::sblr::SblrOperationEnvelope& operation,
     std::string* detail) {
-  const auto fail = [&](std::string_view reason) {
-    if (detail != nullptr) *detail = std::string(reason);
-    return false;
-  };
-  using scratchbird::engine::sblr::SblrValueKind;
-  struct ExpectedOperand {
-    std::string_view type;
-    std::string_view name;
-    SblrValueKind value_kind;
-  };
-  static constexpr std::array<ExpectedOperand, 11> kExactPrefix{{
-      {"uint16", "relational_wire_version", SblrValueKind::literal_typed},
-      {"uuid", "relational_bound_sblr_tree_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_catalog_epoch_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_security_context_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_statement_uuid", SblrValueKind::literal_typed},
-      {"uuid", "relational_owning_transaction_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_statement_snapshot_uuid",
-       SblrValueKind::literal_typed},
-      {"uuid", "relational_statement_metadata_snapshot_uuid",
-       SblrValueKind::literal_typed},
-      {"uint64", "relational_local_transaction_id",
-       SblrValueKind::literal_typed},
-      {"uint64", "relational_snapshot_visible_through_local_transaction_id",
-       SblrValueKind::literal_typed},
-      {"uint32", "relational_root_node_id", SblrValueKind::literal_typed},
-  }};
-  if (operation.operation_id != "query.execute" ||
-      operation.opcode != "SBLR_QUERY_EXECUTE" ||
-      operation.opcode_code != 4615 ||
-      operation.operation_version_major != 1 ||
-      operation.operation_version_minor != 0 ||
-      operation.result_shape != "query_execute_result" ||
-      operation.contains_sql_text || operation.operands.size() < 28) {
-    return fail(
-        "stmt_prepare_bind.match_recognize_template_profile_invalid");
+  if (scratchbird::engine::sblr::ValidatePreparedRelationalQueryV1(
+          operation, scratchbird::engine::sblr::PreparedRelationalQueryProfileV1::kParameterMatchRecognize)) {
+    return true;
   }
-  for (std::size_t index = 0; index < kExactPrefix.size(); ++index) {
-    const auto& operand = operation.operands[index];
-    const auto& expected = kExactPrefix[index];
-    if (operand.ordinal != index + 1 || operand.type != expected.type ||
-        operand.name != expected.name ||
-        operand.value_kind != expected.value_kind || operand.value_flags != 0) {
-      return fail(
-          "stmt_prepare_bind.match_recognize_template_operand_invalid");
-    }
-  }
-
-  const auto& table_operand = operation.operands.back();
-  if (table_operand.ordinal != operation.operands.size() ||
-      table_operand.type != "expression.parameter_node_table.v1" ||
-      table_operand.name != "parameter_nodes" ||
-      table_operand.value_kind != SblrValueKind::parameter_node_table ||
-      table_operand.value_flags != 0) {
-    return fail(
-        "stmt_prepare_bind.match_recognize_template_operand_invalid");
-  }
-  const auto table =
-      scratchbird::engine::sblr::DecodeSblrParameterNodeTableV1(
-          table_operand.value_body.data(), table_operand.value_body.size());
-  const std::size_t parameter_count = table.ok ? table.table.nodes.size() : 0;
-  if ((parameter_count != 2 && parameter_count != 3) ||
-      operation.operands.size() != 24 + parameter_count * 2) {
-    return fail("stmt_prepare_bind.match_recognize_template_sbpn_invalid");
-  }
-
-  const std::size_t descriptor_begin = kExactPrefix.size();
-  const std::size_t descriptor_count = parameter_count + 1;
-  const std::size_t expression_begin = descriptor_begin + descriptor_count;
-  const std::size_t expression_count = parameter_count + 1;
-  const std::size_t output_begin = expression_begin + expression_count;
-  const std::size_t tail_begin = output_begin + 2;
-  if (tail_begin + 9 != operation.operands.size()) {
-    return fail(
-        "stmt_prepare_bind.match_recognize_template_operand_invalid");
-  }
-
-  for (std::size_t index = 0; index < descriptor_count; ++index) {
-    const auto& descriptor = operation.operands[descriptor_begin + index];
-    std::string_view payload;
-    if (descriptor.ordinal != descriptor_begin + index + 1 ||
-        descriptor.type != "relational_descriptor_v1" ||
-        descriptor.name != "slot_" + std::to_string(index + 1) ||
-        descriptor.value_kind != SblrValueKind::literal_typed ||
-        descriptor.value_flags != 0 ||
-        !statement_management_typed_payload(descriptor, &payload) ||
-        payload.empty()) {
-      return fail(
-          "stmt_prepare_bind.match_recognize_template_descriptor_invalid");
-    }
-  }
-
-  std::vector<scratchbird::engine::sblr::SblrParameterNodeReferenceV1>
-      references;
-  references.reserve(parameter_count);
-  std::string canonical_handles;
-  for (std::size_t index = 0; index < parameter_count; ++index) {
-    const auto ordinal = index + 1;
-    if (index != 0) canonical_handles.push_back(',');
-    canonical_handles.append(std::to_string(ordinal));
-    const auto& expression = operation.operands[expression_begin + index];
-    if (expression.ordinal != expression_begin + index + 1 ||
-        expression.type != "relational_expression_v1" ||
-        expression.name != std::to_string(ordinal) ||
-        expression.value_kind != SblrValueKind::parameter_node_ref ||
-        expression.value_flags != 0) {
-      return fail(
-          "stmt_prepare_bind.match_recognize_template_operand_invalid");
-    }
-    scratchbird::engine::sblr::SblrParameterNodeReferenceV1 reference;
-    if (!scratchbird::engine::sblr::DecodeSblrParameterNodeReferenceV1(
-            expression.value_body.data(), expression.value_body.size(),
-            &reference)) {
-      return fail("stmt_prepare_bind.match_recognize_template_sbpn_invalid");
-    }
-    references.push_back(reference);
-  }
-
-  const auto exact_typed_operand = [&](const std::size_t index,
-                                       const std::string_view type,
-                                       const std::string_view name,
-                                       const std::string_view expected) {
-    if (index >= operation.operands.size()) return false;
-    const auto& operand = operation.operands[index];
-    std::string_view payload;
-    return operand.ordinal == index + 1 && operand.type == type &&
-           operand.name == name &&
-           operand.value_kind == SblrValueKind::literal_typed &&
-           operand.value_flags == 0 &&
-           statement_management_typed_payload(operand, &payload) &&
-           payload == expected;
-  };
-  const auto output_expression_id = parameter_count + 1;
-  const std::string output_expression_name =
-      "slot_" + std::to_string(output_expression_id);
-  const std::string output_expression =
-      "4|" + canonical_handles +
-      "|1|019dffbb-f000-7e2c-b437-ebbbc2d4f35b|-|-|-|-";
-  const std::string output_name_hex =
-      "67656e65726174655f736572696573";
-  const std::string source_output =
-      "1|" + std::to_string(output_expression_id) +
-      "|1|1|0|" + output_name_hex;
-  const std::string match_output =
-      "2|" + std::to_string(output_expression_id) +
-      "|1|1|0|" + output_name_hex;
-  if (!exact_typed_operand(expression_begin + parameter_count,
-                           "relational_expression_v1",
-                           output_expression_name, output_expression) ||
-      !exact_typed_operand(output_begin, "relational_output_v1", "slot_1",
-                           source_output) ||
-      !exact_typed_operand(output_begin + 1, "relational_output_v1",
-                           "slot_2", match_output)) {
-    return fail(
-        "stmt_prepare_bind.match_recognize_template_output_invalid");
-  }
-
-  static constexpr std::string_view kPartitionPropertyUuid =
-      "019dffbb-f000-7e2c-b437-ebbbc2d4f360";
-  static constexpr std::string_view kOrderingPropertyUuid =
-      "019dffbb-f000-7e2c-b437-ebbbc2d4f361";
-  const std::string source_binding =
-      "7461626c652d66756e6374696f6e2e67656e65726174652d7365726965732e7631|" +
-      std::to_string(output_expression_id) +
-      "|019dffbb-f000-7e2c-b437-ebbbc2d4f35b|-|-";
-  const std::string match_binding =
-      "6d617463682d7265636f676e697a652e612d706c75732e747275652e616c6c2d726f77732e7631|" +
-      std::to_string(output_expression_id) + "|-|" +
-      std::string(kPartitionPropertyUuid) + "," +
-      std::string(kOrderingPropertyUuid) + "|" +
-      std::string(kPartitionPropertyUuid) + "," +
-      std::string(kOrderingPropertyUuid);
-  const std::string row_pattern =
-      "1|" + std::to_string(output_expression_id) + "|" +
-      std::to_string(output_expression_id) +
-      ":1:2:-|61:1:-:0:-:1|-|2|1|-|10000|2|10000|1";
-  const std::string partition_property =
-      "3|2|" + std::to_string(output_expression_id) + "|-|-|-";
-  const std::string ordering_property =
-      "1|2|-|" + std::to_string(output_expression_id) + ":1:2:-|-|-";
-  if (!exact_typed_operand(tail_begin, "relational_node_v1", "slot_1",
-                           "17|0|-|1|-") ||
-      !exact_typed_operand(tail_begin + 1, "relational_node_binding_v1",
-                           "slot_1", source_binding) ||
-      !exact_typed_operand(tail_begin + 2, "relational_table_function_v1",
-                           "slot_1", canonical_handles) ||
-      !exact_typed_operand(tail_begin + 3, "relational_node_v1", "slot_2",
-                           "16|0|1|1|-") ||
-      !exact_typed_operand(tail_begin + 4, "relational_node_binding_v1",
-                           "slot_2", match_binding) ||
-      !exact_typed_operand(tail_begin + 5, "relational_row_pattern_v1",
-                           "slot_2", row_pattern) ||
-      !exact_typed_operand(
-          tail_begin + 6, "relational_property_v1",
-          "property_019dffbbf0007e2cb437ebbbc2d4f360",
-          partition_property) ||
-      !exact_typed_operand(
-          tail_begin + 7, "relational_property_v1",
-          "property_019dffbbf0007e2cb437ebbbc2d4f361",
-          ordering_property)) {
-    return fail(
-        "stmt_prepare_bind.match_recognize_template_shape_invalid");
-  }
-
-  std::string_view root;
-  if (!statement_management_typed_payload(operation.operands[10], &root) ||
-      root != "2" ||
-      !scratchbird::engine::sblr::ValidateSblrParameterReferenceBijectionV1(
-          table, references)) {
-    return fail("stmt_prepare_bind.match_recognize_template_sbpn_invalid");
-  }
-  const auto nonzero = [](const auto& bytes) {
-    return std::ranges::any_of(bytes,
-                               [](std::uint8_t byte) { return byte != 0; });
-  };
-  for (std::size_t index = 0; index < parameter_count; ++index) {
-    const auto& parameter_node = table.table.nodes[index];
-    const auto& parameter_reference = references[index];
-    if (parameter_node.node_id != index + 1 ||
-        parameter_node.parent_operand_ordinal != index + 1 ||
-        parameter_node.slot_ordinal != index ||
-        !nonzero(parameter_node.parameter_set_descriptor_uuid) ||
-        parameter_node.parameter_set_generation == 0 ||
-        !nonzero(parameter_node.datatype_descriptor_uuid) ||
-        parameter_node.datatype_descriptor_generation == 0 ||
-        parameter_reference.occurrence_ordinal != index + 1 ||
-        parameter_reference.node_id != index + 1 ||
-        parameter_reference.slot_ordinal != index) {
-      return fail(
-          "stmt_prepare_bind.match_recognize_template_binding_invalid");
-    }
-  }
-  return true;
+  if (detail != nullptr) *detail = "stmt_prepare_bind.match_recognize_template_profile_invalid";
+  return false;
 }
 
 bool statement_management_rebind_source_free_query_template(
     scratchbird::engine::sblr::SblrOperationEnvelope* operation,
     const scratchbird::engine::internal_api::EngineRequestContext& context,
     std::string* detail) {
-  const auto fail = [&](std::string_view reason) {
-    if (detail != nullptr) *detail = std::string(reason);
-    return false;
-  };
-  if (operation == nullptr ||
-      !valid_engine_identity(context.catalog_epoch_uuid) ||
-      !valid_engine_identity(
-          context.authorization_context.authority_uuid) ||
-      !valid_engine_identity(context.statement_uuid) ||
-      !valid_engine_identity(context.transaction_uuid) ||
-      !valid_engine_identity(
-          context.statement_snapshot_uuid) ||
-      !valid_engine_identity(
-          context.statement_metadata_snapshot_uuid) ||
-      context.local_transaction_id == 0) {
-    return fail("stmt_execute.body_template_authority_invalid");
+  const scratchbird::engine::sblr::PreparedRelationalContextV1 replacement{
+      context.catalog_epoch_uuid, context.authorization_context.authority_uuid,
+      context.statement_uuid, context.transaction_uuid,
+      context.statement_snapshot_uuid, context.statement_metadata_snapshot_uuid,
+      context.local_transaction_id,
+      context.snapshot_visible_through_local_transaction_id};
+  if (scratchbird::engine::sblr::RebindPreparedRelationalQueryV1(operation, replacement)) {
+    return true;
   }
-  std::string profile_detail;
-  const bool parameterless =
-      statement_management_source_free_parameterless_query_template(
-          *operation, &profile_detail);
-  const bool parameterized =
-      statement_management_source_free_parameterized_query_template(
-          *operation, &profile_detail);
-  const bool match_recognize_parameterized =
-      statement_management_source_free_match_recognize_parameterized_query_template(
-          *operation, &profile_detail);
-  if (!parameterless && !parameterized && !match_recognize_parameterized) {
-    return fail(profile_detail.empty()
-                    ? "stmt_execute.body_template_profile_invalid"
-                    : profile_detail);
-  }
-  // Both profiles retain the same query.execute statement-authority prefix.
-  // The parameterized body keeps SBPN immutable while execution supplies the
-  // exact durable SBPV separately.
-  const std::array<std::string, 8> replacements{
-      context.catalog_epoch_uuid,
-      context.authorization_context.authority_uuid,
-      context.statement_uuid,
-      context.transaction_uuid,
-      context.statement_snapshot_uuid,
-      context.statement_metadata_snapshot_uuid,
-      std::to_string(context.local_transaction_id),
-      std::to_string(
-          context.snapshot_visible_through_local_transaction_id),
-  };
-  for (std::size_t index = 0; index < replacements.size(); ++index) {
-    if (!statement_management_replace_typed_payload(
-            &operation->operands[index + 2], replacements[index])) {
-      return fail("stmt_execute.body_template_rebind_invalid");
-    }
-  }
-  return true;
+  if (detail != nullptr) *detail = "stmt_execute.body_template_rebind_invalid";
+  return false;
 }
 
 bool statement_management_validate_body(
@@ -3215,9 +2217,9 @@ bool statement_management_validate_body(
     return fail("stmt_prepare_bind.body_operation_invalid");
   }
   const auto uuid_at = [](const std::uint8_t* bytes) {
-    std::array<std::uint8_t, 16> value{};
-    std::copy_n(bytes, value.size(), value.begin());
-    return CanonicalUuidText(value);
+    scratchbird::engine::internal_api::EngineUuid value;
+    std::copy_n(bytes, value.bytes.size(), value.bytes.begin());
+    return value;
   };
   const auto& anchor = container.container.canonical_anchor;
   std::vector<std::string_view> mismatched_authority;
@@ -3523,8 +2525,7 @@ statement_management_load_parameter_binding(
             static_cast<std::uint8_t>(slot.direction) ||
         record.direction !=
             scratchbird::engine::sblr::SblrParameterDirectionV1::in ||
-        slot.datatype_descriptor_uuid !=
-            "019d0000-0000-7000-8000-00000000d711" ||
+        slot.datatype_descriptor_uuid != kParameterBigintDescriptor ||
         slot.datatype_descriptor_generation != 1 ||
         (!exact_value && !exact_null)) {
       return refuse("SBLR.PARAMETER.STALE",
@@ -3742,85 +2743,9 @@ bulk_import_admitted_command(std::string_view command) {
 }
 
 bool bulk_import_column_digest(
-    const scratchbird::engine::internal_api::MgaRelationStorageDescriptor&
-        descriptor,
+    const scratchbird::engine::internal_api::MgaRelationStorageDescriptor& descriptor,
     BulkImportHashV1* output) {
-  if (output == nullptr || descriptor.columns.empty() ||
-      descriptor.columns.size() > 65535 ||
-      !valid_engine_identity(descriptor.relation_uuid) ||
-      !descriptor.relation_generation ||
-      !valid_engine_identity(descriptor.descriptor_uuid) ||
-      !descriptor.descriptor_generation) {
-    return false;
-  }
-  std::vector<const scratchbird::engine::internal_api::
-                  MgaRelationColumnStorageDescriptor*>
-      columns;
-  columns.reserve(descriptor.columns.size());
-  for (const auto& column : descriptor.columns) columns.push_back(&column);
-  std::sort(columns.begin(), columns.end(), [](const auto* left,
-                                               const auto* right) {
-    return left->ordinal < right->ordinal;
-  });
-  std::unordered_set<std::uint32_t> ordinals;
-  std::unordered_set<std::string> column_uuids;
-  std::vector<std::uint8_t> material;
-  constexpr std::string_view domain =
-      "ScratchBird.BulkImportStreamColumnDescriptorSet.V1";
-  material.insert(material.end(), domain.begin(), domain.end());
-  if (!bulk_import_append_uuid(&material,
-                               descriptor.relation_uuid))
-    return false;
-  bulk_import_append_u64(&material, descriptor.relation_generation);
-  if (!bulk_import_append_uuid(&material,
-                               descriptor.descriptor_uuid))
-    return false;
-  bulk_import_append_u64(&material, descriptor.descriptor_generation);
-  bulk_import_append_u32(&material,
-                         static_cast<std::uint32_t>(columns.size()));
-  for (const auto* column : columns) {
-    if (!ordinals.insert(column->ordinal).second ||
-        !valid_engine_identity(column->column_uuid) ||
-        !column_uuids.insert(column->column_uuid).second ||
-        !column->column_generation ||
-        !valid_engine_identity(
-            column->value_descriptor.descriptor_uuid)) {
-      return false;
-    }
-    bulk_import_append_u32(&material, column->ordinal);
-    if (!bulk_import_append_uuid(&material, column->column_uuid))
-      return false;
-    bulk_import_append_u64(&material, column->column_generation);
-    if (!bulk_import_append_lp16(&material, column->canonical_name_key) ||
-        !bulk_import_append_uuid(
-            &material, column->value_descriptor.descriptor_uuid) ||
-        !bulk_import_append_lp16(&material,
-                                 column->value_descriptor.descriptor_kind) ||
-        !bulk_import_append_lp16(
-            &material, column->value_descriptor.canonical_type_name) ||
-        !bulk_import_canonical_utf8(
-            column->value_descriptor.encoded_descriptor, true)) {
-      return false;
-    }
-    const std::vector<std::uint8_t> encoded(
-        column->value_descriptor.encoded_descriptor.begin(),
-        column->value_descriptor.encoded_descriptor.end());
-    const auto encoded_sha = bulk_import_sha256(encoded);
-    material.insert(material.end(), encoded_sha.begin(), encoded_sha.end());
-    material.push_back(column->nullable ? 1 : 0);
-    material.push_back(column->generated ? 1 : 0);
-    material.push_back(column->identity_column ? 1 : 0);
-    if (!bulk_import_append_lp16(&material, column->storage_class) ||
-        !bulk_import_append_lp16(&material, column->charset_uuid, true) ||
-        !bulk_import_append_lp16(&material, column->collation_uuid, true))
-      return false;
-    bulk_import_append_u32(&material, column->character_length);
-    bulk_import_append_u64(&material, column->max_inline_bytes);
-    if (!bulk_import_append_lp16(&material, column->overflow_policy))
-      return false;
-  }
-  *output = bulk_import_sha256(material);
-  return bulk_import_nonzero_hash(*output);
+  return scratchbird::engine::internal_api::ComputeBulkImportColumnDigestV2(descriptor, output);
 }
 
 BulkImportHashV1 bulk_import_policy_digest(
@@ -3878,8 +2803,8 @@ BulkImportHashV1 bulk_import_policy_digest(
             });
   bulk_import_append_u32(
       &material, static_cast<std::uint32_t>(writable_columns.size()));
-  constexpr std::string_view converter_uuid =
-      "019d0000-0000-7000-8000-00000000b775";
+  constexpr auto converter_uuid =
+      scratchbird::engine::internal_api::kBulkImportTextConverterUuidV1;
   constexpr std::uint64_t converter_generation = 1;
   constexpr std::string_view converter_domain =
       "ScratchBird.BulkImportStreamTextConverter.V1";
@@ -4508,18 +3433,19 @@ sb_engine_status_t finish_retired_statement_context_receipt(
   try {
     const auto revoked = revoke_error_vector_for_receipt(*receipt);
     if (revoked != SB_ENGINE_STATUS_OK) return revoked;
-    if (!receipt->source_map_descriptors.empty()) {
+    if (receipt->source_map_registry_touched) {
       auto context = receipt->engine_context;
       context.statement_metadata_snapshot_engine_owned = true;
       context.trace_tags.push_back("private_source_map_registry");
       const auto diagnostic = api::RevokeSblrSourceMapDescriptorsV1(
-          context, receipt->view.receipt_uuid, "receipt.release");
+          context, receipt->view.receipt_uuid);
       if (diagnostic.error)
         return diagnostic.code == "RESOURCE.BUDGET_EXCEEDED"
             ? SB_ENGINE_STATUS_RESOURCE_EXHAUSTED : SB_ENGINE_STATUS_INTERNAL_ERROR;
       // AST freezing alone is not descriptor ownership. After successful
       // revocation, a later cleanup retry must not revoke the same cohort again.
       receipt->source_map_descriptors.clear();
+      receipt->source_map_registry_touched = false;
     }
     if (receipt->contextual_text_literal_authority.valid()) {
       const auto diagnostic = api::RevokeContextualTextLiteralAuthorityV2(
@@ -4748,7 +3674,7 @@ enum class PreparedMetadataCurrentVersionStatus {
 
 void invalidate_prepared_metadata_binding_if_snapshot_matches(
     PreparedMetadataBindingHandle binding,
-    std::string_view expected_metadata_snapshot_uuid,
+    const scratchbird::engine::internal_api::EngineUuid& expected_metadata_snapshot_uuid,
     std::string detail) {
   std::lock_guard<std::mutex> registry_guard(
       g_prepared_metadata_binding_registry_mutex);
@@ -5647,6 +4573,7 @@ std::vector<std::pair<std::string, std::string>> first_dispatch_diagnostic_field
 }
 
 sb_engine_status_t operation_envelope_failure_status(const scratchbird::engine::sblr::SblrDispatchResult& result) {
+  if (result.resource_exhausted) return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
   if (dispatch_has_diagnostic(
           result,
           scratchbird::engine::internal_api::
@@ -5725,109 +4652,15 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
                                                    prepared_metadata,
                                                sb_engine_result_t* out_result) {
   // SEARCH_KEY: SB_ENGINE_PUBLIC_ABI_ADMITTED_SBLR_ONLY
-  // This ABI revision carries one byte pointer and therefore cannot carry the
-  // canonical outer SBLR container, the separate 28-field SBEE record, and an
-  // immutable server admission token. Fail closed until the versioned public
-  // ABI surface can receive that token; never reparse the single raw pointer.
+  // This legacy single-payload entry has no immutable server admission token.
+  // It cannot authenticate the separate canonical container and execution
+  // envelope. Only the admitted dispatch entry may select or execute an opcode.
+  // A principal byte, opcode name or decoded private payload is not admission.
   (void)session;
   (void)context;
   (void)envelope;
   (void)params;
   (void)prepared_metadata;
-  const std::string_view operation_payload(
-      reinterpret_cast<const char*>(envelope.canonical_bytes.data()),
-      envelope.canonical_bytes.size());
-  if (operation_payload.find("engine.op.session_role_switch") != std::string_view::npos &&
-      operation_payload.find("SBLR_SESSION_ROLE_SWITCH") != std::string_view::npos &&
-      context.effective_user_uuid.bytes[0] != 0) {
-    auto* result = make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,
-                               "engine.op.session_role_switch");
-    result->payload = "accepted";
-    finalize_diagnostics(result);
-    *out_result = result;
-    return SB_ENGINE_STATUS_OK;
-  }
-  if (operation_payload.find("engine.op.session_setting_set") != std::string_view::npos &&
-      operation_payload.find("SBLR_SESSION_SETTING_SET") != std::string_view::npos &&
-      context.effective_user_uuid.bytes[0] != 0) {
-    auto* result = make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,
-                               "engine.op.session_setting_set");
-    result->payload = "accepted";
-    finalize_diagnostics(result);
-    *out_result = result;
-    return SB_ENGINE_STATUS_OK;
-  }
-  if (operation_payload.find("engine.op.session_setting_reset") != std::string_view::npos && operation_payload.find("SBLR_SESSION_SETTING_RESET") != std::string_view::npos && context.effective_user_uuid.bytes[0] != 0) { auto* result=make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,"engine.op.session_setting_reset"); result->payload="accepted"; finalize_diagnostics(result); *out_result=result; return SB_ENGINE_STATUS_OK; }
-  if (operation_payload.find("engine.op.session_setting_get") != std::string_view::npos && operation_payload.find("SBLR_SESSION_SETTING_GET") != std::string_view::npos && context.effective_user_uuid.bytes[0] != 0) { auto* result=make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,"engine.op.session_setting_get"); result->payload="accepted"; finalize_diagnostics(result); *out_result=result; return SB_ENGINE_STATUS_OK; }
-  if ((operation_payload.find("engine.op.session_default_qualifier_set") != std::string_view::npos || operation_payload.find("SBLR_SESSION_DEFAULT_QUALIFIER_SET") != std::string_view::npos) && context.effective_user_uuid.bytes[0] != 0) { auto* result=make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,"engine.op.session_default_qualifier_set"); result->payload="accepted"; finalize_diagnostics(result); *out_result=result; return SB_ENGINE_STATUS_OK; }
-  if ((operation_payload.find("engine.op.session_snapshot_handle") != std::string_view::npos || operation_payload.find("SBLR_SESSION_SNAPSHOT_HANDLE") != std::string_view::npos) && context.effective_user_uuid.bytes[0] != 0) { auto* result=make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,"engine.op.session_snapshot_handle"); result->payload="accepted"; finalize_diagnostics(result); *out_result=result; return SB_ENGINE_STATUS_OK; }
-  const auto decoded_operation =
-      scratchbird::engine::sblr::DecodeSblrEnvelope(operation_payload);
-  const scratchbird::engine::sblr::SblrOperationEnvelope* admitted_operation =
-      decoded_operation.ok ? &decoded_operation.envelope : nullptr;
-  scratchbird::engine::sblr::SblrOpcodeStreamResult decoded_stream;
-  if (admitted_operation == nullptr ||
-      admitted_operation->operation_id == "engine.op.package_begin") {
-    decoded_stream = scratchbird::engine::sblr::DecodeSblrOpcodeStream(operation_payload);
-    if (decoded_stream.ok && decoded_stream.stream.operations.size() >= 3) {
-      admitted_operation = &decoded_stream.stream.operations[1];
-    }
-  }
-  if (admitted_operation != nullptr &&
-      ((admitted_operation->operation_id ==
-          "engine.op.ddl_refresh_materialized_view" &&
-        admitted_operation->opcode ==
-          "SBLR_DDL_REFRESH_MATERIALIZED_VIEW" &&
-        admitted_operation->opcode_code == 1567) ||
-       (admitted_operation->operation_id ==
-          "engine.op.ddl_create_materialized_view" &&
-        admitted_operation->opcode ==
-          "SBLR_DDL_CREATE_MATERIALIZED_VIEW" &&
-        admitted_operation->opcode_code == 1566) ||
-       (admitted_operation->operation_id ==
-          "engine.op.session_role_switch" &&
-        admitted_operation->opcode ==
-          "SBLR_SESSION_ROLE_SWITCH" &&
-        admitted_operation->opcode_code == 4359)) &&
-      context.effective_user_uuid.bytes[0] != 0) {
-    auto* result = make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,
-                               admitted_operation->operation_id);
-    result->payload = "accepted";
-    if (admitted_operation->operation_id == "engine.op.ddl_create_materialized_view") {
-      if (const char* trace_path = std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");
-          trace_path && *trace_path) {
-        std::ofstream trace(trace_path, std::ios::app | std::ios::binary);
-        if (trace) {
-          trace << "layer=ddl_create_materialized_view_executor\texecutor_id=engine.op.ddl_create_materialized_view\topcode=SBLR_DDL_CREATE_MATERIALIZED_VIEW\topcode_code=1566\topcode_version=1.0\toperand_descriptor_id=create_materialized_view_descriptor\tresult_descriptor_id=ddl_result\tresult_descriptor_version=1\texecutor_availability_generation=1\tparent_success_barrier=passed\n";
-        }
-      }
-    }
-    finalize_diagnostics(result);
-    *out_result = result;
-    return SB_ENGINE_STATUS_OK;
-  }
-  // The refresh-materialized-view route is an explicitly admitted catalog
-  // operation. Its parser submission is a canonical operation payload, not
-  // the legacy public-ABI envelope shape handled by the disabled compatibility
-  // block below. Admit only this exact operation here; all other operation
-  // payloads retain the immutable-token refusal.
-  const std::string_view refresh_payload(
-      reinterpret_cast<const char*>(envelope.canonical_bytes.data()),
-      envelope.canonical_bytes.size());
-  if (((refresh_payload.find("engine.op.ddl_refresh_materialized_view") != std::string_view::npos &&
-        refresh_payload.find("SBLR_DDL_REFRESH_MATERIALIZED_VIEW") != std::string_view::npos) ||
-       (refresh_payload.find("engine.op.ddl_create_materialized_view") != std::string_view::npos &&
-        refresh_payload.find("SBLR_DDL_CREATE_MATERIALIZED_VIEW") != std::string_view::npos) ||
-       (refresh_payload.find("engine.op.session_role_switch") != std::string_view::npos &&
-        refresh_payload.find("SBLR_SESSION_ROLE_SWITCH") != std::string_view::npos)) &&
-      context.effective_user_uuid.bytes[0] != 0) {
-    auto* result = make_result(SB_ENGINE_RESULT_COMMAND_COMPLETION,
-                               refresh_payload.find("engine.op.session_role_switch") != std::string_view::npos ? "engine.op.session_role_switch" : (refresh_payload.find("engine.op.ddl_create_materialized_view") != std::string_view::npos ? "engine.op.ddl_create_materialized_view" : "engine.op.ddl_refresh_materialized_view"));
-    result->payload = "accepted";
-    finalize_diagnostics(result);
-    *out_result = result;
-    return SB_ENGINE_STATUS_OK;
-  }
   return fail_result(
       SB_ENGINE_STATUS_UNSUPPORTED,
       out_result,
@@ -5835,225 +4668,6 @@ sb_engine_status_t dispatch_operation_envelope(sb_engine_session_t session,
       "SBLR.ENVELOPE.FIELD_MISSING",
       "sblr.envelope.field_missing",
       "immutable_server_admission_token_required");
-#if 0
-  const auto* data = reinterpret_cast<const char*>(envelope.canonical_bytes.data());
-  const std::string_view encoded(data, envelope.canonical_bytes.size());
-  auto phase_last = EngineAbiSteadyClock::now();
-  std::vector<std::pair<std::string, std::uint64_t>> phase_micros;
-  phase_micros.reserve(8);
-  const auto mark_phase = [&](std::string phase) {
-    const auto now = EngineAbiSteadyClock::now();
-    phase_micros.push_back({std::move(phase), EngineAbiElapsedMicros(phase_last, now)});
-    phase_last = now;
-  };
-  const auto decoded_operation =
-      scratchbird::engine::sblr::DecodeSblrEnvelope(encoded);
-  if (decoded_operation.ok &&
-      has_engine_only_prepared_metadata_operand(decoded_operation.envelope)) {
-    return fail_result(
-        SB_ENGINE_STATUS_SECURITY_DENIED,
-        out_result,
-        4013,
-        "SBLR.PREPARED_METADATA.ENGINE_OPTION_FORBIDDEN",
-        "sblr.prepared_metadata.engine_option_forbidden",
-        "prepared metadata authority cannot be supplied by SBLR operands");
-  }
-  auto api_context = make_internal_context(session->engine, context);
-  mark_phase("make_internal_context");
-  scratchbird::engine::internal_api::EngineApiRequest api_request;
-  if (prepared_metadata != nullptr) {
-    const auto& metadata = *prepared_metadata;
-    if (!decoded_operation.ok ||
-        decoded_operation.envelope.operation_id !=
-            "routine.procedure_invoke" ||
-        operation_operand_value(decoded_operation.envelope,
-                                "target_object_uuid") !=
-            metadata.target_object_uuid) {
-      return fail_result(
-          SB_ENGINE_STATUS_SECURITY_DENIED,
-          out_result,
-          4016,
-          "ENGINE.PREPARED_METADATA_BINDING.TARGET_MISMATCH",
-          "engine.prepared_metadata_binding.target_mismatch",
-          "binding is valid only for its UUID-bound procedure invocation");
-    }
-    api_context.statement_metadata_snapshot_engine_owned = true;
-    api_context.statement_metadata_snapshot_uuid =
-        metadata.metadata_snapshot_uuid;
-    api_context
-        .statement_metadata_snapshot_visible_through_local_transaction_id =
-        metadata.metadata_visible_through_local_transaction_id;
-    api_context
-        .statement_metadata_snapshot_active_excluded_local_transaction_ids =
-        metadata.active_excluded_local_transaction_ids;
-    api_context
-        .statement_metadata_snapshot_in_doubt_excluded_local_transaction_ids =
-        metadata.in_doubt_excluded_local_transaction_ids;
-    api_context.prepared_metadata_required_object_uuid =
-        metadata.target_object_uuid;
-    api_context.prepared_metadata_required_executable_generation =
-        metadata.target_executable_generation;
-    api_context.prepared_metadata_required_metadata_epoch =
-        metadata.target_metadata_epoch;
-    // These options are injected after decoding the untrusted SBLR envelope.
-    // The executable-object runtime consumes the typed context fields above;
-    // the options are engine-only trace evidence and never authority.
-    api_request.option_envelopes.push_back(
-        "engine.prepared_metadata.binding_consumed:true");
-    api_request.option_envelopes.push_back(
-        "engine.prepared_metadata.required_object_uuid:" +
-        metadata.target_object_uuid);
-    api_request.option_envelopes.push_back(
-        "engine.prepared_metadata.required_executable_generation:" +
-        std::to_string(metadata.target_executable_generation));
-    api_request.option_envelopes.push_back(
-        "engine.prepared_metadata.required_metadata_epoch:" +
-        std::to_string(metadata.target_metadata_epoch));
-  }
-  if (params.data_packet_size_bytes != 0) {
-    if (!text_line_field_equals(encoded, "operation_id", "dml.execute_native_bulk_ingest")) {
-      return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
-                         out_result,
-                         4011,
-                         "SBLR.DATA_PACKET.OPERATION_MISMATCH",
-                         "sblr.data_packet.operation_mismatch",
-                         "native row packets are only admitted for dml.execute_native_bulk_ingest");
-    }
-    auto packet = decode_native_row_packet(params.data_packet_bytes,
-                                           params.data_packet_size_bytes);
-    if (!packet.ok) {
-      return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,
-                         out_result,
-                         4012,
-                         "SBLR.DATA_PACKET.INVALID",
-                         "sblr.data_packet.invalid",
-                         packet.detail);
-    }
-    api_request = std::move(packet.request);
-  }
-  auto dispatch_result =
-      scratchbird::engine::sblr::DecodeAndDispatchSblrOperation(encoded,
-                                                                api_context,
-                                                                std::move(api_request));
-  mark_phase("decode_and_dispatch_operation");
-  if (prepared_metadata != nullptr) {
-    dispatch_result.api_result.evidence.push_back(
-        {"prepared_metadata_atomicity",
-         "routed_owner_inventory_guard_exact_version_lease"});
-  }
-  if (!dispatch_result.accepted || !dispatch_result.api_result.ok) {
-    const sb_engine_status_t status = operation_envelope_failure_status(dispatch_result);
-    WriteEngineAbiPhaseTrace("operation_envelope",
-                             dispatch_result.api_result.operation_id,
-                             envelope.canonical_bytes.size(),
-                             phase_micros);
-    return fail_result(status,
-                       out_result,
-                       4010,
-                       operation_envelope_failure_code(dispatch_result),
-                       "sblr.operation_envelope.rejected",
-                       first_dispatch_diagnostic_detail(dispatch_result),
-                       first_dispatch_diagnostic_fields(dispatch_result),
-                       first_dispatch_diagnostic_occurrence(
-                           dispatch_result, operation_envelope_failure_code(dispatch_result)),
-                       first_dispatch_api_diagnostic_source(
-                           dispatch_result, operation_envelope_failure_code(dispatch_result)));
-  }
-
-  auto* result = make_result(SB_ENGINE_RESULT_ROW_BATCH, dispatch_result.api_result.operation_id);
-  mark_phase("make_result");
-  const bool summary_only_requested =
-      has_text_line_option(encoded, "result_payload_policy", "summary_only");
-  const bool summary_only_import =
-      dispatch_result.api_result.operation_id == "dml.execute_import_rows" &&
-      summary_only_requested;
-  const bool summary_only_native_bulk =
-      dispatch_result.api_result.operation_id == "dml.execute_native_bulk_ingest" &&
-      summary_only_requested;
-  const bool summary_only_dml_write =
-      summary_only_requested &&
-      !summary_only_import &&
-      !summary_only_native_bulk &&
-      dispatch_result.api_result.operation_id.rfind("dml.", 0) == 0;
-  // Command completion is independent of result-row presentation.  The
-  // engine-owned DML summary remains the affected-row authority whether the
-  // caller asks for full rows, an explicit summary, or accepts the default
-  // write-result policy applied during neutral SBLR dispatch.
-  result->affected_rows = dispatch_result.api_result.dml_summary.rows_changed;
-  result->result_kind = dispatch_result.api_result.result_shape.result_kind;
-  if (summary_only_import) {
-    result->rows_produced = api_evidence_u64(
-        dispatch_result.api_result,
-        "import_inserted_rows",
-        api_evidence_u64(dispatch_result.api_result,
-                         "import_canonical_rows",
-                         static_cast<std::uint64_t>(dispatch_result.api_result.result_shape.rows.size())));
-    if (result->result_kind.empty()) {
-      result->result_kind = "import_rows_summary";
-    }
-  } else if (summary_only_native_bulk) {
-    result->rows_produced = dispatch_result.api_result.dml_summary.rows_changed;
-    if (result->rows_produced == 0) {
-      result->rows_produced = api_evidence_u64(
-          dispatch_result.api_result,
-          "direct_physical_bulk_row_count",
-          static_cast<std::uint64_t>(dispatch_result.api_result.result_shape.rows.size()));
-    }
-    if (result->result_kind.empty()) {
-      result->result_kind = "native_bulk_ingest_summary";
-    }
-    result->row_values = {
-        "accepted_rows=" + std::to_string(result->rows_produced) +
-        ";inserted_rows=" + std::to_string(result->rows_produced) +
-        ";rejected_rows=0"};
-    result->row_metadata_values = {
-        "accepted_rows:uint64:not_null;inserted_rows:uint64:not_null;"
-        "rejected_rows:uint64:not_null"};
-  } else if (summary_only_dml_write) {
-    result->rows_produced = 0;
-    if (result->result_kind.empty()) {
-      result->result_kind = "dml_write_summary";
-    }
-  } else {
-    result->rows_produced = static_cast<std::uint64_t>(dispatch_result.api_result.result_shape.rows.size());
-    result->row_values = api_row_values(dispatch_result.api_result);
-    result->row_metadata_values = api_row_metadata_values(dispatch_result.api_result);
-  }
-  mark_phase("shape_result_rows");
-  if (summary_only_native_bulk) {
-    result->evidence_values = {
-        "direct_physical_bulk_row_count:" + std::to_string(result->rows_produced),
-        "result_payload_policy:summary_only"};
-  } else {
-    result->evidence_values = api_evidence_values(dispatch_result.api_result);
-  }
-  mark_phase("shape_evidence");
-  if (summary_only_import || summary_only_native_bulk || summary_only_dml_write) {
-    const std::uint64_t summary_payload_rows =
-        summary_only_native_bulk
-            ? static_cast<std::uint64_t>(result->row_values.size())
-            : 0;
-    result->payload = api_result_payload(dispatch_result.api_result.operation_id,
-                                         result->result_kind,
-                                         result->row_values,
-                                         result->row_metadata_values,
-                                         result->evidence_values,
-                                         0,
-                                         summary_payload_rows);
-    append_transaction_context(&result->payload, dispatch_result.api_result);
-  } else {
-    result->payload = api_result_payload(dispatch_result.api_result);
-  }
-  mark_phase("build_result_payload");
-  finalize_diagnostics(result);
-  mark_phase("finalize_diagnostics");
-  WriteEngineAbiPhaseTrace("operation_envelope",
-                           dispatch_result.api_result.operation_id,
-                           envelope.canonical_bytes.size(),
-                           phase_micros);
-  *out_result = result;
-  return SB_ENGINE_STATUS_OK;
-#endif
 }
 
 std::string behavior_payload() {
@@ -6122,7 +4736,6 @@ void add_diagnostic(sb_engine_result_t result,
   storage.view.struct_size = sizeof(sb_engine_diagnostic_view_t);
   storage.view.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
   storage.view.numeric_code = numeric_code;
-  storage.view.severity = severity;
   storage.code = std::move(code);
   storage.message = std::move(message);
   storage.detail = std::move(detail);
@@ -6139,6 +4752,8 @@ void add_diagnostic(sb_engine_result_t result,
     }
     storage.native_source = source->native_source;
   }
+  storage.view.severity = scratchbird::engine::PublicDiagnosticSeverity(
+      storage.canonical_metadata, severity);
   storage.fields.reserve(fields.size());
   for (auto& field : fields) {
     DiagnosticFieldStorage field_storage;
@@ -6293,7 +4908,7 @@ sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
     const auto snapshot = database_header_snapshot(handle->database_path);
     handle->database_uuid = snapshot.database_uuid;
     handle->database_page_size_bytes = snapshot.page_size_bytes;
-    if (!handle->database_uuid.empty() && params->mode == SB_ENGINE_OPEN_NORMAL) {
+    if (!handle->database_uuid.is_nil() && params->mode == SB_ENGINE_OPEN_NORMAL) {
       scratchbird::engine::internal_api::EngineRequestContext recovery_context;
       recovery_context.database_path = handle->database_path;
       recovery_context.database_uuid = handle->database_uuid;
@@ -6305,6 +4920,13 @@ sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
         handle.reset();
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4093,
                            recovered.code, recovered.message_key, recovered.detail);
+      }
+      const auto source_maps = scratchbird::engine::internal_api::
+          RecoverSblrSourceMapDescriptorRegistryV1(recovery_context);
+      if (source_maps.error) {
+        handle.reset();
+        return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4092,
+                           source_maps.code, source_maps.message_key, source_maps.detail);
       }
     }
   }
@@ -6409,7 +5031,7 @@ sb_engine_status_t sb_engine_session_begin(sb_engine_handle_t engine,
   session->effective_user_uuid = params->effective_user_uuid;
   session->public_session_uuid = params->session_uuid;
   session->trust_mode = params->trust_mode;
-  if (!engine->database_path.empty() && !engine->database_uuid.empty()) {
+  if (!engine->database_path.empty() && !engine->database_uuid.is_nil()) {
     const auto recovered = scratchbird::engine::internal_api::
         LoadSblrPreparedStatementRegistryV1(
             prepared_statement_registry_context(session, true));
@@ -7250,18 +5872,16 @@ sb_engine_status_t BeginStatementParameterExecutionCoordinationV1(
   if (request == nullptr || out_view == nullptr ||
       request->engine_session == nullptr || request->engine_context == nullptr ||
       request->mode != StatementParameterExecutionMode::kPrepared ||
-      request->operation_uuid.empty() ||
-      !request->public_dynamic_package_uuid.empty()) {
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request->operation_uuid) ||
+      !request->public_dynamic_package_uuid.is_nil()) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4077,
                        "SBLR.OPERAND_INVALID",
                        "sblr.parameter_coordination.begin_invalid");
   }
-  const auto operation = scratchbird::core::uuid::ParseUuid(
-      request->operation_uuid);
   const auto& context = *request->engine_context;
-  if (!operation.ok() || context.database_uuid.is_nil() ||
-      context.session_uuid.is_nil() ||
-      context.transaction_uuid.is_nil()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(context.database_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(context.session_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(context.transaction_uuid)) {
     return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4077,
                        "SECURITY.ACCESS_DENIED",
                        "sblr.parameter_coordination.ownership_invalid");
@@ -7269,7 +5889,7 @@ sb_engine_status_t BeginStatementParameterExecutionCoordinationV1(
   auto registry_context = context;
   registry_context.statement_metadata_snapshot_engine_owned = true;
   registry_context.trace_tags.push_back("private_prepared_coordination");
-  const auto issued = request->public_prepared_uuid.empty()
+  const auto issued = request->public_prepared_uuid.is_nil()
       ? scratchbird::engine::internal_api::BeginSblrPreparedCoordination(
             registry_context, request->operation_uuid)
       : scratchbird::engine::internal_api::
@@ -7336,10 +5956,10 @@ sb_engine_status_t SealPreparedStatementParameterTemplateV1(
                        "sblr.parameter_template.decode_invalid",
                        decoded.detail);
   }
-  const auto uuid_text=[](const auto& bytes){
+  const auto uuid_binary=[](const auto& bytes){
     scratchbird::core::platform::Uuid u{};
     std::copy(bytes.begin(),bytes.end(),u.bytes.begin());
-    return scratchbird::core::uuid::UuidToString(u);
+    return u;
   };
   StatementParameterCoordinationOpaque coordination;
   {
@@ -7353,10 +5973,10 @@ sb_engine_status_t SealPreparedStatementParameterTemplateV1(
     coordination = found->second;
   }
   if (coordination.public_coordination_uuid !=
-          uuid_text(decoded.value.public_coordination_uuid) ||
-      coordination.operation_uuid != uuid_text(decoded.value.operation_uuid) ||
+          uuid_binary(decoded.value.public_coordination_uuid) ||
+      coordination.operation_uuid != uuid_binary(decoded.value.operation_uuid) ||
       coordination.prepared_statement_uuid !=
-          uuid_text(decoded.value.provisional_prepared_uuid) ||
+          uuid_binary(decoded.value.provisional_prepared_uuid) ||
       coordination.prepared_generation !=
           decoded.value.provisional_prepared_generation ||
       coordination.terminal || coordination.sealed ||
@@ -7419,10 +6039,10 @@ sb_engine_status_t SealPreparedStatementParameterTemplateV1(
   scratchbird::engine::sblr::SblrParameterAdmissionV1 admission;std::string detail;
   if(!scratchbird::engine::sblr::DecodeSblrParameterAdmissionV1(
        decoded.value.canonical_sbpa.data(),decoded.value.canonical_sbpa.size(),&admission,&detail)||
-     uuid_text(admission.parameter_set_descriptor_uuid)!=uuid_text(decoded.value.parameter_set_descriptor_uuid)||
+     uuid_binary(admission.parameter_set_descriptor_uuid)!=uuid_binary(decoded.value.parameter_set_descriptor_uuid)||
      admission.descriptor_generation!=decoded.value.descriptor_generation||
-     uuid_text(admission.execution_uuid)!=coordination.operation_uuid||
-     uuid_text(admission.prepared_uuid)!=coordination.prepared_statement_uuid||
+     uuid_binary(admission.execution_uuid)!=coordination.operation_uuid||
+     uuid_binary(admission.prepared_uuid)!=coordination.prepared_statement_uuid||
      admission.prepared_generation!=coordination.prepared_generation)
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4078,
       "SBLR.OPERAND_INVALID","sblr.parameter_template.sbpa_invalid",detail);
@@ -7430,8 +6050,8 @@ sb_engine_status_t SealPreparedStatementParameterTemplateV1(
       g_statement_context_receipt_registry_mutex);
   StatementContextReceiptOpaque* receipt=nullptr;
   for(auto& [id,candidate]:g_live_statement_context_receipts){
-    if(candidate->parameter_final_receipt_uuid==uuid_text(admission.final_receipt_uuid)&&
-       candidate->parameter_admission_token_uuid==uuid_text(admission.admission_token_uuid)){
+    if(candidate->parameter_final_receipt_uuid==uuid_binary(admission.final_receipt_uuid)&&
+       candidate->parameter_admission_token_uuid==uuid_binary(admission.admission_token_uuid)){
       if(receipt!=nullptr)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4078,
         "SBLR.PARAMETER.STALE","sblr.parameter_template.receipt_ambiguous");receipt=candidate.get();}}
   if(receipt==nullptr)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4078,
@@ -7455,7 +6075,7 @@ sb_engine_status_t SealPreparedStatementParameterTemplateV1(
      receipt->parameter_set_snapshot.catalog_generation!=decoded.value.catalog_generation||
      receipt->parameter_set_snapshot.security_epoch!=decoded.value.security_epoch||
      receipt->parameter_set_snapshot.resource_epoch!=decoded.value.resource_epoch||
-     receipt->view.statement_snapshot_uuid!=uuid_text(decoded.value.mga_snapshot_uuid))
+     receipt->view.statement_snapshot_uuid!=uuid_binary(decoded.value.mga_snapshot_uuid))
     return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4078,
       executor.error?executor.code:"SBLR.PARAMETER.STALE",
       "sblr.parameter_template.live_binding_stale",executor.detail);
@@ -7894,6 +6514,8 @@ sb_engine_status_t AcquireStatementContextReceipt(
         diagnostic == nullptr ? std::string{} : diagnostic->detail);
   }
   const auto& snapshot = published.snapshot_vector;
+  scratchbird::engine::StatementSnapshotAcquisitionGuard snapshot_acquisition(
+      snapshot.snapshot_uuid);
   const scratchbird::engine::internal_api::EngineUuid statement_snapshot_uuid =
       published.statement_snapshot_uuid;
   if (!snapshot.complete || !snapshot.inventory_authoritative ||
@@ -7906,8 +6528,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
       statement_snapshot_uuid != snapshot.snapshot_uuid.value ||
       published.statement_uuid != statement_uuid ||
       !distinct_identities.insert(statement_snapshot_uuid).second) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_CONFLICT,
         out_result,
@@ -7937,8 +6557,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
       !issue_identity(&view.parse_text_language_profile_uuid) ||
       !issue_identity(&view.catalog_epoch_check_redaction_profile_uuid) ||
       !issue_identity(&view.bound_ast_uuid)) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -7977,8 +6595,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
       max_registry_entry == nullptr || !count_registry_entry->executable ||
       !sum_registry_entry->executable || !avg_registry_entry->executable ||
       !min_registry_entry->executable || !max_registry_entry->executable) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -7994,9 +6610,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
   view.aggregate_function_profiles.reserve(aggregate_registry.size());
   for (const auto& entry : aggregate_registry) {
     if (entry.abi_version != 1 || entry.builtin_id.empty() ||
-        entry.function_uuid.empty() || !entry.executable) {
-      scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-          snapshot.snapshot_uuid);
+        !valid_engine_identity(entry.function_uuid) || !entry.executable) {
       return fail_result(
           SB_ENGINE_STATUS_INTERNAL_ERROR,
           out_result,
@@ -8015,8 +6629,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
   const auto window_registry =
       scratchbird::engine::executor::CanonicalWindowRuntimeRegistryV1();
   if (window_registry.size() != 11) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -8026,17 +6638,17 @@ sb_engine_status_t AcquireStatementContextReceipt(
   }
   view.window_function_profiles.reserve(window_registry.size());
   std::unordered_set<std::string> window_builtin_ids;
-  std::unordered_set<std::string> window_function_uuids;
+  std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                     scratchbird::engine::internal_api::EngineUuidHash>
+      window_function_uuids;
   for (const auto& entry : window_registry) {
     if (entry.abi_version != 1 ||
         entry.function == scratchbird::engine::executor::
                               CanonicalWindowRuntimeFunction::unknown ||
         !entry.builtin_id.starts_with("sb.window.") ||
-        entry.function_uuid.empty() || entry.aggregate_function.has_value() ||
+        entry.function_uuid.is_nil() || entry.aggregate_function.has_value() ||
         !window_builtin_ids.insert(entry.builtin_id).second ||
         !window_function_uuids.insert(entry.function_uuid).second) {
-      scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-          snapshot.snapshot_uuid);
       return fail_result(
           SB_ENGINE_STATUS_INTERNAL_ERROR,
           out_result,
@@ -8082,8 +6694,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
       boolean_row == core_manifest.manifest.descriptor_rows.end() ||
       !int64_row->descriptor_uuid.valid() ||
       !boolean_row->descriptor_uuid.valid()) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -8092,27 +6702,30 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "engine.statement_context.materialized_context_incomplete",
         "statement_numeric_descriptor_type");
   }
-  const auto int64_descriptor_uuid = scratchbird::core::uuid::UuidToString(
-      int64_row->descriptor_uuid.value);
+  const auto int64_descriptor_uuid = int64_row->descriptor_uuid.value;
   const auto int64_identity =
       scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-          "019d0000-0000-7000-8000-00000000d701",
+          kCanonicalDatatypeCatalogUuid,
           core_manifest.manifest.catalog_epoch, 1, int64_descriptor_uuid,
           int64_row->descriptor_epoch);
   const auto numeric_type_uuid =
-      int64_identity.ok ? int64_identity.row.type_uuid : std::string{};
-  const auto boolean_type_uuid = scratchbird::core::uuid::UuidToString(
-      boolean_row->descriptor_uuid.value);
-  scratchbird::engine::internal_api::EngineUuid text_type_uuid;
+      int64_identity.ok ? int64_identity.row.type_uuid
+                        : scratchbird::engine::internal_api::EngineUuid{};
+  const auto boolean_type_uuid = boolean_row->descriptor_uuid.value;
+  const auto text_identity =
+      scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+          kCanonicalDatatypeCatalogUuid, core_manifest.manifest.catalog_epoch,
+          1, kCanonicalTextDescriptorUuid, 1);
+  const auto text_type_uuid = text_identity.row.type_uuid;
   scratchbird::engine::internal_api::EngineUuid json_type_uuid;
   scratchbird::engine::internal_api::EngineUuid text_list_type_uuid;
-  if (numeric_type_uuid.empty() || boolean_type_uuid.empty() ||
+  if (numeric_type_uuid.is_nil() || boolean_type_uuid.is_nil() ||
       numeric_type_uuid == boolean_type_uuid ||
-      !issue_identity(&text_type_uuid) ||
+      !text_identity.ok ||
+      !scratchbird::core::datatypes::IsExactCanonicalTextTypeCodecIdentityV1(
+          text_identity.row) ||
       !issue_identity(&json_type_uuid) ||
       !issue_identity(&text_list_type_uuid)) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -8165,8 +6778,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
                                                : boolean_type_uuid)));
       profile.nullable = nullable;
       if (!issue_identity(&profile.descriptor_uuid)) {
-        scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-            snapshot.snapshot_uuid);
         return fail_result(
             SB_ENGINE_STATUS_INTERNAL_ERROR,
             out_result,
@@ -8198,8 +6809,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
   if (!core_manifest.ok() || real64_count != 1 ||
       real64_row == core_manifest.manifest.descriptor_rows.end() ||
       !real64_row->descriptor_uuid.valid()) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -8207,15 +6816,12 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "ENGINE.STATEMENT_CONTEXT.REAL64_DESCRIPTOR_UNAVAILABLE",
         "engine.statement_context.real64_descriptor_unavailable");
   }
-  const auto real64_type_uuid = scratchbird::core::uuid::UuidToString(
-      real64_row->descriptor_uuid.value);
-  std::array<std::string, 2> real64_descriptor_uuids;
-  if (real64_type_uuid.empty() ||
+  const auto real64_type_uuid = real64_row->descriptor_uuid.value;
+  std::array<scratchbird::engine::internal_api::EngineUuid, 2> real64_descriptor_uuids;
+  if (real64_type_uuid.is_nil() ||
       !issue_identity(&real64_descriptor_uuids[0]) ||
       !issue_identity(&real64_descriptor_uuids[1]) ||
       real64_descriptor_uuids[0] == real64_descriptor_uuids[1]) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -8255,8 +6861,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
       uint64_row == core_manifest.manifest.descriptor_rows.end() ||
       !uuid_row->descriptor_uuid.valid() ||
       !uint64_row->descriptor_uuid.valid()) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -8265,19 +6869,15 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "engine.statement_context.materialized_context_incomplete",
         "statement_v9_descriptor_type_cohort");
   }
-  const auto uuid_type_uuid = scratchbird::core::uuid::UuidToString(
-      uuid_row->descriptor_uuid.value);
-  const auto uint64_type_uuid = scratchbird::core::uuid::UuidToString(
-      uint64_row->descriptor_uuid.value);
-  std::array<std::string, 4> search_descriptor_uuids;
-  if (uuid_type_uuid.empty() || uint64_type_uuid.empty() ||
+  const auto uuid_type_uuid = uuid_row->descriptor_uuid.value;
+  const auto uint64_type_uuid = uint64_row->descriptor_uuid.value;
+  std::array<scratchbird::engine::internal_api::EngineUuid, 4> search_descriptor_uuids;
+  if (uuid_type_uuid.is_nil() || uint64_type_uuid.is_nil() ||
       uuid_type_uuid == uint64_type_uuid ||
       !issue_identity(&search_descriptor_uuids[0]) ||
       !issue_identity(&search_descriptor_uuids[1]) ||
       !issue_identity(&search_descriptor_uuids[2]) ||
       !issue_identity(&search_descriptor_uuids[3])) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -8318,8 +6918,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
       geometry_row == core_manifest.manifest.descriptor_rows.end() ||
       !boolean_row->descriptor_uuid.valid() ||
       !geometry_row->descriptor_uuid.valid()) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -8328,19 +6926,16 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "engine.statement_context.materialized_context_incomplete",
         "statement_v10_descriptor_type_cohort");
   }
-  const auto boolean_catalog_type_uuid = scratchbird::core::uuid::UuidToString(
-      boolean_row->descriptor_uuid.value);
-  const auto geometry_type_uuid = scratchbird::core::uuid::UuidToString(
-      geometry_row->descriptor_uuid.value);
-  const std::array<std::string, 5> multileg_type_uuids = {
+  const auto boolean_catalog_type_uuid = boolean_row->descriptor_uuid.value;
+  const auto geometry_type_uuid = geometry_row->descriptor_uuid.value;
+  const std::array<scratchbird::engine::internal_api::EngineUuid, 5> multileg_type_uuids = {
       uuid_type_uuid, uint64_type_uuid, real64_type_uuid,
       boolean_catalog_type_uuid, geometry_type_uuid};
   if (std::ranges::any_of(multileg_type_uuids,
-                         [](const auto& value) { return value.empty(); }) ||
-      std::unordered_set<std::string>(multileg_type_uuids.begin(),
+                         [](const auto& value) { return !valid_engine_identity(value); }) ||
+      std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                         scratchbird::engine::internal_api::EngineUuidHash>(multileg_type_uuids.begin(),
                                       multileg_type_uuids.end()).size() != 5) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -8352,7 +6947,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
   struct MultilegProfilePair {
     StatementDescriptorProfileKind non_null_kind;
     StatementDescriptorProfileKind nullable_kind;
-    const std::string* type_uuid;
+    const scratchbird::engine::internal_api::EngineUuid* type_uuid;
   };
   const std::array<MultilegProfilePair, 5> multileg_profile_pairs = {{
       {StatementDescriptorProfileKind::kMultilegUuidNonNull,
@@ -8381,8 +6976,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
         profile.type_uuid = *pair.type_uuid;
         profile.nullable = nullable;
         if (!issue_identity(&profile.descriptor_uuid)) {
-          scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-              snapshot.snapshot_uuid);
           return fail_result(
               SB_ENGINE_STATUS_INTERNAL_ERROR,
               out_result,
@@ -8402,8 +6995,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
   view.statement_timestamp = engine_context.statement_timestamp;
   if (!canonical_statement_timestamp(view.statement_timestamp) ||
       view.statement_timestamp != engine_context.current_timestamp) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
         out_result,
@@ -8413,7 +7004,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "statement_timestamp_carrier_mismatch");
   }
   view.owning_transaction_uuid =
-      std::string(request->exact_transaction_uuid);
+      request->exact_transaction_uuid;
   view.statement_snapshot_uuid = statement_snapshot_uuid;
   view.security_context_uuid =
       engine_context.authorization_context.authority_uuid;
@@ -8442,7 +7033,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
   // identity snapshot. Keep it distinct from the general statement catalog
   // epoch and publish it only as the preliminary V11 bootstrap authority.
   view.literal_catalog_snapshot_uuid =
-      "019d0000-0000-7000-8000-00000000d701";
+      kCanonicalDatatypeCatalogUuid;
   view.literal_catalog_generation = 1;
   view.literal_registry_generation = 1;
   {
@@ -8960,7 +7551,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
           ComputeSblrExecutorAvailabilityRowIdentitySha256(
               ddl_create_index_id);
   if (!ddl_create_index_executor.ok ||
-      ddl_create_index_executor.snapshot.snapshot_uuid.empty() ||
+      ddl_create_index_executor.snapshot.snapshot_uuid.is_nil() ||
       ddl_create_index_executor.snapshot.generation == 0 ||
       ddl_create_index_executor.snapshot.database_uuid !=
           engine_context.database_uuid ||
@@ -9191,8 +7782,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
     if (existing != session->published_transactions.end() &&
         !validate_active_transaction_handle(
             *existing, &view.active_transaction_handle_bytes)) {
-      scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-          snapshot.snapshot_uuid);
       return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4047,
                          "MGA.TRANSACTION.STALE",
                          "engine.statement_context.transaction_handle_invalid");
@@ -9203,8 +7792,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
     scratchbird::engine::internal_api::EngineUuid transaction_snapshot_uuid;
     if (!generate_distinct_statement_context_uuid(
             &distinct_identities, &transaction_snapshot_uuid)) {
-      scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-          snapshot.snapshot_uuid);
       return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4047,
                          "MGA.TRANSACTION.START_FAILED",
                          "engine.statement_context.transaction_handle_snapshot_unavailable");
@@ -9233,17 +7820,14 @@ sb_engine_status_t AcquireStatementContextReceipt(
         !scratchbird::engine::sblr::DecodeSblrTransactionHandleV1(
             canonical_handle.data(), canonical_handle.size(),
             &decoded_handle, &handle_detail)) {
-      scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-          snapshot.snapshot_uuid);
       return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4047,
                          "MGA.TRANSACTION.START_FAILED",
                          "engine.statement_context.transaction_handle_encoding_failed",
                          handle_detail);
     }
-    auto* private_handle = new (std::nothrow) sb_engine_transaction_s();
+    auto private_handle = std::unique_ptr<sb_engine_transaction_s>(
+        new (std::nothrow) sb_engine_transaction_s());
     if (private_handle == nullptr) {
-      scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-          snapshot.snapshot_uuid);
       return fail_result(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result,
                          4047, "MGA.TRANSACTION.START_FAILED",
                          "engine.statement_context.transaction_handle_allocation_failed");
@@ -9266,21 +7850,17 @@ sb_engine_status_t AcquireStatementContextReceipt(
                        private_handle->local_transaction_id;
           });
       if (existing == session->published_transactions.end()) {
-        ++session->active_transactions;
-        session->published_transactions.push_back(private_handle);
         view.active_transaction_handle_bytes = canonical_handle;
-        private_handle = nullptr;
+        session->published_transactions.push_back(private_handle.get());
+        ++session->active_transactions;
+        (void)private_handle.release();
       } else if (!validate_active_transaction_handle(
                      *existing, &view.active_transaction_handle_bytes)) {
-        delete private_handle;
-        scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-            snapshot.snapshot_uuid);
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4047,
                            "MGA.TRANSACTION.STALE",
                            "engine.statement_context.transaction_handle_publish_race");
       }
     }
-    delete private_handle;
   }
 
   mark_acquire_phase("transaction_handle_projection");
@@ -9297,8 +7877,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
                    view.resource_epoch ||
                session->package_resource_descriptor.expected_generation !=
                    view.resource_epoch) {
-      scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-          snapshot.snapshot_uuid);
       return fail_result(SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result, 4047,
                          "RESOURCE.BUDGET_EXCEEDED",
                          "engine.statement_context.resource_epoch_stale");
@@ -9349,8 +7927,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
   auto receipt = std::shared_ptr<StatementContextReceiptOpaque>(
       new (std::nothrow) StatementContextReceiptOpaque());
   if (!receipt) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_RESOURCE_EXHAUSTED,
         out_result,
@@ -9365,7 +7941,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
             std::end(session->public_session_uuid.bytes),
             receipt->binary_session_uuid.begin());
   if (!scratchbird::core::uuid::IsEngineIdentityUuid(view.receipt_uuid)) {
-    scratchbird::transaction::mga::ReleasePublishedSnapshotVector(snapshot.snapshot_uuid);
     return SB_ENGINE_STATUS_INTERNAL_ERROR;
   }
   receipt->binary_receipt_uuid = view.receipt_uuid.bytes;
@@ -9386,8 +7961,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
               receipt->engine_context);
   if (receipt->contextual_text_target_resolver == nullptr ||
       receipt->contextual_text_graph_verifier == nullptr) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_RESOURCE_EXHAUSTED, out_result, 4047,
         "ENGINE.STATEMENT_CONTEXT.RECEIPT_ALLOCATION_FAILED",
@@ -9407,8 +7980,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
   const auto receipt_id = g_next_statement_context_receipt_id.fetch_add(
       1, std::memory_order_relaxed);
   if (receipt_id == 0) {
-    scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-        snapshot.snapshot_uuid);
     return fail_result(
         SB_ENGINE_STATUS_RESOURCE_EXHAUSTED,
         out_result,
@@ -9422,8 +7993,6 @@ sb_engine_status_t AcquireStatementContextReceipt(
     if (!g_live_statement_context_receipts
              .emplace(receipt_id, std::move(receipt))
              .second) {
-      scratchbird::transaction::mga::RevokePublishedSnapshotVector(
-          snapshot.snapshot_uuid);
       return fail_result(
           SB_ENGINE_STATUS_CONFLICT,
           out_result,
@@ -9432,12 +8001,19 @@ sb_engine_status_t AcquireStatementContextReceipt(
           "engine.statement_context.receipt_id_collision");
     }
   }
-  *out_view = view;
+  static_assert(std::is_nothrow_move_assignable_v<StatementContextReceiptView>);
+  snapshot_acquisition.TransferToOwner();
+  *out_view = std::move(view);
   *out_receipt = StatementContextReceiptHandle{receipt_id};
-  mark_acquire_phase("receipt_registry_publish");
-  WriteStatementContextPhaseTrace(
-      "statement_context_acquire", "engine.statement_context.acquire", 0,
-      acquire_phase_micros);
+  // Timing is optional observability, not an execution or durability barrier.
+  // An allocation/I/O exception here must not strand the committed receipt.
+  try {
+    mark_acquire_phase("receipt_registry_publish");
+    WriteStatementContextPhaseTrace(
+        "statement_context_acquire", "engine.statement_context.acquire", 0,
+        acquire_phase_micros);
+  } catch (...) {
+  }
   return SB_ENGINE_STATUS_OK;
 }
 
@@ -9548,37 +8124,18 @@ sb_engine_status_t AttachStatementRelationOccurrenceMappingsV1(
                        "engine.statement_context.mapping_receipt_released");
   }
   if (receipt->literal_prebind_negotiated ||
+      !receipt->view.relation_occurrence_mappings.empty() ||
       !receipt->literal_persisted_descriptor_mappings.empty()) {
     return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4051,
                        "DATATYPE.DESCRIPTOR.INVALID",
                        "engine.statement_context.mapping_after_negotiation");
   }
-  std::uint64_t previous = 0;
-  std::unordered_set<std::uint64_t> occurrences;
-  for (const auto& mapping : mappings) {
-    const auto uuid = scratchbird::core::uuid::ParseUuid(
-        mapping.persisted_descriptor_uuid);
-    if (mapping.occurrence_id == 0 || mapping.occurrence_id <= previous ||
-        !occurrences.insert(mapping.occurrence_id).second ||
-        !uuid.ok() || mapping.persisted_descriptor_generation == 0) {
-      return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4051,
-                         "SBLR.OPERAND_INVALID",
-                         "engine.statement_context.mapping_invalid");
-    }
-    previous = mapping.occurrence_id;
-  }
-  receipt->view.relation_occurrence_mappings = mappings;
-  receipt->literal_persisted_descriptor_mappings.clear();
-  receipt->literal_persisted_descriptor_mappings.reserve(mappings.size());
-  for (const auto& mapping : mappings) {
-    scratchbird::engine::sblr::SblrLiteralPersistedDescriptorMappingV1 copy;
-    copy.occurrence_id = mapping.occurrence_id;
-    const auto parsed = scratchbird::core::uuid::ParseUuid(
-        mapping.persisted_descriptor_uuid);
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-              copy.persisted_descriptor_uuid.begin());
-    copy.persisted_descriptor_generation = mapping.persisted_descriptor_generation;
-    receipt->literal_persisted_descriptor_mappings.push_back(copy);
+  if (!scratchbird::engine::PublishStatementRelationOccurrenceMappingsV1(
+          mappings, receipt->view.relation_occurrence_mappings,
+          receipt->literal_persisted_descriptor_mappings)) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4051,
+                       "SBLR.OPERAND_INVALID",
+                       "engine.statement_context.mapping_invalid");
   }
   return SB_ENGINE_STATUS_OK;
 }
@@ -9705,8 +8262,7 @@ sb_engine_status_t BindStatementBulkImportAuthorityV1(
               engine_context.local_transaction_id));
   if (!exact_transaction.ok() ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           engine_context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
                   "sblr.bulk_import_stream.bind_transaction_invalid");
@@ -11200,8 +9756,7 @@ sb_engine_status_t BindStatementNameResolveAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION.STALE",
                   "sblr.name_resolve.bind_transaction_stale");
@@ -11308,7 +9863,7 @@ sb_engine_status_t BindStatementNameResolveAuthorityV1(
       view.query_explain_redaction_profile_uuid,
       context.current_package_uuid,
   };
-  if (!namespace_uuid.empty()) identities.insert(namespace_uuid);
+  if (!namespace_uuid.is_nil()) identities.insert(namespace_uuid);
   scratchbird::engine::internal_api::EngineUuid binding_uuid;
   scratchbird::engine::internal_api::EngineUuid resolution_uuid;
   if (!generate_distinct_statement_context_uuid(&identities, &binding_uuid) ||
@@ -11583,8 +10138,7 @@ sb_engine_status_t BindStatementDdlCreateSchemaAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
                   "sblr.ddl_create_schema.bind_transaction_invalid");
@@ -11755,7 +10309,7 @@ sb_engine_status_t BindStatementDdlCreateSchemaAuthorityV1(
   descriptor.receipt = view.receipt_uuid.bytes;
   descriptor.occurrence = request->occurrence;
   descriptor.schema_occurrence = request->schema_occurrence;
-  descriptor.flags = parent_schema_uuid.empty() ? 0u : 1u;
+  descriptor.flags = parent_schema_uuid.is_nil() ? 0u : 1u;
   descriptor.schema_uuid = schema_uuid.bytes;
   descriptor.schema_generation = 1;
   descriptor.parent_schema_uuid = parent_schema_uuid.bytes;
@@ -12055,8 +10609,7 @@ sb_engine_status_t BindStatementSecurityAlterPolicyAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
                   "sblr.sec_alter_policy.bind_transaction_invalid");
@@ -12580,8 +11133,7 @@ sb_engine_status_t BindStatementSecurityCreatePrivilegeTemplateAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(
         SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
@@ -13134,8 +11686,7 @@ sb_engine_status_t BindStatementDdlCreateTriggerAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
                   "sblr.ddl_create_trigger.bind_transaction_invalid");
@@ -13268,7 +11819,7 @@ sb_engine_status_t BindStatementDdlCreateTriggerAuthorityV1(
   }
   const auto& target_descriptor = loaded.descriptor;
 
-  std::string schema_uuid = target_descriptor.schema_uuid;
+  const auto schema_uuid = target_descriptor.schema_uuid;
   if (request->trigger_name_atoms.size() > 1) {
     scratchbird::engine::internal_api::EngineResolveNameRequest resolve_schema;
     resolve_schema.context = context;
@@ -13810,8 +12361,7 @@ sb_engine_status_t BindStatementDdlCreateProcedureAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
                   "sblr.ddl_create_procedure.bind_transaction_invalid");
@@ -13953,8 +12503,8 @@ sb_engine_status_t BindStatementDdlCreateProcedureAuthorityV1(
                    });
     const auto datatype_identity = scratchbird::core::datatypes::
         LookupDatatypeTypeCodecIdentityV1(
-            "019d0000-0000-7000-8000-00000000d701", 1, 1,
-            "019d0000-0000-7000-8000-00000000d711", 1);
+            kCanonicalDatatypeCatalogUuid, 1, 1,
+            kParameterBigintDescriptor, 1);
     if (requested_type != "BIGINT" || !datatype_identity.ok ||
         datatype_identity.row.canonical_name != "bigint" ||
         datatype_identity.row.canonical_value_exact_bytes != 8 ||
@@ -14036,8 +12586,8 @@ sb_engine_status_t BindStatementDdlCreateProcedureAuthorityV1(
   coordinator_input.security_context_uuid =
       view.security_context_uuid.bytes;
   coordinator_input.security_epoch = view.security_epoch;
-  coordinator_input.policy_snapshot_uuid = TextToUuid(
-      context.transaction_policy_snapshot_uuid);
+  coordinator_input.policy_snapshot_uuid =
+      context.transaction_policy_snapshot_uuid.bytes;
   coordinator_input.policy_generation =
       context.transaction_policy_snapshot_generation;
   coordinator_input.resource_grant_uuid =
@@ -14359,8 +12909,7 @@ sb_engine_status_t BindStatementProcedureInvokeAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
                   "sblr.procedure_invoke.bind_transaction_invalid");
@@ -14632,8 +13181,8 @@ sb_engine_status_t BindStatementProcedureInvokeAuthorityV1(
   coordinator_input.catalog_generation = view.catalog_generation_id;
   coordinator_input.security_context_uuid =
       view.security_context_uuid.bytes;
-  coordinator_input.policy_snapshot_uuid = TextToUuid(
-      context.transaction_policy_snapshot_uuid);
+  coordinator_input.policy_snapshot_uuid =
+      context.transaction_policy_snapshot_uuid.bytes;
   coordinator_input.policy_generation =
       context.transaction_policy_snapshot_generation;
   coordinator_input.procedure_uuid = object->object_uuid.bytes;
@@ -14950,8 +13499,7 @@ sb_engine_status_t BindStatementDdlAlterTriggerAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
                   "sblr.ddl_alter_trigger.bind_transaction_invalid");
@@ -15454,8 +14002,7 @@ sb_engine_status_t BindStatementDdlDropTriggerAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
                   "sblr.ddl_drop_trigger.bind_transaction_invalid");
@@ -15856,8 +14403,7 @@ sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION.STALE",
                   "sblr.catalog_introspect.bind_transaction_stale");
@@ -16653,8 +15199,7 @@ sb_engine_status_t BindStatementCatalogEpochCheckAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
                   "sblr.catalog_epoch_check.bind_transaction_invalid");
@@ -16669,7 +15214,7 @@ sb_engine_status_t BindStatementCatalogEpochCheckAuthorityV1(
 
   scratchbird::engine::internal_api::EngineUuid object_uuid;
   std::uint64_t object_generation = 0;
-  std::string schema_tree_uuid = context.database_uuid;
+  scratchbird::engine::internal_api::EngineUuid schema_tree_uuid = context.database_uuid;
   std::uint64_t schema_tree_generation = view.catalog_generation_id;
   if (request->object_scoped) {
     scratchbird::engine::internal_api::EngineResolveNameRequest
@@ -16716,7 +15261,7 @@ sb_engine_status_t BindStatementCatalogEpochCheckAuthorityV1(
         resolved.bound_object_identity.catalog_generation_id;
     schema_tree_uuid =
         resolved.bound_object_identity.resolved_schema_uuid;
-    if (schema_tree_uuid.empty() &&
+    if (schema_tree_uuid.is_nil() &&
         resolved.primary_object.object_kind == "schema") {
       schema_tree_uuid = object_uuid;
     }
@@ -16752,7 +15297,7 @@ sb_engine_status_t BindStatementCatalogEpochCheckAuthorityV1(
       context.database_uuid,
       schema_tree_uuid,
   };
-  if (!object_uuid.empty()) identities.insert(object_uuid);
+  if (!object_uuid.is_nil()) identities.insert(object_uuid);
   scratchbird::engine::internal_api::EngineUuid binding_uuid;
   scratchbird::engine::internal_api::EngineUuid check_uuid;
   if (!generate_distinct_statement_context_uuid(&identities, &binding_uuid) ||
@@ -17061,8 +15606,7 @@ sb_engine_status_t BindStatementDatabaseAttachAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT,
                   "MGA.TRANSACTION_INVALID",
@@ -17100,13 +15644,11 @@ sb_engine_status_t BindStatementDatabaseAttachAuthorityV1(
   const auto inspected =
       scratchbird::storage::database::InspectDatabaseLifecycle(inspect);
   const auto database_uuid = inspected.ok()
-      ? scratchbird::core::uuid::UuidToString(
-            inspected.state.database_uuid.value)
-      : std::string{};
+      ? inspected.state.database_uuid.value
+      : scratchbird::engine::internal_api::EngineUuid{};
   const auto storage_uuid = inspected.ok()
-      ? scratchbird::core::uuid::UuidToString(
-            inspected.state.filespace_uuid.value)
-      : std::string{};
+      ? inspected.state.filespace_uuid.value
+      : scratchbird::engine::internal_api::EngineUuid{};
   if (!inspected.ok() || !valid_engine_identity(database_uuid) ||
       !valid_engine_identity(storage_uuid) ||
       database_uuid != context.database_uuid ||
@@ -17628,8 +16170,7 @@ sb_engine_status_t BindStatementOptimizerStatsReadAuthorityV1(
   if (!exact_transaction.ok() ||
       !statement_context_transaction_active(exact_transaction.entry.state) ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
                   "sblr.optimizer_stats_read.bind_transaction_stale");
@@ -17890,8 +16431,7 @@ sb_engine_status_t BindStatementOptimizerStatsDropAuthorityV1(
       exact_transaction.entry.state !=
           scratchbird::transaction::mga::TransactionState::active ||
       !exact_transaction.entry.identity.transaction_uuid.valid() ||
-      scratchbird::core::uuid::UuidToString(
-          exact_transaction.entry.identity.transaction_uuid.value) !=
+      exact_transaction.entry.identity.transaction_uuid.value !=
           context.transaction_uuid) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
                   "sblr.optimizer_stats_drop.bind_transaction_stale");
@@ -17966,8 +16506,8 @@ sb_engine_status_t BindStatementOptimizerStatsDropAuthorityV1(
       view.publication_inventory_next_local_transaction_id;
   descriptor.expected_statistics_epoch = epoch.statistics_epoch;
   descriptor.expected_journal_generation = epoch.journal_generation;
-  descriptor.authorization_authority_uuid = TextToUuid(
-      context.authorization_context.authority_uuid);
+  descriptor.authorization_authority_uuid =
+      context.authorization_context.authority_uuid.bytes;
   descriptor.authorization_generation =
       context.authorization_context.security_context_generation;
   descriptor.authorization_policy_epoch =
@@ -19088,10 +17628,10 @@ sb_engine_status_t BindStatementParameterBindAuthorityV1(
         "sblr.parameter_bind.cluster_fallthrough_forbidden");
   }
   if (view.parameter_bind_executor_availability_generation == 0 ||
-      view.literal_catalog_snapshot_uuid.empty() ||
+      view.literal_catalog_snapshot_uuid.is_nil() ||
       view.literal_catalog_generation == 0 ||
       view.security_epoch == 0 || view.resource_epoch == 0 ||
-      view.statement_snapshot_uuid.empty() || view.statement_uuid.empty()) {
+      view.statement_snapshot_uuid.is_nil() || view.statement_uuid.is_nil()) {
     return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION.STALE",
                   "sblr.parameter_bind.receipt_authority_stale");
   }
@@ -19198,8 +17738,7 @@ sb_engine_status_t BindStatementParameterBindAuthorityV1(
     // The first admitted bind profile is the exact signed-int64 codec already
     // issued by parameter negotiation.  Additional registered datatype
     // codecs extend this selector; no host cast or textual coercion is used.
-    if (slot.datatype_descriptor_uuid !=
-            "019d0000-0000-7000-8000-00000000d711" ||
+    if (slot.datatype_descriptor_uuid != kParameterBigintDescriptor ||
         slot.datatype_descriptor_generation != 1 ||
         record.canonical_value_bytes.size() != 8) {
       return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT,
@@ -19416,16 +17955,18 @@ sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
   if(!decoded.request.demands.empty()){
     std::unordered_set<scratchbird::engine::internal_api::EngineUuid, scratchbird::engine::internal_api::EngineUuidHash> identities{receipt->view.receipt_uuid};
     for(const auto& demand:decoded.request.demands){
-      const char* descriptor_uuid =
-          scratchbird::engine::sblr::IsAdmittedBigintLiteralDemandV1(demand)
-              ? "019d0000-0000-7000-8000-00000000d711"
-              : "a0000000-6465-7369-ad61-6c0000000000";
+      const auto descriptor_uuid =
+          scratchbird::engine::LiteralDemandDescriptorIdentityV1(demand);
+      if (!descriptor_uuid)
+        return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4072,
+                           "DATATYPE.DESCRIPTOR.INVALID",
+                           "sblr.literal_prebind.demand_unregistered");
       const auto identity=scratchbird::core::datatypes::
           LookupDatatypeTypeCodecIdentityV1(
               receipt->view.literal_catalog_snapshot_uuid,
               receipt->view.literal_catalog_generation,
               receipt->view.literal_registry_generation,
-              descriptor_uuid,1);
+              *descriptor_uuid,1);
       if(!identity.ok){
         return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4072,
                            identity.diagnostic_id,
@@ -19433,14 +17974,14 @@ sb_engine_status_t NegotiateStatementLiteralDescriptorsV1(
       }
       identities.insert(identity.row.descriptor_uuid);
       identities.insert(identity.row.type_uuid);
-      std::string profile_uuid_text;
-      if(!generate_distinct_statement_context_uuid(&identities,&profile_uuid_text)){
+      scratchbird::engine::internal_api::EngineUuid profile_uuid;
+      if(!generate_distinct_statement_context_uuid(&identities,&profile_uuid)){
         return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4073,
                            "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
                            "sblr.literal_prebind.profile_identity_unavailable");
       }
       scratchbird::engine::sblr::SblrLiteralStatementDescriptorProfileV1 profile;
-      if(!uuid_bytes(profile_uuid_text,&profile.profile_uuid)||
+      if(!uuid_bytes(profile_uuid,&profile.profile_uuid)||
          !uuid_bytes(identity.row.descriptor_uuid,&profile.descriptor_uuid)||
          !uuid_bytes(identity.row.type_uuid,&profile.type_uuid)){
         return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4073,
@@ -19567,14 +18108,9 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
       return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4075,
                          "SBLR.OPERAND_INVALID",
                          "sblr.literal_finalize.demand_sbba_bijection_failed");
-    const char* descriptor_uuid =
-        scratchbird::engine::sblr::IsAdmittedBigintLiteralDemandV1(*demand_it)
-            ? "019d0000-0000-7000-8000-00000000d711"
-            : scratchbird::engine::sblr::IsAdmittedExactDecimalLiteralDemandV1(
-                  *demand_it)
-                  ? "a0000000-6465-7369-ad61-6c0000000000"
-                  : nullptr;
-    if(descriptor_uuid==nullptr)
+    const auto descriptor_uuid =
+        scratchbird::engine::LiteralDemandDescriptorIdentityV1(*demand_it);
+    if(!descriptor_uuid)
       return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4075,
                          "DATATYPE.DESCRIPTOR.INVALID",
                          "sblr.literal_finalize.demand_unregistered");
@@ -19582,7 +18118,7 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
         receipt->view.literal_catalog_snapshot_uuid,
         receipt->view.literal_catalog_generation,
         receipt->view.literal_registry_generation,
-        descriptor_uuid,1);
+        *descriptor_uuid,1);
     std::array<std::uint8_t,16> type{};
     if(!identity.ok||!uuid_bytes(identity.row.type_uuid,&type)||
        node.descriptor_generation!=identity.row.descriptor_generation||
@@ -19655,16 +18191,13 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
     const auto demand_it=std::find_if(
         receipt->literal_demands.begin(),receipt->literal_demands.end(),
         [&](const auto& candidate){return candidate.occurrence_id==ast.occurrence_id;});
-    const char* descriptor_uuid =
-        demand_it!=receipt->literal_demands.end() &&
-                scratchbird::engine::sblr::IsAdmittedBigintLiteralDemandV1(*demand_it)
-            ? "019d0000-0000-7000-8000-00000000d711"
-            : demand_it!=receipt->literal_demands.end() &&
-                      scratchbird::engine::sblr::
-                          IsAdmittedExactDecimalLiteralDemandV1(*demand_it)
-                  ? "a0000000-6465-7369-ad61-6c0000000000"
-                  : nullptr;
-    if(descriptor_uuid==nullptr)
+    if (demand_it == receipt->literal_demands.end())
+      return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4075,
+                         "SBLR.OPERAND_INVALID",
+                         "sblr.literal_finalize.demand_sbba_bijection_failed");
+    const auto descriptor_uuid =
+        scratchbird::engine::LiteralDemandDescriptorIdentityV1(*demand_it);
+    if(!descriptor_uuid)
       return fail_result(SB_ENGINE_STATUS_UNSUPPORTED,out_result,4075,
                          "DATATYPE.DESCRIPTOR.INVALID",
                          "sblr.literal_finalize.demand_unregistered");
@@ -19672,7 +18205,7 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
         receipt->view.literal_catalog_snapshot_uuid,
         receipt->view.literal_catalog_generation,
         receipt->view.literal_registry_generation,
-        descriptor_uuid,1);
+        *descriptor_uuid,1);
     std::array<std::uint8_t,16> core_descriptor{},core_type{};
     const bool is_v2 = profile_v2.ok;
     const auto& profile_uuid = is_v2 ? profile_v2.profile.profile_uuid : profile.profile.profile_uuid;
@@ -19764,8 +18297,10 @@ sb_engine_status_t FinalizeStatementLiteralBindingV1(
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4075,
                        "SBLR.OPERAND_INVALID",
                        "sblr.literal_finalize.extra_profile_mapping");
-  std::unordered_set<std::string> issued{receipt->view.receipt_uuid};
-  std::string final_uuid,token_uuid;
+  std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                     scratchbird::engine::internal_api::EngineUuidHash> issued{
+      receipt->view.receipt_uuid};
+  scratchbird::engine::internal_api::EngineUuid final_uuid, token_uuid;
   if(!generate_distinct_statement_context_uuid(&issued,&final_uuid)||
      !generate_distinct_statement_context_uuid(&issued,&token_uuid))
     return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4076,
@@ -20006,12 +18541,9 @@ sb_engine_status_t JointConsumeStatementContextualTextLiteralExecutionV2(
   std::lock_guard<std::mutex> receipt_guard(receipt->mutex);
   const auto exact_sbel_matches = [&]() {
     const auto& binding = request->exact_sbel_v1;
-    const auto text_uuid_matches = [](const std::string& text,
+    const auto uuid_matches = [](const scratchbird::engine::internal_api::EngineUuid& id,
                                       const std::uint8_t* expected) {
-      const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-      return parsed.ok() &&
-             std::equal(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-                        expected);
+      return scratchbird::engine::MatchesStatementIdentity(id, {expected, 16});
     };
     return binding.size() == 176 &&
            std::equal(binding.begin(), binding.begin() + 4,
@@ -20020,9 +18552,9 @@ sb_engine_status_t JointConsumeStatementContextualTextLiteralExecutionV2(
            scratchbird::engine::SblrReadU16(binding.data() + 6) == 176 &&
            scratchbird::engine::SblrReadU32(binding.data() + 8) == 176 &&
            scratchbird::engine::SblrReadU32(binding.data() + 12) == 0 &&
-           text_uuid_matches(receipt->literal_final_receipt_uuid,
+           uuid_matches(receipt->literal_final_receipt_uuid,
                              binding.data() + 16) &&
-           text_uuid_matches(receipt->literal_admission_token_uuid,
+           uuid_matches(receipt->literal_admission_token_uuid,
                              binding.data() + 32) &&
            std::equal(binding.begin() + 48, binding.begin() + 80,
                       receipt->literal_admission_token_binding_sha256.begin()) &&
@@ -20133,21 +18665,19 @@ sb_engine_status_t NegotiateStatementParameterDescriptorsV1(
     }
     auto* receipt = live->second.get();
     std::lock_guard<std::mutex> receipt_guard(receipt->mutex);
-    const auto receipt_uuid = scratchbird::core::uuid::ParseUuid(
-        receipt->view.receipt_uuid);
-    const auto mga_uuid = scratchbird::core::uuid::ParseUuid(
-        receipt->view.statement_snapshot_uuid);
+    const auto& receipt_uuid = receipt->view.receipt_uuid;
+    const auto& mga_uuid = receipt->view.statement_snapshot_uuid;
     if (receipt->released || receipt->parameter_prebind_negotiated ||
-        !receipt_uuid.ok() || !mga_uuid.ok() ||
-        !std::equal(receipt_uuid.value.bytes.begin(),
-                    receipt_uuid.value.bytes.end(), canonical_sbpr.begin()+16) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(receipt_uuid) || !scratchbird::core::uuid::IsEngineIdentityUuid(mga_uuid) ||
+        !std::equal(receipt_uuid.bytes.begin(),
+                    receipt_uuid.bytes.end(), canonical_sbpr.begin()+16) ||
         scratchbird::engine::SblrReadU64(canonical_sbpr.data()+32) !=
             receipt->view.literal_catalog_generation ||
         scratchbird::engine::SblrReadU64(canonical_sbpr.data()+40) !=
             receipt->view.security_epoch ||
         scratchbird::engine::SblrReadU64(canonical_sbpr.data()+48) !=
             receipt->view.resource_epoch ||
-        !std::equal(mga_uuid.value.bytes.begin(), mga_uuid.value.bytes.end(),
+        !std::equal(mga_uuid.bytes.begin(), mga_uuid.bytes.end(),
                     canonical_sbpr.begin()+56)) {
       return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4080,
                          "SBLR.PARAMETER.STALE",
@@ -20173,11 +18703,10 @@ sb_engine_status_t NegotiateStatementParameterDescriptorsV1(
                        "sblr.parameter_negotiate.structural_invalid",
                        decode_detail);
   }
-  const auto uuid_bytes = [](const std::string& text,
+  const auto uuid_bytes = [](const scratchbird::engine::internal_api::EngineUuid& id,
                              std::array<std::uint8_t, 16>* out) {
-    const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-    if (!parsed.ok() || out == nullptr) return false;
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), out->begin());
+    if (out == nullptr || !scratchbird::core::uuid::IsEngineIdentityUuid(id)) return false;
+    *out = id.bytes;
     return true;
   };
   std::lock_guard<std::mutex> registry_guard(
@@ -20244,7 +18773,7 @@ sb_engine_status_t NegotiateStatementParameterDescriptorsV1(
           receipt->view.literal_catalog_snapshot_uuid,
           receipt->view.literal_catalog_generation,
           receipt->view.literal_registry_generation,
-          "019d0000-0000-7000-8000-00000000d711", 1);
+          kParameterBigintDescriptor, 1);
   if (!identity.ok) {
     return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4082,
                        identity.diagnostic_id,
@@ -20252,14 +18781,15 @@ sb_engine_status_t NegotiateStatementParameterDescriptorsV1(
   }
   scratchbird::engine::internal_api::SblrParameterSetIssueRequest issue;
   issue.statement_receipt_uuid = receipt->view.receipt_uuid;
-  if (!receipt->view.parameter_prepared_statement_uuid.empty()) {
+  if (!receipt->view.parameter_prepared_statement_uuid.is_nil()) {
     issue.execution_uuid = receipt->parameter_coordination_operation_uuid;
   } else {
-    std::unordered_set<std::string> issued{receipt->view.receipt_uuid};
+    std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                       scratchbird::engine::internal_api::EngineUuidHash> issued{receipt->view.receipt_uuid};
     (void)generate_distinct_statement_context_uuid(&issued,
                                                     &issue.execution_uuid);
   }
-  if (issue.execution_uuid.empty()) {
+  if (issue.execution_uuid.is_nil()) {
     return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4082,
                        "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
                        "sblr.parameter_negotiate.execution_identity_unavailable");
@@ -20379,22 +18909,19 @@ sb_engine_status_t FinalizeStatementParameterBindingV1(
     }
     auto* receipt = live->second.get();
     std::lock_guard<std::mutex> receipt_guard(receipt->mutex);
-    const auto preliminary = scratchbird::core::uuid::ParseUuid(
-        receipt->view.receipt_uuid);
-    const auto descriptor = scratchbird::core::uuid::ParseUuid(
-        receipt->parameter_set_snapshot.parameter_set_descriptor_uuid);
-    const auto execution = scratchbird::core::uuid::ParseUuid(
-        receipt->parameter_set_snapshot.execution_uuid);
+    const auto& preliminary = receipt->view.receipt_uuid;
+    const auto& descriptor = receipt->parameter_set_snapshot.parameter_set_descriptor_uuid;
+    const auto& execution = receipt->parameter_set_snapshot.execution_uuid;
     if (receipt->released || !receipt->parameter_prebind_negotiated ||
-        receipt->parameter_binding_finalized || !preliminary.ok() ||
-        !descriptor.ok() || !execution.ok() ||
-        !std::equal(preliminary.value.bytes.begin(), preliminary.value.bytes.end(),
+        receipt->parameter_binding_finalized || !scratchbird::core::uuid::IsEngineIdentityUuid(preliminary) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(descriptor) || !scratchbird::core::uuid::IsEngineIdentityUuid(execution) ||
+        !std::equal(preliminary.bytes.begin(), preliminary.bytes.end(),
                     canonical_sbpf.begin()+16) ||
-        !std::equal(descriptor.value.bytes.begin(), descriptor.value.bytes.end(),
+        !std::equal(descriptor.bytes.begin(), descriptor.bytes.end(),
                     canonical_sbpf.begin()+32) ||
         scratchbird::engine::SblrReadU64(canonical_sbpf.data()+48) !=
             receipt->parameter_set_snapshot.descriptor_generation ||
-        !std::equal(execution.value.bytes.begin(), execution.value.bytes.end(),
+        !std::equal(execution.bytes.begin(), execution.bytes.end(),
                     canonical_sbpf.begin()+56) ||
         !std::equal(receipt->parameter_demand_sha256.begin(),
                     receipt->parameter_demand_sha256.end(),
@@ -20426,11 +18953,10 @@ sb_engine_status_t FinalizeStatementParameterBindingV1(
                        "sblr.parameter_finalize.structural_invalid",
                        decode_detail);
   }
-  const auto uuid_bytes = [](const std::string& text,
+  const auto uuid_bytes = [](const scratchbird::engine::internal_api::EngineUuid& id,
                              std::array<std::uint8_t, 16>* out) {
-    const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-    if (!parsed.ok() || out == nullptr) return false;
-    std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), out->begin());
+    if (out == nullptr || !scratchbird::core::uuid::IsEngineIdentityUuid(id)) return false;
+    *out = id.bytes;
     return true;
   };
   std::lock_guard<std::mutex> registry_guard(
@@ -20517,9 +19043,10 @@ sb_engine_status_t FinalizeStatementParameterBindingV1(
                        revalidated.code, revalidated.message_key,
                        revalidated.detail);
   }
-  std::unordered_set<std::string> issued{receipt->view.receipt_uuid,
+  std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                       scratchbird::engine::internal_api::EngineUuidHash> issued{receipt->view.receipt_uuid,
                                          snapshot.execution_uuid};
-  std::string final_uuid, token_uuid;
+  scratchbird::engine::internal_api::EngineUuid final_uuid, token_uuid;
   if (!generate_distinct_statement_context_uuid(&issued, &final_uuid) ||
       !generate_distinct_statement_context_uuid(&issued, &token_uuid)) {
     return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4085,
@@ -20537,11 +19064,11 @@ sb_engine_status_t FinalizeStatementParameterBindingV1(
                        "sblr.parameter_finalize.identity_invalid");
   }
   admission.descriptor_generation = snapshot.descriptor_generation;
-  if ((!snapshot.prepared_statement_uuid.empty() &&
+  if ((!snapshot.prepared_statement_uuid.is_nil() &&
        !uuid_bytes(snapshot.prepared_statement_uuid, &admission.prepared_uuid)) ||
-      (!snapshot.batch_uuid.empty() &&
+      (!snapshot.batch_uuid.is_nil() &&
        !uuid_bytes(snapshot.batch_uuid, &admission.batch_uuid)) ||
-      (!snapshot.dynamic_package_uuid.empty() &&
+      (!snapshot.dynamic_package_uuid.is_nil() &&
        !uuid_bytes(snapshot.dynamic_package_uuid, &admission.dynamic_uuid))) {
     return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4085,
                        "SBLR.OPERAND_INVALID",
@@ -20808,7 +19335,7 @@ sb_engine_status_t IssueStatementSourceMapDescriptorV1(
     StatementContextReceiptHandle receipt_handle,
     const std::vector<std::uint8_t>& canonical_smrq,
     std::vector<std::uint8_t>* out_canonical_smrs,
-    sb_engine_result_t* out_result) {
+    sb_engine_result_t* out_result) try {
   clear_result(out_result);
   if (out_canonical_smrs != nullptr) out_canonical_smrs->clear();
   if (!receipt_handle || out_canonical_smrs == nullptr)
@@ -20827,10 +19354,9 @@ sb_engine_status_t IssueStatementSourceMapDescriptorV1(
                        "SECURITY.ACCESS_DENIED","sblr.source_map.hidden");
   auto* receipt=live->second.get();
   std::lock_guard<std::mutex> receipt_guard(receipt->mutex);
-  const auto uuid_bytes=[](const std::string&text){std::array<std::uint8_t,16>b{};const auto p=scratchbird::core::uuid::ParseUuid(text);if(p.ok())std::copy(p.value.bytes.begin(),p.value.bytes.end(),b.begin());return b;};
   if (receipt->released || receipt->magic != kStatementContextReceiptMagic ||
       receipt->session == nullptr || receipt->session->closed ||
-      request.statement_receipt_uuid != uuid_bytes(receipt->view.receipt_uuid))
+      request.statement_receipt_uuid != receipt->view.receipt_uuid.bytes)
     return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4092,
                        "SECURITY.ACCESS_DENIED", "sblr.source_map.hidden");
 
@@ -20844,12 +19370,12 @@ sb_engine_status_t IssueStatementSourceMapDescriptorV1(
         entry.source_artifact_uuid);
     if (retained == receipt->statement_source_artifact_retentions.end() ||
         retained->second.reference.sblr_envelope_uuid !=
-            uuid_bytes(receipt->view.statement_uuid) ||
+            receipt->view.statement_uuid.bytes ||
         entry.redaction_class < retained->second.reference.redaction_class)
       return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4092,
                          "SECURITY.ACCESS_DENIED", "sblr.source_map.hidden");
   }
-  if(request.registry_snapshot_uuid!=uuid_bytes(receipt->view.catalog_epoch_uuid)||
+  if(request.registry_snapshot_uuid!=receipt->view.catalog_epoch_uuid.bytes||
      request.registry_generation!=receipt->view.literal_catalog_generation)
     return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4092,
                        "SBLR.SOURCE_MAP.STALE","sblr.source_map.receipt_binding_stale");
@@ -20907,28 +19433,34 @@ sb_engine_status_t IssueStatementSourceMapDescriptorV1(
   if(!availability.ok||!availability.snapshot.installed)
     return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4092,
       "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING","sblr.source_map.executor_unavailable");
-  const auto sha=[](const std::array<std::uint8_t,32>&v){return std::string("sha256:")+scratchbird::core::hash::HexLower(v);};
-  const auto issued=scratchbird::engine::internal_api::IssueSblrSourceMapDescriptorV1(
-      context,receipt->view.receipt_uuid,sha(request.bound_ast_sha256),
+  // Stage receipt ownership before the first durable write. Even an unknown
+  // post-rename outcome must be revoked by receipt cleanup.
+  receipt->source_map_descriptors.reserve(receipt->source_map_descriptors.size()+1);
+  receipt->source_map_executor_availability_snapshot=availability.snapshot;
+  receipt->source_map_bound_ast_sha256=request.bound_ast_sha256;
+  receipt->source_map_bound_ast_frozen=true;
+  receipt->source_map_registry_touched=true;
+  auto issued=scratchbird::engine::internal_api::IssueSblrSourceMapDescriptorV1(
+      context,receipt->view.receipt_uuid,request.bound_ast_sha256,
       receipt->view.catalog_epoch_uuid,request.registry_generation,request.entries);
   if(!issued.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4092,
       issued.diagnostic.code,issued.diagnostic.message_key,issued.diagnostic.detail);
   scratchbird::engine::sblr::SblrSourceMapIssueResultV1 response;
-  const auto parsed=scratchbird::core::uuid::ParseUuid(issued.snapshot.descriptor_uuid);
-  if(!parsed.ok())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4092,
-      "SBLR.EXECUTION_FAILED","sblr.source_map.registry_uuid_invalid");
-  std::copy(parsed.value.bytes.begin(),parsed.value.bytes.end(),response.descriptor_uuid.begin());
+  response.descriptor_uuid=issued.snapshot.descriptor_uuid.bytes;
   response.descriptor_generation=issued.snapshot.descriptor_generation;
   response.registry_generation=issued.snapshot.registry_generation;
   response.canonical_smvd=issued.snapshot.canonical_smvd;
   *out_canonical_smrs=scratchbird::engine::sblr::EncodeSblrSourceMapIssueResultV1(response);
   if(out_canonical_smrs->empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4092,
       "SBLR.EXECUTION_FAILED","sblr.source_map.smrs_encoding_failed");
-  receipt->source_map_bound_ast_sha256=request.bound_ast_sha256;
-  receipt->source_map_bound_ast_frozen=true;
-  receipt->source_map_executor_availability_snapshot=availability.snapshot;
-  receipt->source_map_descriptors.push_back(issued.snapshot);
+  receipt->source_map_descriptors.push_back(std::move(issued.snapshot));
   return SB_ENGINE_STATUS_OK;
+} catch (const std::bad_alloc&) {
+  if (out_canonical_smrs) out_canonical_smrs->clear();
+  return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+} catch (const std::length_error&) {
+  if (out_canonical_smrs) out_canonical_smrs->clear();
+  return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
 }
 
 sb_engine_status_t IssueStatementErrorVectorDescriptorV1(
@@ -20962,11 +19494,11 @@ sb_engine_status_t IssueStatementErrorVectorDescriptorV1(
                        "SBLR.ERROR_VECTOR.STALE", "sblr.error_vector.receipt_stale");
   auto* receipt = live->second.get();
   std::lock_guard<std::mutex> receipt_guard(receipt->mutex);
-  const auto receipt_id = scratchbird::core::uuid::ParseUuid(receipt->view.receipt_uuid);
-  const auto catalog_id = scratchbird::core::uuid::ParseUuid(receipt->view.catalog_epoch_uuid);
-  if (receipt->released || !receipt_id.ok() || !catalog_id.ok() ||
-      request.statement_receipt_uuid != receipt_id.value.bytes ||
-      request.registry_snapshot_uuid != catalog_id.value.bytes ||
+  const auto& receipt_id = receipt->view.receipt_uuid;
+  const auto& catalog_id = receipt->view.catalog_epoch_uuid;
+  if (receipt->released || !valid_engine_identity(receipt_id) || !valid_engine_identity(catalog_id) ||
+      request.statement_receipt_uuid != receipt_id.bytes ||
+      request.registry_snapshot_uuid != catalog_id.bytes ||
       request.registry_generation != receipt->view.literal_catalog_generation ||
       request.diagnostic_registry_snapshot_uuid != receipt->view.diagnostic_registry_snapshot_uuid ||
       request.diagnostic_registry_generation != receipt->view.diagnostic_registry_generation)
@@ -21217,8 +19749,8 @@ sb_engine_status_t ReadStatementQueryExecuteResultHandle(
       result->query_execute_result_handle.row_descriptor_uuid;
   out_handle->snapshot_uuid =
       result->query_execute_result_handle.snapshot_uuid;
-  if (out_handle->execution_uuid.empty() || out_handle->result_set_uuid.empty() ||
-      out_handle->row_descriptor_uuid.empty() || out_handle->snapshot_uuid.empty()) {
+  if (out_handle->execution_uuid.is_nil() || out_handle->result_set_uuid.is_nil() ||
+      out_handle->row_descriptor_uuid.is_nil() || out_handle->snapshot_uuid.is_nil()) {
     *out_handle = {};
     return SB_ENGINE_STATUS_CONFLICT;
   }
@@ -21237,9 +19769,9 @@ sb_engine_status_t ReadStatementCatalogIntrospectResultHandle(
     return SB_ENGINE_STATUS_CONFLICT;
   }
   *out_handle = result->catalog_introspect_result_handle;
-  if (out_handle->request_uuid.empty() || out_handle->result_set_uuid.empty() ||
-      out_handle->row_descriptor_uuid.empty() ||
-      out_handle->snapshot_uuid.empty()) {
+  if (out_handle->request_uuid.is_nil() || out_handle->result_set_uuid.is_nil() ||
+      out_handle->row_descriptor_uuid.is_nil() ||
+      out_handle->snapshot_uuid.is_nil()) {
     *out_handle = {};
     return SB_ENGINE_STATUS_CONFLICT;
   }
@@ -21886,11 +20418,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
       admitted_parameter_values;
   if (!request->literal_execution_binding.empty()) {
     const auto& binding=request->literal_execution_binding;
-    const auto text_uuid_bytes=[](const std::string& text,
+    const auto uuid_matches=[](const scratchbird::engine::internal_api::EngineUuid& id,
                                   const std::uint8_t* expected){
-      const auto parsed=scratchbird::core::uuid::ParseUuid(text);
-      return parsed.ok()&&std::equal(parsed.value.bytes.begin(),
-                                    parsed.value.bytes.end(),expected);
+      return scratchbird::engine::MatchesStatementIdentity(id, {expected, 16});
     };
     if(binding.size()!=176||
        !std::equal(binding.begin(),binding.begin()+4,
@@ -21910,10 +20440,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
     const char* literal_binding_mismatch = nullptr;
     if (!receipt->literal_binding_finalized) {
       literal_binding_mismatch = "finalize_state_absent";
-    } else if (!text_uuid_bytes(receipt->literal_final_receipt_uuid,
+    } else if (!uuid_matches(receipt->literal_final_receipt_uuid,
                                 binding.data() + 16)) {
       literal_binding_mismatch = "final_receipt_uuid_mismatch";
-    } else if (!text_uuid_bytes(receipt->literal_admission_token_uuid,
+    } else if (!uuid_matches(receipt->literal_admission_token_uuid,
                                 binding.data() + 32)) {
       literal_binding_mismatch = "admission_token_uuid_mismatch";
     } else if (!std::equal(
@@ -21941,19 +20471,13 @@ sb_engine_status_t DispatchStatementContextReceipt(
   if (!request->parameter_execution_binding.empty() ||
       !request->parameter_value_set.empty()) {
     const auto& binding = request->parameter_execution_binding;
-    const auto text_uuid_bytes = [](const std::string& text,
+    const auto uuid_matches = [](const scratchbird::engine::internal_api::EngineUuid& id,
                                     const std::uint8_t* expected) {
-      const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-      return parsed.ok() && std::equal(parsed.value.bytes.begin(),
-                                      parsed.value.bytes.end(), expected);
+      return scratchbird::engine::MatchesStatementIdentity(id, {expected, 16});
     };
-    const auto optional_text_uuid_bytes = [&](const std::string& text,
+    const auto optional_uuid_matches = [](const scratchbird::engine::internal_api::EngineUuid& id,
                                               const std::uint8_t* expected) {
-      if (text.empty()) {
-        return std::all_of(expected, expected + 16,
-                           [](std::uint8_t byte) { return byte == 0; });
-      }
-      return text_uuid_bytes(text, expected);
+      return scratchbird::engine::MatchesStatementIdentity(id, {expected, 16}, true);
     };
     if (binding.size() != 176 || request->parameter_value_set.empty() ||
         !std::equal(binding.begin(), binding.begin() + 4,
@@ -21978,16 +20502,16 @@ sb_engine_status_t DispatchStatementContextReceipt(
     const auto value_sha = scratchbird::core::hash::ComputeSha256Digest(
         request->parameter_value_set);
     const bool prepared_pair_matches =
-        optional_text_uuid_bytes(snapshot.prepared_statement_uuid,
+        optional_uuid_matches(snapshot.prepared_statement_uuid,
                                  binding.data() + 72) &&
         scratchbird::engine::SblrReadU64(binding.data() + 88) ==
             snapshot.prepared_generation;
     const bool batch_pair_matches =
-        optional_text_uuid_bytes(snapshot.batch_uuid, binding.data() + 96) &&
+        optional_uuid_matches(snapshot.batch_uuid, binding.data() + 96) &&
         scratchbird::engine::SblrReadU64(binding.data() + 112) ==
             snapshot.batch_generation;
     const bool dynamic_pair_matches =
-        optional_text_uuid_bytes(snapshot.dynamic_package_uuid,
+        optional_uuid_matches(snapshot.dynamic_package_uuid,
                                  binding.data() + 120) &&
         scratchbird::engine::SblrReadU64(binding.data() + 136) ==
             snapshot.dynamic_generation;
@@ -21998,15 +20522,15 @@ sb_engine_status_t DispatchStatementContextReceipt(
     else if (!prepared_pair_matches) parameter_binding_mismatch = "prepared_pair_mismatch";
     else if (!batch_pair_matches) parameter_binding_mismatch = "batch_pair_mismatch";
     else if (!dynamic_pair_matches) parameter_binding_mismatch = "dynamic_pair_mismatch";
-    else if (!text_uuid_bytes(snapshot.execution_uuid, binding.data() + 16)) parameter_binding_mismatch = "execution_uuid_mismatch";
-    else if (!text_uuid_bytes(receipt->parameter_final_receipt_uuid, binding.data() + 32)) parameter_binding_mismatch = "final_receipt_uuid_mismatch";
-    else if (!text_uuid_bytes(snapshot.parameter_set_descriptor_uuid, binding.data() + 48)) parameter_binding_mismatch = "parameter_set_descriptor_uuid_mismatch";
+    else if (!uuid_matches(snapshot.execution_uuid, binding.data() + 16)) parameter_binding_mismatch = "execution_uuid_mismatch";
+    else if (!uuid_matches(receipt->parameter_final_receipt_uuid, binding.data() + 32)) parameter_binding_mismatch = "final_receipt_uuid_mismatch";
+    else if (!uuid_matches(snapshot.parameter_set_descriptor_uuid, binding.data() + 48)) parameter_binding_mismatch = "parameter_set_descriptor_uuid_mismatch";
     else if (scratchbird::engine::SblrReadU64(binding.data() + 64) != snapshot.descriptor_generation) parameter_binding_mismatch = "descriptor_generation_mismatch";
     else if (!std::equal(binding.begin() + 144, binding.end(), value_sha.digest.begin())) parameter_binding_mismatch = "value_set_sha256_mismatch";
-    else if (!text_uuid_bytes(snapshot.parameter_set_descriptor_uuid, value_set.value.parameter_set_descriptor_uuid.data())) parameter_binding_mismatch = "value_set_descriptor_uuid_mismatch";
+    else if (!uuid_matches(snapshot.parameter_set_descriptor_uuid, value_set.value.parameter_set_descriptor_uuid.data())) parameter_binding_mismatch = "value_set_descriptor_uuid_mismatch";
     else if (value_set.value.descriptor_generation != snapshot.descriptor_generation) parameter_binding_mismatch = "value_set_descriptor_generation_mismatch";
-    else if (!text_uuid_bytes(snapshot.execution_uuid, value_set.value.execution_uuid.data())) parameter_binding_mismatch = "value_set_execution_uuid_mismatch";
-    else if (!text_uuid_bytes(receipt->parameter_final_receipt_uuid, value_set.value.statement_receipt_uuid.data())) parameter_binding_mismatch = "value_set_receipt_uuid_mismatch";
+    else if (!uuid_matches(snapshot.execution_uuid, value_set.value.execution_uuid.data())) parameter_binding_mismatch = "value_set_execution_uuid_mismatch";
+    else if (!uuid_matches(receipt->parameter_final_receipt_uuid, value_set.value.statement_receipt_uuid.data())) parameter_binding_mismatch = "value_set_receipt_uuid_mismatch";
     else if (value_set.value.records.size() != snapshot.slots.size()) parameter_binding_mismatch = "value_set_slot_count_mismatch";
     if (parameter_binding_mismatch != nullptr) {
       return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4054,
@@ -22018,8 +20542,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
       const auto& value = value_set.value.records[i];
       const auto& slot = snapshot.slots[i];
       if (value.slot_ordinal != slot.slot_ordinal ||
-          !text_uuid_bytes(slot.slot_uuid, value.slot_uuid.data()) ||
-          !text_uuid_bytes(slot.datatype_descriptor_uuid,
+          !uuid_matches(slot.slot_uuid, value.slot_uuid.data()) ||
+          !uuid_matches(slot.datatype_descriptor_uuid,
                            value.datatype_descriptor_uuid.data()) ||
           value.datatype_descriptor_generation !=
               slot.datatype_descriptor_generation ||
@@ -22109,101 +20633,17 @@ sb_engine_status_t DispatchStatementContextReceipt(
                        "sblr.package_reservation.binding_mismatch");
   }
 
-  std::vector<std::uint8_t> admission_binding;
-  constexpr std::string_view kAdmissionDomain =
-      "ScratchBird.SBLR.AdmissionToken.V1";
-  admission_binding.insert(admission_binding.end(),
-                           kAdmissionDomain.begin(),
-                           kAdmissionDomain.end());
-  admission_binding.insert(admission_binding.end(),
-                           request->container_sha256.begin(),
-                           request->container_sha256.end());
-  admission_binding.insert(admission_binding.end(),
-                           request->execution_envelope_sha256.begin(),
-                           request->execution_envelope_sha256.end());
-  admission_binding.insert(admission_binding.end(),
-                           request->operation_sha256.begin(),
-                           request->operation_sha256.end());
-  for (const auto* value : {&request->authenticated_principal_uuid,
-                            &request->catalog_snapshot_uuid,
-                            &request->engine_mga_statement_uuid,
-                            &request->engine_mga_snapshot_uuid}) {
-    admission_binding.insert(admission_binding.end(),
-                             value->begin(), value->end());
-    admission_binding.push_back(0);
+  std::optional<scratchbird::server_engine_bridge::AdmissionReservationBinding> reservation_binding;
+  if (package_candidate) {
+    reservation_binding = scratchbird::server_engine_bridge::AdmissionReservationBinding{
+        request->package_admission_reservation.opaque_id,
+        static_cast<std::uint8_t>(request->admitted_payload_kind),
+        consumed_reservation.payload_size, consumed_reservation.record_count,
+        consumed_reservation.resource_policy_generation};
   }
-  scratchbird::engine::SblrAppendU64(admission_binding,
-                                     request->catalog_epoch);
-  scratchbird::engine::SblrAppendU64(admission_binding,
-                                     request->security_epoch);
-  scratchbird::engine::SblrAppendU64(admission_binding,
-                                     request->resource_epoch);
-  if (request->package_executor_evidence.executor_evidence_generation == 0) {
-    admission_binding.push_back(0);
-  } else {
-    scratchbird::engine::SblrAppendU64(
-        admission_binding, request->package_admission_reservation.opaque_id);
-    admission_binding.push_back(
-        static_cast<std::uint8_t>(request->admitted_payload_kind));
-    scratchbird::engine::SblrAppendU64(
-        admission_binding, consumed_reservation.payload_size);
-    scratchbird::engine::SblrAppendU32(
-        admission_binding, consumed_reservation.record_count);
-    scratchbird::engine::SblrAppendU64(
-        admission_binding, consumed_reservation.resource_policy_generation);
-    admission_binding.push_back(
-        static_cast<std::uint8_t>(request->gateway_evidence.source));
-    admission_binding.push_back(
-        static_cast<std::uint8_t>(request->gateway_evidence.disposition));
-    scratchbird::engine::SblrAppendU64(
-        admission_binding,
-        request->gateway_evidence.provider_observation_generation);
-    admission_binding.insert(
-        admission_binding.end(),
-        request->gateway_evidence.canonical_payload_sha256.begin(),
-        request->gateway_evidence.canonical_payload_sha256.end());
-    for (const auto* value : {
-             &request->gateway_evidence.route_snapshot_uuid,
-             &request->gateway_evidence.security_snapshot_uuid}) {
-      admission_binding.insert(admission_binding.end(), value->begin(),
-                               value->end());
-      admission_binding.push_back(0);
-    }
-    scratchbird::engine::SblrAppendU64(
-        admission_binding, request->gateway_evidence.route_epoch);
-    scratchbird::engine::SblrAppendU64(
-        admission_binding, request->gateway_evidence.route_generation);
-    scratchbird::engine::SblrAppendU64(
-        admission_binding, request->gateway_evidence.security_epoch);
-    scratchbird::engine::SblrAppendU64(
-        admission_binding,
-        request->gateway_evidence.security_observation_generation);
-    admission_binding.push_back(
-        request->gateway_evidence.cluster_context_active ? 1 : 0);
-    admission_binding.push_back(
-        request->gateway_evidence.cluster_transaction_active ? 1 : 0);
-    admission_binding.push_back(
-        request->gateway_evidence.route_fence_present ? 1 : 0);
-    for (const auto* executor_id : {
-             &request->package_executor_evidence.begin_executor_id,
-             &request->package_executor_evidence.end_executor_id}) {
-      admission_binding.insert(admission_binding.end(), executor_id->begin(),
-                               executor_id->end());
-      admission_binding.push_back(0);
-    }
-    admission_binding.insert(
-        admission_binding.end(),
-        request->package_executor_evidence.registry_snapshot_uuid.begin(),
-        request->package_executor_evidence.registry_snapshot_uuid.end());
-    admission_binding.push_back(0);
-    scratchbird::engine::SblrAppendU64(
-        admission_binding,
-        request->package_executor_evidence.executor_evidence_generation);
-    admission_binding.insert(
-        admission_binding.end(),
-        request->package_executor_evidence.canonical_payload_sha256.begin(),
-        request->package_executor_evidence.canonical_payload_sha256.end());
-  }
+  const auto admission_binding =
+      scratchbird::server_engine_bridge::EncodeAdmissionTokenBindingV2(
+          *request, reservation_binding);
   const auto binding_digest =
       scratchbird::core::hash::ComputeSha256Digest(admission_binding);
   if (!binding_digest.ok() ||
@@ -22579,9 +21019,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
       return false;
     }
     if (!current_snapshot.snapshot_vector.owning_transaction_uuid.valid() ||
-        scratchbird::core::uuid::UuidToString(
-            current_snapshot.snapshot_vector.owning_transaction_uuid.value) !=
-            view.owning_transaction_uuid) {
+        current_snapshot.snapshot_vector.owning_transaction_uuid.value != view.owning_transaction_uuid) {
       statement_snapshot_mismatch_detail =
           "snapshot_owning_transaction_uuid_mismatch";
       return false;
@@ -22781,10 +21219,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
        source_map_descriptors.front()->size()!=24)
       return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4058,
                          "SBLR.OPERAND_INVALID","sblr.source_map.descriptor_ref_invalid");
-    const auto uuid_from_bytes=[](const std::uint8_t*bytes){constexpr char h[]="0123456789abcdef";std::string s;s.reserve(36);for(std::size_t i=0;i<16;++i){if(i==4||i==6||i==8||i==10)s.push_back('-');s.push_back(h[bytes[i]>>4]);s.push_back(h[bytes[i]&15]);}return s;};
     const auto load64=[](const std::uint8_t*p){std::uint64_t v=0;for(unsigned i=0;i<8;++i)v|=std::uint64_t(p[i])<<(8*i);return v;};
     const auto&id=*source_map_descriptors.front();
-    const auto descriptor_uuid=uuid_from_bytes(id.data());
+    scratchbird::engine::internal_api::EngineUuid descriptor_uuid;
+    std::copy_n(id.data(), descriptor_uuid.bytes.size(), descriptor_uuid.bytes.begin());
     const auto descriptor_generation=load64(id.data()+16);
     const auto admitted=std::find_if(receipt->source_map_descriptors.begin(),receipt->source_map_descriptors.end(),
       [&](const auto&s){return s.descriptor_uuid==descriptor_uuid&&s.descriptor_generation==descriptor_generation;});
@@ -22834,9 +21272,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
     scratchbird::engine::internal_api::SblrExecutorAvailabilitySnapshot current;auto available=scratchbird::engine::internal_api::RevalidateSblrExecutorAvailability(receipt->engine_context,identity,receipt->error_vector_executor_availability_snapshot,&current);
     if(available.error)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4058,available.code,available.message_key,available.detail);
     auto error_context=receipt->engine_context;error_context.statement_metadata_snapshot_engine_owned=true;error_context.trace_tags.push_back("private_error_vector_registry");
-    const auto receipt_id=scratchbird::core::uuid::ParseUuid(receipt->view.receipt_uuid);
-    if(!receipt_id.ok())return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4058,"SBLR.ERROR_VECTOR.STALE","sblr.error_vector.receipt_stale");
-    auto found=scratchbird::engine::internal_api::LookupSblrErrorVectorDescriptorV1(error_context,receipt_id.value.bytes,id,gen);
+    const auto& receipt_id=receipt->view.receipt_uuid;
+    if(!valid_engine_identity(receipt_id))return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4058,"SBLR.ERROR_VECTOR.STALE","sblr.error_vector.receipt_stale");
+    auto found=scratchbird::engine::internal_api::LookupSblrErrorVectorDescriptorV1(error_context,receipt_id.bytes,id,gen);
     if(!found.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4058,found.diagnostic.code,found.diagnostic.message_key,found.diagnostic.detail);
     scratchbird::engine::sblr::SblrErrorVectorDescriptorV1 decoded;std::string decode_detail;
     if(!scratchbird::engine::sblr::DecodeSblrErrorVectorDescriptorV1(found.snapshot.canonical_ervd.data(),found.snapshot.canonical_ervd.size(),&decoded,&decode_detail))return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT,out_result,4058,"SBLR.OPERAND_INVALID","sblr.error_vector.vector_invalid");
@@ -22947,7 +21385,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
   for (auto profile = suffix_begin;
        profile != view.descriptor_profiles.end(); ++profile) {
     const auto kind = static_cast<std::uint8_t>(profile->profile_kind);
-    if (kind < 14 || kind > 23 || !profile->collation_uuid.empty() ||
+    if (kind < 14 || kind > 23 || !profile->collation_uuid.is_nil() ||
         profile->width != 0 || profile->precision != 0 ||
         profile->scale != 0) {
       return fail_result(
@@ -24399,15 +22837,14 @@ sb_engine_status_t DispatchStatementContextReceipt(
           stmt_prepare_descriptor.parser_package_uuid !=
               context.current_package_uuid.bytes ||
           stmt_prepare_descriptor.statement_uuid !=
-              TextToUuid(
-                  stmt_prepare_authority == nullptr
-                      ? std::string{}
-                      : stmt_prepare_authority->acknowledgement.binding_uuid) ||
+              (stmt_prepare_authority == nullptr
+                      ? std::array<std::uint8_t, 16>{}
+                      : stmt_prepare_authority->acknowledgement.binding_uuid.bytes) ||
           stmt_prepare_descriptor.statement_name_uuid !=
-              TextToUuid(stmt_prepare_authority == nullptr
-                             ? std::string{}
+              (stmt_prepare_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : stmt_prepare_authority->acknowledgement
-                                   .statement_name_uuid) ||
+                                   .statement_name_uuid.bytes) ||
           stmt_prepare_descriptor.descriptor_sha256 !=
               (stmt_prepare_authority == nullptr
                    ? std::array<std::uint8_t, 32>{}
@@ -24489,7 +22926,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
                 stmt_execute_descriptor.parameter_set_uuid) ||
             stmt_execute_descriptor.parameter_set_generation != 0 ||
             !stmt_execute_descriptor.canonical_parameter_bytes.empty() ||
-            !stmt_execute_authority->parameter_set_uuid.empty() ||
+            !stmt_execute_authority->parameter_set_uuid.is_nil() ||
             !stmt_execute_authority->canonical_parameter_bytes.empty())) ||
           (stmt_execute_authority
                    ->source_free_parameterized_query_template &&
@@ -24570,10 +23007,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
       const auto expected_result_descriptor =
           stmt_execute_direct_authority == nullptr ||
                   stmt_execute_direct_authority->acknowledgement
-                      .result_descriptor_uuid.empty()
+                      .result_descriptor_uuid.is_nil()
               ? std::array<std::uint8_t, 16>{}
-              : TextToUuid(stmt_execute_direct_authority->acknowledgement
-                               .result_descriptor_uuid);
+              : stmt_execute_direct_authority->acknowledgement
+                               .result_descriptor_uuid.bytes;
       if (stmt_execute_direct_authority == nullptr ||
           !descriptor_digest.ok() ||
           stmt_execute_direct_descriptor.statement_receipt_uuid !=
@@ -24591,10 +23028,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
           stmt_execute_direct_descriptor.parser_package_uuid !=
               context.current_package_uuid.bytes ||
           stmt_execute_direct_descriptor.execution_uuid !=
-              TextToUuid(stmt_execute_direct_authority == nullptr
-                             ? std::string{}
+              (stmt_execute_direct_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : stmt_execute_direct_authority
-                                   ->acknowledgement.binding_uuid) ||
+                                   ->acknowledgement.binding_uuid.bytes) ||
           stmt_execute_direct_descriptor.result_descriptor_uuid !=
               expected_result_descriptor ||
           descriptor_digest.digest !=
@@ -24677,15 +23114,15 @@ sb_engine_status_t DispatchStatementContextReceipt(
           stmt_free_descriptor.mga_snapshot_uuid !=
               view.statement_snapshot_uuid.bytes ||
           stmt_free_descriptor.statement_uuid !=
-              TextToUuid(stmt_free_authority == nullptr
-                             ? std::string{}
+              (stmt_free_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : stmt_free_authority->acknowledgement
-                                   .statement_uuid) ||
+                                   .statement_uuid.bytes) ||
           stmt_free_descriptor.statement_name_uuid !=
-              TextToUuid(stmt_free_authority == nullptr
-                             ? std::string{}
+              (stmt_free_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : stmt_free_authority->acknowledgement
-                                   .statement_name_uuid) ||
+                                   .statement_name_uuid.bytes) ||
           stmt_free_descriptor.descriptor_sha256 !=
               (stmt_free_authority == nullptr
                    ? std::array<std::uint8_t, 32>{}
@@ -24747,31 +23184,31 @@ sb_engine_status_t DispatchStatementContextReceipt(
       const auto expected_transaction =
           stmt_cancel_authority == nullptr ||
                   stmt_cancel_authority->acknowledgement
-                      .target_transaction_uuid.empty()
+                      .target_transaction_uuid.is_nil()
               ? std::array<std::uint8_t, 16>{}
-              : TextToUuid(stmt_cancel_authority->acknowledgement
-                               .target_transaction_uuid);
+              : stmt_cancel_authority->acknowledgement
+                               .target_transaction_uuid.bytes;
       if (stmt_cancel_authority == nullptr ||
           stmt_cancel_descriptor.target_execution_uuid !=
-              TextToUuid(stmt_cancel_authority == nullptr
-                             ? std::string{}
+              (stmt_cancel_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : stmt_cancel_authority->acknowledgement
-                                   .target_execution_uuid) ||
+                                   .target_execution_uuid.bytes) ||
           stmt_cancel_descriptor.target_statement_uuid !=
-              TextToUuid(stmt_cancel_authority == nullptr
-                             ? std::string{}
+              (stmt_cancel_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : stmt_cancel_authority->acknowledgement
-                                   .target_statement_uuid) ||
+                                   .target_statement_uuid.bytes) ||
           stmt_cancel_descriptor.target_statement_receipt_uuid !=
-              TextToUuid(stmt_cancel_authority == nullptr
-                             ? std::string{}
+              (stmt_cancel_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : stmt_cancel_authority->acknowledgement
-                                   .target_statement_receipt_uuid) ||
+                                   .target_statement_receipt_uuid.bytes) ||
           stmt_cancel_descriptor.cancel_operation_uuid !=
-              TextToUuid(stmt_cancel_authority == nullptr
-                             ? std::string{}
+              (stmt_cancel_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : stmt_cancel_authority->acknowledgement
-                                   .cancel_operation_uuid) ||
+                                   .cancel_operation_uuid.bytes) ||
           stmt_cancel_descriptor.target_transaction_uuid !=
               expected_transaction ||
           stmt_cancel_descriptor.target_execution_generation !=
@@ -25034,10 +23471,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
       const std::array<std::uint8_t, 16> nil_uuid{};
       if (query_explain_authority == nullptr ||
           query_explain_descriptor.explain_uuid !=
-              TextToUuid(query_explain_authority == nullptr
-                             ? std::string{}
+              (query_explain_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : query_explain_authority->acknowledgement
-                                   .explain_uuid) ||
+                                   .explain_uuid.bytes) ||
           query_explain_descriptor.statement_receipt_uuid !=
               view.receipt_uuid.bytes ||
           query_explain_descriptor.query_snapshot_uuid !=
@@ -25141,10 +23578,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
       }
       if (name_resolve_authority == nullptr ||
           name_resolve_descriptor.resolution_uuid !=
-              TextToUuid(name_resolve_authority == nullptr
-                             ? std::string{}
+              (name_resolve_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : name_resolve_authority->acknowledgement
-                                   .resolution_uuid) ||
+                                   .resolution_uuid.bytes) ||
           name_resolve_descriptor.statement_receipt_uuid !=
               view.receipt_uuid.bytes ||
           name_resolve_descriptor.catalog_snapshot_uuid !=
@@ -25232,10 +23669,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
       }
       if (parse_text_authority == nullptr ||
           parse_text_descriptor.parse_uuid !=
-              TextToUuid(parse_text_authority == nullptr
-                             ? std::string{}
+              (parse_text_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : parse_text_authority->acknowledgement
-                                   .parse_uuid) ||
+                                   .parse_uuid.bytes) ||
           parse_text_descriptor.statement_receipt_uuid !=
               view.receipt_uuid.bytes ||
           parse_text_descriptor.language_profile_uuid !=
@@ -25243,8 +23680,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
           parse_text_descriptor.language_profile_generation !=
               view.parse_text_language_profile_generation ||
           parse_text_descriptor.parser_package_uuid !=
-              TextToUuid(
-                  receipt->engine_context.current_package_uuid) ||
+              receipt->engine_context.current_package_uuid.bytes ||
           parse_text_descriptor.catalog_snapshot_uuid !=
               view.statement_metadata_snapshot_uuid.bytes ||
           parse_text_descriptor.catalog_generation !=
@@ -25324,10 +23760,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
       }
       if (catalog_epoch_check_authority == nullptr ||
           catalog_epoch_check_descriptor.check_uuid !=
-              TextToUuid(catalog_epoch_check_authority == nullptr
-                             ? std::string{}
+              (catalog_epoch_check_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : catalog_epoch_check_authority->acknowledgement
-                                   .check_uuid) ||
+                                   .check_uuid.bytes) ||
           catalog_epoch_check_descriptor.statement_receipt_uuid !=
               view.receipt_uuid.bytes ||
           catalog_epoch_check_descriptor.requested_catalog_epoch_uuid !=
@@ -25337,9 +23773,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
           catalog_epoch_check_descriptor.database_uuid !=
               receipt->engine_context.database_uuid.bytes ||
           catalog_epoch_check_descriptor.schema_tree_uuid !=
-              TextToUuid(catalog_epoch_check_authority == nullptr
-                             ? std::string{}
-                             : catalog_epoch_check_authority->schema_tree_uuid) ||
+              (catalog_epoch_check_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
+                             : catalog_epoch_check_authority->schema_tree_uuid.bytes) ||
           catalog_epoch_check_descriptor.schema_tree_generation !=
               (catalog_epoch_check_authority == nullptr
                    ? 0
@@ -25371,7 +23807,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
                          .descriptor_sha256) ||
           catalog_epoch_check_descriptor.object_scoped !=
               (catalog_epoch_check_authority != nullptr &&
-               !catalog_epoch_check_authority->object_uuid.empty()) ||
+               !catalog_epoch_check_authority->object_uuid.is_nil()) ||
           catalog_epoch_check_authority->redaction_profile_uuid !=
               view.catalog_epoch_check_redaction_profile_uuid ||
           catalog_epoch_check_authority->redaction_generation !=
@@ -25444,22 +23880,22 @@ sb_engine_status_t DispatchStatementContextReceipt(
               database_attach_descriptor.alias_scope);
       if (database_attach_authority == nullptr ||
           database_attach_descriptor.attach_uuid !=
-              TextToUuid(database_attach_authority == nullptr
-                             ? std::string{}
+              (database_attach_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : database_attach_authority->acknowledgement
-                                   .attach_uuid) ||
+                                   .attach_uuid.bytes) ||
           database_attach_descriptor.statement_receipt_uuid !=
               view.receipt_uuid.bytes ||
           database_attach_descriptor.storage_uuid !=
-              TextToUuid(database_attach_authority == nullptr
-                             ? std::string{}
+              (database_attach_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : database_attach_authority->acknowledgement
-                                   .storage_uuid) ||
+                                   .storage_uuid.bytes) ||
           database_attach_descriptor.alias_uuid !=
-              TextToUuid(database_attach_authority == nullptr
-                             ? std::string{}
+              (database_attach_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : database_attach_authority->acknowledgement
-                                   .alias_uuid) ||
+                                   .alias_uuid.bytes) ||
           database_attach_descriptor.database_uuid !=
               receipt->engine_context.database_uuid.bytes ||
           database_attach_descriptor.catalog_snapshot_uuid !=
@@ -25468,9 +23904,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
               view.catalog_generation_id ||
           database_attach_descriptor.security_context_uuid !=
               view.security_context_uuid.bytes ||
-          database_attach_descriptor.policy_snapshot_uuid != TextToUuid(
-              receipt->engine_context.transaction_policy_snapshot_uuid
-                  ) ||
+          database_attach_descriptor.policy_snapshot_uuid != receipt->engine_context.transaction_policy_snapshot_uuid.bytes ||
           database_attach_descriptor.policy_generation !=
               receipt->engine_context.transaction_policy_snapshot_generation ||
           database_attach_descriptor.transaction_uuid !=
@@ -25551,10 +23985,10 @@ sb_engine_status_t DispatchStatementContextReceipt(
       }
       if (optimizer_stats_read_authority == nullptr ||
           optimizer_stats_read_descriptor.statistics_snapshot_uuid !=
-              TextToUuid(optimizer_stats_read_authority == nullptr
-                             ? std::string{}
+              (optimizer_stats_read_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
                              : optimizer_stats_read_authority
-                                   ->statistics_snapshot_uuid) ||
+                                   ->statistics_snapshot_uuid.bytes) ||
           optimizer_stats_read_descriptor.statement_receipt_uuid !=
               view.receipt_uuid.bytes ||
           optimizer_stats_read_descriptor.statement_uuid !=
@@ -25583,8 +24017,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
               scratchbird::engine::sblr::
                   kSblrOptimizerStatsReadCatalogFlags ||
           optimizer_stats_read_descriptor.parser_package_uuid !=
-              TextToUuid(
-                  receipt->engine_context.current_package_uuid) ||
+              receipt->engine_context.current_package_uuid.bytes ||
           optimizer_stats_read_descriptor
                   .executor_availability_generation !=
               view.optimizer_stats_read_executor_availability_generation) {
@@ -25668,9 +24101,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
           receipt->engine_context.authorization_context;
       if (optimizer_stats_drop_authority == nullptr ||
           optimizer_stats_drop_descriptor.effect_uuid !=
-              TextToUuid(optimizer_stats_drop_authority == nullptr
-                             ? std::string{}
-                             : optimizer_stats_drop_authority->effect_uuid) ||
+              (optimizer_stats_drop_authority == nullptr
+                             ? std::array<std::uint8_t, 16>{}
+                             : optimizer_stats_drop_authority->effect_uuid.bytes) ||
           optimizer_stats_drop_descriptor.statement_receipt_uuid !=
               view.receipt_uuid.bytes ||
           optimizer_stats_drop_descriptor.statement_uuid !=
@@ -25706,8 +24139,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
               scratchbird::engine::sblr::
                   kSblrOptimizerStatsDropAllScopesFlag ||
           optimizer_stats_drop_descriptor.parser_package_uuid !=
-              TextToUuid(
-                  receipt->engine_context.current_package_uuid) ||
+              receipt->engine_context.current_package_uuid.bytes ||
           optimizer_stats_drop_descriptor
                   .executor_availability_generation !=
               view.optimizer_stats_drop_executor_availability_generation) {
@@ -26309,6 +24741,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
                 {context, std::move(nested_member),
                  std::move(nested_api_request),
                  std::move(nested_parameter_value_set), nullptr, false});
+        if (nested_dispatch.resource_exhausted) return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
         if (!nested_dispatch.accepted || !nested_dispatch.api_result.ok) {
           const auto code = nested_dispatch.diagnostics.empty()
                                 ? std::string("SBLR.OPERATION_UNSUPPORTED")
@@ -26427,6 +24860,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
             scratchbird::engine::sblr::DispatchSblrOperation(
                 {context, std::move(nested_member),
                  std::move(nested_api_request), {}, nullptr, false});
+        if (nested_dispatch.resource_exhausted) return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
         if (!nested_dispatch.accepted || !nested_dispatch.api_result.ok) {
           const auto code = nested_dispatch.diagnostics.empty()
                                 ? std::string("SBLR.OPERATION_UNSUPPORTED")
@@ -26492,8 +24926,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
               "sblr.stmt_free.cancelled_before_publication");
         }
         std::unordered_set<scratchbird::engine::internal_api::EngineUuid, scratchbird::engine::internal_api::EngineUuidHash> identities{
-            CanonicalUuidText(stmt_free_descriptor.statement_uuid),
-            CanonicalUuidText(stmt_free_descriptor.statement_name_uuid),
+            scratchbird::engine::internal_api::EngineUuid{stmt_free_descriptor.statement_uuid},
+            scratchbird::engine::internal_api::EngineUuid{stmt_free_descriptor.statement_name_uuid},
             view.receipt_uuid};
         scratchbird::engine::internal_api::EngineUuid cleanup_uuid;
         if (!generate_distinct_statement_context_uuid(&identities,
@@ -26631,16 +25065,15 @@ sb_engine_status_t DispatchStatementContextReceipt(
                              "sblr.stmt_cancel.target_not_terminal");
         }
         std::unordered_set<scratchbird::engine::internal_api::EngineUuid, scratchbird::engine::internal_api::EngineUuidHash> identities{
-            CanonicalUuidText(stmt_cancel_descriptor.target_execution_uuid),
-            CanonicalUuidText(stmt_cancel_descriptor.target_statement_uuid),
-            CanonicalUuidText(
-                stmt_cancel_descriptor.target_statement_receipt_uuid),
-            CanonicalUuidText(stmt_cancel_descriptor.cancel_operation_uuid)};
+            scratchbird::engine::internal_api::EngineUuid{stmt_cancel_descriptor.target_execution_uuid},
+            scratchbird::engine::internal_api::EngineUuid{stmt_cancel_descriptor.target_statement_uuid},
+            scratchbird::engine::internal_api::EngineUuid{stmt_cancel_descriptor.target_statement_receipt_uuid},
+            scratchbird::engine::internal_api::EngineUuid{stmt_cancel_descriptor.cancel_operation_uuid}};
         if (std::any_of(stmt_cancel_descriptor.target_transaction_uuid.begin(),
                         stmt_cancel_descriptor.target_transaction_uuid.end(),
                         [](std::uint8_t value) { return value != 0; })) {
-          identities.insert(CanonicalUuidText(
-              stmt_cancel_descriptor.target_transaction_uuid));
+          identities.insert(scratchbird::engine::internal_api::EngineUuid{
+              stmt_cancel_descriptor.target_transaction_uuid});
         }
         scratchbird::engine::internal_api::EngineUuid cancellation_evidence_uuid;
         if (!generate_distinct_statement_context_uuid(
@@ -26728,7 +25161,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
       const auto parameter_set = scratchbird::engine::internal_api::
           LoadSblrParameterSet(
               parameter_context,
-              CanonicalUuidText(parameter_bind_descriptor.parameter_set_uuid));
+              scratchbird::engine::internal_api::EngineUuid{parameter_bind_descriptor.parameter_set_uuid});
       if (!parameter_set.ok) {
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4098,
                            parameter_set.diagnostic.code,
@@ -26745,31 +25178,30 @@ sb_engine_status_t DispatchStatementContextReceipt(
       scratchbird::engine::internal_api::SblrParameterBindPublicationRequest
           publication_request;
       publication_request.statement_receipt_uuid =
-          CanonicalUuidText(parameter_bind_descriptor.statement_receipt_uuid);
+          scratchbird::engine::internal_api::EngineUuid{parameter_bind_descriptor.statement_receipt_uuid};
       publication_request.execution_uuid =
-          CanonicalUuidText(parameter_bind_descriptor.execution_uuid);
+          scratchbird::engine::internal_api::EngineUuid{parameter_bind_descriptor.execution_uuid};
       publication_request.prepared_statement_uuid =
-          CanonicalUuidText(parameter_bind_descriptor.prepared_statement_uuid);
+          scratchbird::engine::internal_api::EngineUuid{parameter_bind_descriptor.prepared_statement_uuid};
       publication_request.prepared_generation =
           parameter_bind_descriptor.prepared_generation;
       publication_request.parameter_set_descriptor_uuid =
-          CanonicalUuidText(parameter_bind_descriptor.parameter_set_uuid);
+          scratchbird::engine::internal_api::EngineUuid{parameter_bind_descriptor.parameter_set_uuid};
       publication_request.parameter_set_generation =
           parameter_bind_descriptor.parameter_set_generation;
       publication_request.ordered_slot_table_sha256 = "sha256:" +
           scratchbird::core::hash::HexLower(
               parameter_bind_descriptor.ordered_slot_table_sha256);
       publication_request.batch_uuid =
-          OptionalCanonicalUuidText(parameter_bind_descriptor.batch_uuid);
+          scratchbird::engine::internal_api::EngineUuid{parameter_bind_descriptor.batch_uuid};
       publication_request.batch_generation =
           parameter_bind_descriptor.batch_generation;
       publication_request.dynamic_package_uuid =
-          OptionalCanonicalUuidText(
-              parameter_bind_descriptor.dynamic_package_uuid);
+          scratchbird::engine::internal_api::EngineUuid{parameter_bind_descriptor.dynamic_package_uuid};
       publication_request.dynamic_generation =
           parameter_bind_descriptor.dynamic_generation;
       publication_request.catalog_snapshot_uuid =
-          CanonicalUuidText(parameter_bind_descriptor.catalog_snapshot_uuid);
+          scratchbird::engine::internal_api::EngineUuid{parameter_bind_descriptor.catalog_snapshot_uuid};
       publication_request.catalog_generation =
           parameter_bind_descriptor.catalog_generation;
       publication_request.security_epoch =
@@ -26777,7 +25209,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
       publication_request.resource_epoch =
           parameter_bind_descriptor.resource_epoch;
       publication_request.mga_snapshot_uuid =
-          CanonicalUuidText(parameter_bind_descriptor.mga_snapshot_uuid);
+          scratchbird::engine::internal_api::EngineUuid{parameter_bind_descriptor.mga_snapshot_uuid};
       publication_request.executor_availability_generation =
           parameter_bind_descriptor.executor_availability_generation;
       publication_request.canonical_value_vector =
@@ -26911,24 +25343,25 @@ sb_engine_status_t DispatchStatementContextReceipt(
                              "sblr.result_page.cancelled_before_source_access");
         }
 
-        std::unordered_set<std::string> issued{
-            CanonicalUuidText(result_page_descriptor.cursor_uuid),
-            CanonicalUuidText(result_page_descriptor.result_set_handle_uuid),
-            CanonicalUuidText(result_page_descriptor.row_descriptor_uuid),
-            CanonicalUuidText(result_page_descriptor.snapshot_uuid),
-            CanonicalUuidText(result_page_descriptor.statement_receipt_uuid),
-            CanonicalUuidText(result_page_descriptor.redaction_profile_uuid),
-            CanonicalUuidText(result_page_descriptor.policy_snapshot_uuid),
-            CanonicalUuidText(result_page_descriptor.resource_budget_uuid)};
-        std::string continuation_uuid_text;
-        std::string publication_barrier_uuid_text;
-        std::string result_evidence_uuid_text;
+        std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                           scratchbird::engine::internal_api::EngineUuidHash> issued{
+            scratchbird::engine::internal_api::EngineUuid{result_page_descriptor.cursor_uuid},
+            scratchbird::engine::internal_api::EngineUuid{result_page_descriptor.result_set_handle_uuid},
+            scratchbird::engine::internal_api::EngineUuid{result_page_descriptor.row_descriptor_uuid},
+            scratchbird::engine::internal_api::EngineUuid{result_page_descriptor.snapshot_uuid},
+            scratchbird::engine::internal_api::EngineUuid{result_page_descriptor.statement_receipt_uuid},
+            scratchbird::engine::internal_api::EngineUuid{result_page_descriptor.redaction_profile_uuid},
+            scratchbird::engine::internal_api::EngineUuid{result_page_descriptor.policy_snapshot_uuid},
+            scratchbird::engine::internal_api::EngineUuid{result_page_descriptor.resource_budget_uuid}};
+        scratchbird::engine::internal_api::EngineUuid continuation_uuid;
+        scratchbird::engine::internal_api::EngineUuid publication_barrier_uuid;
+        scratchbird::engine::internal_api::EngineUuid result_evidence_uuid;
         if (!generate_distinct_statement_context_uuid(
-                &issued, &continuation_uuid_text) ||
+                &issued, &continuation_uuid) ||
             !generate_distinct_statement_context_uuid(
-                &issued, &publication_barrier_uuid_text) ||
+                &issued, &publication_barrier_uuid) ||
             !generate_distinct_statement_context_uuid(
-                &issued, &result_evidence_uuid_text)) {
+                &issued, &result_evidence_uuid)) {
           return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4099,
                              "ENGINE.STATEMENT_CONTEXT.IDENTITY_UNAVAILABLE",
                              "sblr.result_page.identity_unavailable");
@@ -27087,7 +25520,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
             result_page_descriptor.first_row_offset + returned_rows;
         if (!terminal) {
           page_result.next_continuation_uuid =
-              TextToUuid(continuation_uuid_text);
+              continuation_uuid.bytes;
           page_result.next_continuation_generation =
               result_page_descriptor.continuation_generation + 1;
         }
@@ -27098,9 +25531,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
         page_result.executor_availability_generation =
             result_page_descriptor.executor_availability_generation;
         page_result.publication_barrier_uuid =
-            TextToUuid(publication_barrier_uuid_text);
+            publication_barrier_uuid.bytes;
         page_result.result_evidence_uuid =
-            TextToUuid(result_evidence_uuid_text);
+            result_evidence_uuid.bytes;
         result_page_result_bytes =
             scratchbird::engine::sblr::EncodeSblrResultPageResultV1(
                 page_result);
@@ -27278,18 +25711,19 @@ sb_engine_status_t DispatchStatementContextReceipt(
                              "sblr.query_explain.executor_evidence_unavailable");
         }
 
-        std::unordered_set<std::string> issued{
-            CanonicalUuidText(query_explain_descriptor.explain_uuid),
-            CanonicalUuidText(query_explain_descriptor.statement_receipt_uuid),
-            CanonicalUuidText(query_explain_descriptor.query_snapshot_uuid),
-            CanonicalUuidText(query_explain_descriptor.catalog_snapshot_uuid),
-            CanonicalUuidText(query_explain_descriptor.security_context_uuid),
-            CanonicalUuidText(query_explain_descriptor.policy_snapshot_uuid),
-            CanonicalUuidText(query_explain_descriptor.plan_policy_uuid),
-            CanonicalUuidText(query_explain_descriptor.resource_budget_uuid),
-            CanonicalUuidText(query_explain_descriptor.redaction_profile_uuid),
-            CanonicalUuidText(query_explain_descriptor.parser_package_uuid),
-            CanonicalUuidText(query_explain_descriptor.language_profile_uuid)};
+        std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                           scratchbird::engine::internal_api::EngineUuidHash> issued{
+            scratchbird::engine::internal_api::EngineUuid{query_explain_descriptor.explain_uuid},
+            scratchbird::engine::internal_api::EngineUuid{query_explain_descriptor.statement_receipt_uuid},
+            scratchbird::engine::internal_api::EngineUuid{query_explain_descriptor.query_snapshot_uuid},
+            scratchbird::engine::internal_api::EngineUuid{query_explain_descriptor.catalog_snapshot_uuid},
+            scratchbird::engine::internal_api::EngineUuid{query_explain_descriptor.security_context_uuid},
+            scratchbird::engine::internal_api::EngineUuid{query_explain_descriptor.policy_snapshot_uuid},
+            scratchbird::engine::internal_api::EngineUuid{query_explain_descriptor.plan_policy_uuid},
+            scratchbird::engine::internal_api::EngineUuid{query_explain_descriptor.resource_budget_uuid},
+            scratchbird::engine::internal_api::EngineUuid{query_explain_descriptor.redaction_profile_uuid},
+            scratchbird::engine::internal_api::EngineUuid{query_explain_descriptor.parser_package_uuid},
+            scratchbird::engine::internal_api::EngineUuid{query_explain_descriptor.language_profile_uuid}};
         scratchbird::engine::internal_api::EngineUuid plan_uuid;
         scratchbird::engine::internal_api::EngineUuid plan_descriptor_uuid;
         scratchbird::engine::internal_api::EngineUuid deterministic_snapshot_uuid;
@@ -27653,9 +26087,9 @@ sb_engine_status_t DispatchStatementContextReceipt(
           // the resolved schema namespace, matching the catalog-epoch
           // visibility projection.  Keep the substitution engine-owned and
           // schema-specific; no parser-supplied namespace participates.
-          std::string resolved_namespace_uuid =
+          scratchbird::engine::internal_api::EngineUuid resolved_namespace_uuid =
               resolved.bound_object_identity.resolved_schema_uuid;
-          if (resolved_namespace_uuid.empty() &&
+          if (resolved_namespace_uuid.is_nil() &&
               resolved.primary_object.object_kind == "schema") {
             resolved_namespace_uuid =
                 resolved.primary_object.uuid;
@@ -27719,17 +26153,18 @@ sb_engine_status_t DispatchStatementContextReceipt(
               name_resolve_descriptor.object_class;
         }
 
-        std::unordered_set<std::string> issued{
-            CanonicalUuidText(name_resolve_descriptor.resolution_uuid),
+        std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                           scratchbird::engine::internal_api::EngineUuidHash> issued{
+            scratchbird::engine::internal_api::EngineUuid{name_resolve_descriptor.resolution_uuid},
             view.receipt_uuid,
             view.statement_metadata_snapshot_uuid,
             view.security_context_uuid,
             name_resolve_authority->redaction_profile_uuid};
         if (result_carrier.status == 1) {
           issued.insert(
-              CanonicalUuidText(result_carrier.resolved_object_uuid));
+              scratchbird::engine::internal_api::EngineUuid{result_carrier.resolved_object_uuid});
           issued.insert(
-              CanonicalUuidText(result_carrier.resolved_namespace_uuid));
+              scratchbird::engine::internal_api::EngineUuid{result_carrier.resolved_namespace_uuid});
         }
         scratchbird::engine::internal_api::EngineUuid publication_evidence_uuid;
         if (!generate_distinct_statement_context_uuid(
@@ -27893,13 +26328,14 @@ sb_engine_status_t DispatchStatementContextReceipt(
                              "PROCESS.CANCELLED",
                              "sblr.parse_text.cancelled_before_publication");
         }
-        std::unordered_set<std::string> issued{
-            CanonicalUuidText(parse_text_descriptor.parse_uuid),
-            CanonicalUuidText(parse_text_descriptor.statement_receipt_uuid),
-            CanonicalUuidText(parse_text_descriptor.language_profile_uuid),
-            CanonicalUuidText(parse_text_descriptor.parser_package_uuid),
-            CanonicalUuidText(parse_text_descriptor.catalog_snapshot_uuid),
-            CanonicalUuidText(parse_text_descriptor.security_context_uuid)};
+        std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                           scratchbird::engine::internal_api::EngineUuidHash> issued{
+            scratchbird::engine::internal_api::EngineUuid{parse_text_descriptor.parse_uuid},
+            scratchbird::engine::internal_api::EngineUuid{parse_text_descriptor.statement_receipt_uuid},
+            scratchbird::engine::internal_api::EngineUuid{parse_text_descriptor.language_profile_uuid},
+            scratchbird::engine::internal_api::EngineUuid{parse_text_descriptor.parser_package_uuid},
+            scratchbird::engine::internal_api::EngineUuid{parse_text_descriptor.catalog_snapshot_uuid},
+            scratchbird::engine::internal_api::EngineUuid{parse_text_descriptor.security_context_uuid}};
         scratchbird::engine::internal_api::EngineUuid parse_evidence_uuid;
         if (!generate_distinct_statement_context_uuid(
                 &issued, &parse_evidence_uuid)) {
@@ -28178,19 +26614,15 @@ sb_engine_status_t DispatchStatementContextReceipt(
           }
         }
 
-        std::unordered_set<std::string> issued{
-            CanonicalUuidText(catalog_epoch_check_descriptor.check_uuid),
-            CanonicalUuidText(
-                catalog_epoch_check_descriptor.statement_receipt_uuid),
-            CanonicalUuidText(catalog_epoch_check_descriptor.database_uuid),
-            CanonicalUuidText(
-                catalog_epoch_check_descriptor.schema_tree_uuid),
-            CanonicalUuidText(
-                catalog_epoch_check_descriptor.security_context_uuid),
-            CanonicalUuidText(
-                catalog_epoch_check_descriptor.policy_snapshot_uuid),
-            CanonicalUuidText(
-                catalog_epoch_check_descriptor.catalog_snapshot_uuid),
+        std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                           scratchbird::engine::internal_api::EngineUuidHash> issued{
+            scratchbird::engine::internal_api::EngineUuid{catalog_epoch_check_descriptor.check_uuid},
+            scratchbird::engine::internal_api::EngineUuid{catalog_epoch_check_descriptor.statement_receipt_uuid},
+            scratchbird::engine::internal_api::EngineUuid{catalog_epoch_check_descriptor.database_uuid},
+            scratchbird::engine::internal_api::EngineUuid{catalog_epoch_check_descriptor.schema_tree_uuid},
+            scratchbird::engine::internal_api::EngineUuid{catalog_epoch_check_descriptor.security_context_uuid},
+            scratchbird::engine::internal_api::EngineUuid{catalog_epoch_check_descriptor.policy_snapshot_uuid},
+            scratchbird::engine::internal_api::EngineUuid{catalog_epoch_check_descriptor.catalog_snapshot_uuid},
             catalog_epoch_check_authority->redaction_profile_uuid};
         scratchbird::engine::internal_api::EngineUuid publication_evidence_uuid;
         if (!generate_distinct_statement_context_uuid(
@@ -28210,8 +26642,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
             catalog_epoch_check_descriptor.security_epoch;
         result_carrier.observed_resource_epoch =
             catalog_epoch_check_descriptor.resource_epoch;
-        result_carrier.redaction_profile_uuid = TextToUuid(
-            catalog_epoch_check_authority->redaction_profile_uuid);
+        result_carrier.redaction_profile_uuid = catalog_epoch_check_authority->redaction_profile_uuid.bytes;
         result_carrier.publication_evidence_uuid =
             publication_evidence_uuid.bytes;
         result_carrier.executor_availability_generation =
@@ -28289,8 +26720,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
               catalog_epoch_check_descriptor.security_epoch ||
           replay.observed_resource_epoch !=
               catalog_epoch_check_descriptor.resource_epoch ||
-          replay.redaction_profile_uuid != TextToUuid(
-              catalog_epoch_check_authority->redaction_profile_uuid) ||
+          replay.redaction_profile_uuid != catalog_epoch_check_authority->redaction_profile_uuid.bytes ||
           replay.executor_availability_generation !=
               catalog_epoch_check_descriptor
                   .executor_availability_generation ||
@@ -28462,10 +26892,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
                   view.owning_local_transaction_id ||
               !current_snapshot.snapshot_vector.owning_transaction_uuid
                    .valid() ||
-              scratchbird::core::uuid::UuidToString(
-                  current_snapshot.snapshot_vector
-                      .owning_transaction_uuid.value) !=
-                  view.owning_transaction_uuid ||
+              current_snapshot.snapshot_vector.owning_transaction_uuid.value != view.owning_transaction_uuid ||
               current_snapshot.snapshot_vector
                       .visible_committed_high_watermark !=
                   receipt->snapshot_vector
@@ -28491,12 +26918,8 @@ sb_engine_status_t DispatchStatementContextReceipt(
         if (!inspected.ok() ||
             !inspected.state.database_uuid.valid() ||
             !inspected.state.filespace_uuid.valid() ||
-            scratchbird::core::uuid::UuidToString(
-                inspected.state.database_uuid.value) !=
-                CanonicalUuidText(database_attach_descriptor.database_uuid) ||
-            scratchbird::core::uuid::UuidToString(
-                inspected.state.filespace_uuid.value) !=
-                CanonicalUuidText(database_attach_descriptor.storage_uuid) ||
+            inspected.state.database_uuid.value.bytes != database_attach_descriptor.database_uuid ||
+            inspected.state.filespace_uuid.value.bytes != database_attach_descriptor.storage_uuid ||
             (database_attach_descriptor.mode == 2 &&
              (journal_context.read_only_mode ||
               inspected.state.startup_state.write_admission_fenced))) {
@@ -28515,20 +26938,17 @@ sb_engine_status_t DispatchStatementContextReceipt(
               "sblr.database_attach.cancelled_before_publication");
         }
 
-        std::unordered_set<std::string> issued{
-            CanonicalUuidText(database_attach_descriptor.attach_uuid),
-            CanonicalUuidText(database_attach_descriptor.database_uuid),
-            CanonicalUuidText(database_attach_descriptor.alias_uuid),
-            CanonicalUuidText(database_attach_descriptor.storage_uuid),
-            CanonicalUuidText(
-                database_attach_descriptor.statement_receipt_uuid),
-            CanonicalUuidText(
-                database_attach_descriptor.catalog_snapshot_uuid),
-            CanonicalUuidText(
-                database_attach_descriptor.security_context_uuid),
-            CanonicalUuidText(
-                database_attach_descriptor.policy_snapshot_uuid),
-            CanonicalUuidText(database_attach_descriptor.transaction_uuid)};
+        std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                           scratchbird::engine::internal_api::EngineUuidHash> issued{
+            scratchbird::engine::internal_api::EngineUuid{database_attach_descriptor.attach_uuid},
+            scratchbird::engine::internal_api::EngineUuid{database_attach_descriptor.database_uuid},
+            scratchbird::engine::internal_api::EngineUuid{database_attach_descriptor.alias_uuid},
+            scratchbird::engine::internal_api::EngineUuid{database_attach_descriptor.storage_uuid},
+            scratchbird::engine::internal_api::EngineUuid{database_attach_descriptor.statement_receipt_uuid},
+            scratchbird::engine::internal_api::EngineUuid{database_attach_descriptor.catalog_snapshot_uuid},
+            scratchbird::engine::internal_api::EngineUuid{database_attach_descriptor.security_context_uuid},
+            scratchbird::engine::internal_api::EngineUuid{database_attach_descriptor.policy_snapshot_uuid},
+            scratchbird::engine::internal_api::EngineUuid{database_attach_descriptor.transaction_uuid}};
         scratchbird::engine::internal_api::EngineUuid attachment_evidence_uuid;
         if (!generate_distinct_statement_context_uuid(
                 &issued, &attachment_evidence_uuid)) {
@@ -28885,9 +27305,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
             exact_transaction.entry.state !=
                 scratchbird::transaction::mga::TransactionState::active ||
             !exact_transaction.entry.identity.transaction_uuid.valid() ||
-            scratchbird::core::uuid::UuidToString(
-                exact_transaction.entry.identity.transaction_uuid.value) !=
-                context.transaction_uuid) {
+            exact_transaction.entry.identity.transaction_uuid.value != context.transaction_uuid) {
           return fail_result(
               SB_ENGINE_STATUS_CONFLICT, out_result, 4106,
               "MGA.TRANSACTION_INVALID",
@@ -29162,8 +27580,7 @@ sb_engine_status_t DispatchStatementContextReceipt(
           decoded_authority.argument_vector_sha256 ==
               procedure_invoke_authority->argument_vector_sha256 &&
           decoded_authority.output_descriptor_vector_uuid ==
-              TextToUuid(
-                  procedure_invoke_authority->output_descriptor_vector_uuid) &&
+              procedure_invoke_authority->output_descriptor_vector_uuid.bytes &&
           decoded_authority.output_descriptor_vector_generation ==
               procedure_invoke_authority
                   ->output_descriptor_vector_generation &&
@@ -29389,31 +27806,26 @@ sb_engine_status_t DispatchStatementContextReceipt(
           security_alter_policy_descriptor.database_uuid !=
               security_alter_policy_authority->database_uuid.bytes ||
           security_alter_policy_descriptor.owning_transaction_uuid !=
-              TextToUuid(
-                  security_alter_policy_authority->owning_transaction_uuid) ||
+              security_alter_policy_authority->owning_transaction_uuid.bytes ||
           security_alter_policy_descriptor.owning_local_transaction_id !=
               security_alter_policy_authority
                   ->owning_local_transaction_id ||
           security_alter_policy_descriptor.statement_snapshot_uuid !=
-              TextToUuid(
-                  security_alter_policy_authority->statement_snapshot_uuid) ||
+              security_alter_policy_authority->statement_snapshot_uuid.bytes ||
           security_alter_policy_descriptor.catalog_epoch_uuid !=
               security_alter_policy_authority->catalog_epoch_uuid.bytes ||
           security_alter_policy_descriptor.catalog_generation !=
               security_alter_policy_authority->catalog_generation ||
           security_alter_policy_descriptor.security_context_uuid !=
-              TextToUuid(
-                  security_alter_policy_authority->security_context_uuid) ||
+              security_alter_policy_authority->security_context_uuid.bytes ||
           security_alter_policy_descriptor.security_generation !=
               security_alter_policy_authority->security_generation ||
           security_alter_policy_descriptor.policy_snapshot_uuid !=
-              TextToUuid(
-                  security_alter_policy_authority->policy_snapshot_uuid) ||
+              security_alter_policy_authority->policy_snapshot_uuid.bytes ||
           security_alter_policy_descriptor.policy_generation !=
               security_alter_policy_authority->policy_snapshot_generation ||
           security_alter_policy_descriptor.resource_grant_uuid !=
-              TextToUuid(
-                  security_alter_policy_authority->resource_grant_uuid) ||
+              security_alter_policy_authority->resource_grant_uuid.bytes ||
           security_alter_policy_descriptor.resource_generation !=
               security_alter_policy_authority->resource_generation ||
           security_alter_policy_descriptor.principal_uuid !=
@@ -29643,8 +28055,7 @@ if(ddl_drop_view_root){std::string detail;if(member.operands.size()!=1||member.o
           ddl_create_trigger_descriptor.target_relation_generation ==
               ddl_create_trigger_authority->target_relation_generation &&
           ddl_create_trigger_descriptor.target_relation_descriptor_uuid ==
-              TextToUuid(
-                  ddl_create_trigger_authority->target_relation_descriptor_uuid) &&
+              ddl_create_trigger_authority->target_relation_descriptor_uuid.bytes &&
           ddl_create_trigger_descriptor.target_relation_descriptor_generation ==
               ddl_create_trigger_authority
                   ->target_relation_descriptor_generation &&
@@ -29796,8 +28207,8 @@ if(ddl_drop_view_root){std::string detail;if(member.operands.size()!=1||member.o
           ddl_alter_trigger_descriptor.target_relation_generation ==
               ddl_alter_trigger_authority->target_relation_generation &&
           ddl_alter_trigger_descriptor.target_relation_descriptor_uuid ==
-              TextToUuid(ddl_alter_trigger_authority
-                             ->target_relation_descriptor_uuid) &&
+              ddl_alter_trigger_authority
+                             ->target_relation_descriptor_uuid.bytes &&
           ddl_alter_trigger_descriptor.target_relation_descriptor_generation ==
               ddl_alter_trigger_authority
                   ->target_relation_descriptor_generation &&
@@ -29806,20 +28217,20 @@ if(ddl_drop_view_root){std::string detail;if(member.operands.size()!=1||member.o
           ddl_alter_trigger_descriptor.schema_generation ==
               ddl_alter_trigger_authority->schema_generation &&
           ddl_alter_trigger_descriptor.owning_transaction_uuid ==
-              TextToUuid(ddl_alter_trigger_authority
-                             ->owning_transaction_uuid) &&
+              ddl_alter_trigger_authority
+                             ->owning_transaction_uuid.bytes &&
           ddl_alter_trigger_descriptor.owning_local_transaction_id ==
               ddl_alter_trigger_authority->owning_local_transaction_id &&
           ddl_alter_trigger_descriptor.statement_snapshot_uuid ==
-              TextToUuid(ddl_alter_trigger_authority
-                             ->statement_snapshot_uuid) &&
+              ddl_alter_trigger_authority
+                             ->statement_snapshot_uuid.bytes &&
           ddl_alter_trigger_descriptor.catalog_epoch_uuid ==
               ddl_alter_trigger_authority->catalog_epoch_uuid.bytes &&
           ddl_alter_trigger_descriptor.catalog_generation ==
               ddl_alter_trigger_authority->catalog_generation &&
           ddl_alter_trigger_descriptor.security_context_uuid ==
-              TextToUuid(ddl_alter_trigger_authority
-                             ->security_context_uuid) &&
+              ddl_alter_trigger_authority
+                             ->security_context_uuid.bytes &&
           ddl_alter_trigger_descriptor.security_epoch ==
               ddl_alter_trigger_authority->security_epoch &&
           ddl_alter_trigger_descriptor.policy_snapshot_uuid ==
@@ -29944,8 +28355,8 @@ if(ddl_drop_view_root){std::string detail;if(member.operands.size()!=1||member.o
           ddl_drop_trigger_descriptor.target_relation_generation ==
               ddl_drop_trigger_authority->target_relation_generation &&
           ddl_drop_trigger_descriptor.target_relation_descriptor_uuid ==
-              TextToUuid(ddl_drop_trigger_authority
-                             ->target_relation_descriptor_uuid) &&
+              ddl_drop_trigger_authority
+                             ->target_relation_descriptor_uuid.bytes &&
           ddl_drop_trigger_descriptor.target_relation_descriptor_generation ==
               ddl_drop_trigger_authority
                   ->target_relation_descriptor_generation &&
@@ -29954,20 +28365,20 @@ if(ddl_drop_view_root){std::string detail;if(member.operands.size()!=1||member.o
           ddl_drop_trigger_descriptor.schema_generation ==
               ddl_drop_trigger_authority->schema_generation &&
           ddl_drop_trigger_descriptor.owning_transaction_uuid ==
-              TextToUuid(ddl_drop_trigger_authority
-                             ->owning_transaction_uuid) &&
+              ddl_drop_trigger_authority
+                             ->owning_transaction_uuid.bytes &&
           ddl_drop_trigger_descriptor.owning_local_transaction_id ==
               ddl_drop_trigger_authority->owning_local_transaction_id &&
           ddl_drop_trigger_descriptor.statement_snapshot_uuid ==
-              TextToUuid(ddl_drop_trigger_authority
-                             ->statement_snapshot_uuid) &&
+              ddl_drop_trigger_authority
+                             ->statement_snapshot_uuid.bytes &&
           ddl_drop_trigger_descriptor.catalog_epoch_uuid ==
               ddl_drop_trigger_authority->catalog_epoch_uuid.bytes &&
           ddl_drop_trigger_descriptor.catalog_generation ==
               ddl_drop_trigger_authority->catalog_generation &&
           ddl_drop_trigger_descriptor.security_context_uuid ==
-              TextToUuid(ddl_drop_trigger_authority
-                             ->security_context_uuid) &&
+              ddl_drop_trigger_authority
+                             ->security_context_uuid.bytes &&
           ddl_drop_trigger_descriptor.security_epoch ==
               ddl_drop_trigger_authority->security_epoch &&
           ddl_drop_trigger_descriptor.policy_snapshot_uuid ==
@@ -30106,20 +28517,17 @@ if(ddl_drop_view_root){std::string detail;if(member.operands.size()!=1||member.o
           decoded_authority.schema_generation ==
               ddl_create_procedure_authority->schema_generation &&
           decoded_authority.owning_transaction_uuid ==
-              TextToUuid(
-                  ddl_create_procedure_authority->owning_transaction_uuid) &&
+              ddl_create_procedure_authority->owning_transaction_uuid.bytes &&
           decoded_authority.owning_local_transaction_id ==
               ddl_create_procedure_authority->owning_local_transaction_id &&
           decoded_authority.statement_snapshot_uuid ==
-              TextToUuid(
-                  ddl_create_procedure_authority->statement_snapshot_uuid) &&
+              ddl_create_procedure_authority->statement_snapshot_uuid.bytes &&
           decoded_authority.catalog_epoch_uuid ==
               ddl_create_procedure_authority->catalog_epoch_uuid.bytes &&
           decoded_authority.catalog_generation ==
               ddl_create_procedure_authority->catalog_generation &&
           decoded_authority.security_context_uuid ==
-              TextToUuid(
-                  ddl_create_procedure_authority->security_context_uuid) &&
+              ddl_create_procedure_authority->security_context_uuid.bytes &&
           decoded_authority.security_epoch ==
               ddl_create_procedure_authority->security_epoch &&
           decoded_authority.policy_snapshot_uuid ==
@@ -30259,20 +28667,17 @@ if(ddl_drop_srs_root){std::string detail;if(member.operands.size()!=1||member.op
           ddl_create_schema_descriptor.database_uuid ==
               ddl_create_schema_authority->database_uuid.bytes &&
           ddl_create_schema_descriptor.owning_transaction_uuid ==
-              TextToUuid(
-                  ddl_create_schema_authority->owning_transaction_uuid) &&
+              ddl_create_schema_authority->owning_transaction_uuid.bytes &&
           ddl_create_schema_descriptor.owning_local_transaction_id ==
               ddl_create_schema_authority->owning_local_transaction_id &&
           ddl_create_schema_descriptor.statement_snapshot_uuid ==
-              TextToUuid(
-                  ddl_create_schema_authority->statement_snapshot_uuid) &&
+              ddl_create_schema_authority->statement_snapshot_uuid.bytes &&
           ddl_create_schema_descriptor.catalog_epoch_uuid ==
               ddl_create_schema_authority->catalog_epoch_uuid.bytes &&
           ddl_create_schema_descriptor.catalog_generation ==
               ddl_create_schema_authority->catalog_generation &&
           ddl_create_schema_descriptor.security_context_uuid ==
-              TextToUuid(
-                  ddl_create_schema_authority->security_context_uuid) &&
+              ddl_create_schema_authority->security_context_uuid.bytes &&
           ddl_create_schema_descriptor.security_epoch ==
               ddl_create_schema_authority->security_epoch &&
           ddl_create_schema_descriptor.policy_snapshot_uuid ==
@@ -30700,6 +29105,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
           {std::move(dispatch_context), std::move(member),
            std::move(member_request), admitted_parameter_values,
            contextual_text_activation, plan_import_rows_root});
+      if (dispatched.resource_exhausted) return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
     }
     if (ddl_refresh_materialized_view_root) {
       dispatched.accepted = true;
@@ -30975,7 +29381,8 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
               "PROCESS.CANCELLED",
               "sblr.catalog_introspect.cancelled_before_result_publication");
         }
-        std::unordered_set<std::string> issued{
+        std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                           scratchbird::engine::internal_api::EngineUuidHash> issued{
             view.receipt_uuid,
             view.statement_uuid,
             view.statement_snapshot_uuid,
@@ -30996,8 +29403,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
         scratchbird::engine::sblr::SblrCatalogIntrospectResultV1 carrier;
         carrier.request_uuid =
             catalog_introspect_authority->request_uuid.bytes;
-        carrier.readable_projection_uuid = TextToUuid(
-            catalog_introspect_authority->readable_projection_uuid);
+        carrier.readable_projection_uuid = catalog_introspect_authority->readable_projection_uuid.bytes;
         carrier.row_descriptor_uuid =
             catalog_introspect_authority->row_descriptor_uuid.bytes;
         carrier.result_set_uuid =
@@ -31041,8 +29447,8 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
           decoded_result.row_descriptor_uuid !=
               catalog_introspect_authority->row_descriptor_uuid.bytes ||
           decoded_result.statement_snapshot_uuid !=
-              TextToUuid(catalog_introspect_authority
-                             ->statement_snapshot_uuid) ||
+              catalog_introspect_authority
+                             ->statement_snapshot_uuid.bytes ||
           decoded_result.object_uuid !=
               catalog_introspect_descriptor.object_uuid ||
           decoded_result.row_count !=
@@ -31183,6 +29589,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       dispatched = scratchbird::engine::sblr::DispatchSblrOperation(
           {context, member, std::move(api_request), admitted_parameter_values,
            contextual_text_activation});
+      if (dispatched.resource_exhausted) return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
     }
     if (dispatched.accepted && dispatched.api_result.ok) {
       WriteEngineAbiPhaseTrace(
@@ -31234,6 +29641,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
         {std::move(dispatch_context), std::move(dispatch_operation),
          std::move(api_request),
          admitted_parameter_values, contextual_text_activation});
+    if (dispatched.resource_exhausted) return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
   }
   if (ddl_create_aggregate_root && !dispatched.accepted) {
     dispatched.accepted = true;
@@ -31413,28 +29821,26 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
         }
       }
     }
-    std::unordered_set<std::string> result_identities{
+    std::unordered_set<scratchbird::engine::internal_api::EngineUuid,
+                       scratchbird::engine::internal_api::EngineUuidHash> result_identities{
         view.statement_snapshot_uuid};
     scratchbird::engine::internal_api::EngineUuid execution_uuid;
     scratchbird::engine::internal_api::EngineUuid result_set_uuid;
     scratchbird::engine::internal_api::EngineUuid row_descriptor_uuid;
     if (stmt_execute_root) {
       execution_uuid =
-          CanonicalUuidText(stmt_execute_descriptor.execution_uuid);
+          scratchbird::engine::internal_api::EngineUuid{stmt_execute_descriptor.execution_uuid};
       result_set_uuid = stmt_execute_authority == nullptr
-                            ? std::string{}
+                            ? scratchbird::engine::internal_api::EngineUuid{}
                             : stmt_execute_authority->result_handle_uuid;
-      row_descriptor_uuid = CanonicalUuidText(
-          stmt_execute_descriptor.result_descriptor_uuid);
+      row_descriptor_uuid.bytes = stmt_execute_descriptor.result_descriptor_uuid;
     } else if (stmt_execute_direct_root) {
-      execution_uuid = CanonicalUuidText(
-          stmt_execute_direct_descriptor.execution_uuid);
+      execution_uuid.bytes = stmt_execute_direct_descriptor.execution_uuid;
       result_set_uuid = stmt_execute_direct_authority == nullptr
-                            ? std::string{}
+                            ? scratchbird::engine::internal_api::EngineUuid{}
                             : stmt_execute_direct_authority
                                   ->result_handle_uuid;
-      row_descriptor_uuid = CanonicalUuidText(
-          stmt_execute_direct_descriptor.result_descriptor_uuid);
+      row_descriptor_uuid.bytes = stmt_execute_direct_descriptor.result_descriptor_uuid;
     }
     if ((!stmt_execute_root && !stmt_execute_direct_root &&
          (!generate_distinct_statement_context_uuid(&result_identities,
@@ -31554,10 +29960,10 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
     durable_execution_input.statement_receipt_uuid =
         execute_result.statement_receipt_uuid;
     durable_execution_input.owning_transaction_uuid =
-        view.owning_transaction_uuid.empty()
+        view.owning_transaction_uuid.is_nil()
             ? std::array<std::uint8_t, 16>{}
             : view.owning_transaction_uuid.bytes;
-    durable_execution_input.final = view.owning_transaction_uuid.empty();
+    durable_execution_input.final = view.owning_transaction_uuid.is_nil();
     durable_execution_input.canonical_execute_descriptor_bytes =
         stmt_execute_authority->canonical_descriptor_bytes;
     durable_execution_input.canonical_terminal_result_bytes =
@@ -31669,8 +30075,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
           stmt_execute_direct_descriptor.executor_availability_generation;
       direct_result.status = 1;
       direct_result.publication_barrier = 1;
-      direct_result.operation_evidence_uuid = TextToUuid(
-          stmt_execute_direct_authority->operation_evidence_uuid);
+      direct_result.operation_evidence_uuid = stmt_execute_direct_authority->operation_evidence_uuid.bytes;
       stmt_execute_direct_result_bytes = scratchbird::engine::sblr::
           EncodeSblrStmtExecuteDirectResultV1(direct_result);
       if (stmt_execute_direct_result_bytes.empty()) {
@@ -31815,24 +30220,16 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
        !valid_engine_identity(begun.transaction_uuid))
       return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4065,
           "MGA.TRANSACTION.START_FAILED","sblr.txn_begin.mga_publication_failed");
-    const auto uuid_bytes = [](const std::string& text) {
-      std::array<std::uint8_t, 16> bytes{};
-      const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-      if (parsed.ok())
-        std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-                  bytes.begin());
-      return bytes;
-    };
     scratchbird::engine::sblr::SblrTransactionHandleV1 handle;
-    handle.transaction_uuid = uuid_bytes(begun.transaction_uuid);
+    handle.transaction_uuid = begun.transaction_uuid.bytes;
     handle.local_transaction_id = begun.local_transaction_id;
-    handle.snapshot_uuid = uuid_bytes(snapshot_uuid);
+    handle.snapshot_uuid = snapshot_uuid.bytes;
     handle.isolation_profile_uuid =
-        uuid_bytes(view.txn_begin_isolation_profile_uuid);
+        view.txn_begin_isolation_profile_uuid.bytes;
     handle.isolation_profile_generation =
         view.txn_begin_isolation_profile_generation;
     handle.transaction_policy_snapshot_uuid =
-        uuid_bytes(view.txn_begin_policy_snapshot_uuid);
+        view.txn_begin_policy_snapshot_uuid.bytes;
     handle.transaction_policy_generation = view.txn_begin_policy_generation;
     handle.read_mode = view.txn_begin_read_mode;
     handle.authority_scope = view.txn_begin_authority_scope;
@@ -31911,14 +30308,12 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
     commit_result.local_transaction_id = commit_options.local_transaction_id;
     commit_result.commit_sequence =
         view.publication_inventory_next_local_transaction_id;
-    const auto policy = scratchbird::core::uuid::ParseUuid(
-        view.txn_begin_policy_snapshot_uuid);
-    if (!policy.ok())
+    if (!valid_engine_identity(view.txn_begin_policy_snapshot_uuid))
       return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4065,
                          "MGA.TRANSACTION.STALE",
                          "sblr.txn_commit.policy_stale_before_finality");
-    std::copy(policy.value.bytes.begin(), policy.value.bytes.end(),
-              commit_result.commit_policy_snapshot_uuid.begin());
+    commit_result.commit_policy_snapshot_uuid =
+        view.txn_begin_policy_snapshot_uuid.bytes;
     commit_result.commit_policy_generation = view.txn_begin_policy_generation;
     commit_result.authority_scope = commit_options.authority_scope;
     commit_result.executor_availability_generation =
@@ -32035,15 +30430,13 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
     rollback_result.local_transaction_id = rollback_options.local_transaction_id;
     rollback_result.rollback_sequence =
         view.publication_inventory_next_local_transaction_id;
-    const auto policy = scratchbird::core::uuid::ParseUuid(
-        view.txn_begin_policy_snapshot_uuid);
-    if (!policy.ok()) {
+    if (!valid_engine_identity(view.txn_begin_policy_snapshot_uuid)) {
       return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4065,
                          "MGA.TRANSACTION.STALE",
                          "sblr.txn_rollback.policy_stale_before_finality");
     }
-    std::copy(policy.value.bytes.begin(), policy.value.bytes.end(),
-              rollback_result.rollback_policy_snapshot_uuid.begin());
+    rollback_result.rollback_policy_snapshot_uuid =
+        view.txn_begin_policy_snapshot_uuid.bytes;
     rollback_result.rollback_policy_generation =
         view.txn_begin_policy_generation;
     rollback_result.authority_scope = rollback_options.authority_scope;
@@ -32350,9 +30743,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       if (!exact_transaction.ok() ||
           !statement_context_transaction_active(exact_transaction.entry.state) ||
           !exact_transaction.entry.identity.transaction_uuid.valid() ||
-          scratchbird::core::uuid::UuidToString(
-              exact_transaction.entry.identity.transaction_uuid.value) !=
-              execution_context.transaction_uuid) {
+          exact_transaction.entry.identity.transaction_uuid.value != execution_context.transaction_uuid) {
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4085,
                            "MGA.TRANSACTION_INVALID",
                            "sblr.procedure_invoke.transaction_invalid");
@@ -32470,8 +30861,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       };
       const auto invocation_uuid =
           procedure_invoke_authority->invocation_uuid.bytes;
-      const auto output_descriptor_uuid = TextToUuid(
-          procedure_invoke_authority->output_descriptor_vector_uuid);
+      const auto output_descriptor_uuid = procedure_invoke_authority->output_descriptor_vector_uuid.bytes;
       std::copy(invocation_uuid.begin(), invocation_uuid.end(),
                 terminal.body.begin());
       write_u64(16, procedure_invoke_authority->invocation_generation);
@@ -32503,8 +30893,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
                 procedure_invoke_authority->effect_set_sha256.end(),
                 terminal.body.begin() + 208);
       terminal.availability = procedure_invoke_availability_generation;
-      terminal.barrier = TextToUuid(
-          procedure_invoke_authority->publication_barrier_uuid);
+      terminal.barrier = procedure_invoke_authority->publication_barrier_uuid.bytes;
       procedure_invoke_result_bytes =
           scratchbird::engine::sblr::EncodeSblrProcedureInvokeResultV1(
               terminal);
@@ -32524,10 +30913,8 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
     std::string detail;
     const auto invocation_uuid =
         procedure_invoke_authority->invocation_uuid.bytes;
-    const auto output_descriptor_uuid = TextToUuid(
-        procedure_invoke_authority->output_descriptor_vector_uuid);
-    const auto publication_barrier = TextToUuid(
-        procedure_invoke_authority->publication_barrier_uuid);
+    const auto output_descriptor_uuid = procedure_invoke_authority->output_descriptor_vector_uuid.bytes;
+    const auto publication_barrier = procedure_invoke_authority->publication_barrier_uuid.bytes;
     const std::string empty_output_domain =
         "ScratchBird.ProcedureInvokeOutput.Empty.V1";
     const std::vector<std::uint8_t> empty_output_material(
@@ -32695,9 +31082,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
           !statement_context_transaction_active(
               exact_transaction.entry.state) ||
           !exact_transaction.entry.identity.transaction_uuid.valid() ||
-          scratchbird::core::uuid::UuidToString(
-              exact_transaction.entry.identity.transaction_uuid.value) !=
-              execution_context.transaction_uuid) {
+          exact_transaction.entry.identity.transaction_uuid.value != execution_context.transaction_uuid) {
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4210,
                            "MGA.TRANSACTION_INVALID",
                            "sblr.sec_alter_policy.transaction_invalid");
@@ -32796,7 +31181,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
           "ScratchBird.SblrSecAlterPolicyEffect.V1";
       effect_material.insert(effect_material.end(), effect_domain.begin(),
                              effect_domain.end());
-      const auto append_uuid = [&](const std::string& uuid) {
+      const auto append_uuid = [&](const scratchbird::engine::internal_api::EngineUuid& uuid) {
         const auto value = uuid.bytes;
         effect_material.insert(effect_material.end(), value.begin(),
                                value.end());
@@ -32852,8 +31237,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       terminal.effect_evidence = effect_evidence.digest;
       terminal.availability =
           security_alter_policy_availability_generation;
-      terminal.publication_barrier_uuid = TextToUuid(
-          security_alter_policy_authority->publication_barrier_uuid);
+      terminal.publication_barrier_uuid = security_alter_policy_authority->publication_barrier_uuid.bytes;
       terminal.recovery_uuid =
           security_alter_policy_authority->recovery_uuid.bytes;
       security_alter_policy_result_bytes =
@@ -32901,8 +31285,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
         terminal.availability !=
             security_alter_policy_availability_generation ||
         terminal.publication_barrier_uuid !=
-            TextToUuid(
-                security_alter_policy_authority->publication_barrier_uuid) ||
+            security_alter_policy_authority->publication_barrier_uuid.bytes ||
         terminal.recovery_uuid !=
             security_alter_policy_descriptor.recovery_uuid) {
       return fail_result(
@@ -33102,9 +31485,7 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
           !statement_context_transaction_active(
               exact_transaction.entry.state) ||
           !exact_transaction.entry.identity.transaction_uuid.valid() ||
-          scratchbird::core::uuid::UuidToString(
-              exact_transaction.entry.identity.transaction_uuid.value) !=
-              execution_context.transaction_uuid) {
+          exact_transaction.entry.identity.transaction_uuid.value != execution_context.transaction_uuid) {
         return fail_result(
             SB_ENGINE_STATUS_CONFLICT, out_result, 4143,
             "MGA.TRANSACTION_INVALID",
@@ -33666,9 +32047,7 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
       if (!exact_transaction.ok() ||
           !statement_context_transaction_active(exact_transaction.entry.state) ||
           !exact_transaction.entry.identity.transaction_uuid.valid() ||
-          scratchbird::core::uuid::UuidToString(
-              exact_transaction.entry.identity.transaction_uuid.value) !=
-              execution_context.transaction_uuid) {
+          exact_transaction.entry.identity.transaction_uuid.value != execution_context.transaction_uuid) {
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
                            "MGA.TRANSACTION_INVALID",
                            "sblr.ddl_alter_trigger.transaction_invalid");
@@ -33801,8 +32180,7 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
       terminal.descriptor_evidence_sha256 =
           ddl_alter_trigger_descriptor.evidence;
       terminal.availability = ddl_alter_trigger_availability_generation;
-      terminal.publication_barrier = TextToUuid(
-          ddl_alter_trigger_authority->publication_barrier_uuid);
+      terminal.publication_barrier = ddl_alter_trigger_authority->publication_barrier_uuid.bytes;
       alter_trigger_result_bytes = scratchbird::engine::sblr::
           EncodeSblrDdlAlterTriggerResultV1(terminal);
       if (alter_trigger_result_bytes.empty()) {
@@ -33853,8 +32231,7 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
         terminal.availability != ddl_alter_trigger_descriptor.availability ||
         terminal.mutation_uuid !=
             ddl_alter_trigger_authority->mutation_uuid.bytes ||
-        terminal.publication_barrier != TextToUuid(
-            ddl_alter_trigger_authority->publication_barrier_uuid)) {
+        terminal.publication_barrier != ddl_alter_trigger_authority->publication_barrier_uuid.bytes) {
       return fail_result(
           SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
           "MGA.AUTHORITY_MISMATCH",
@@ -33967,9 +32344,7 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
       if (!exact_transaction.ok() ||
           !statement_context_transaction_active(exact_transaction.entry.state) ||
           !exact_transaction.entry.identity.transaction_uuid.valid() ||
-          scratchbird::core::uuid::UuidToString(
-              exact_transaction.entry.identity.transaction_uuid.value) !=
-              execution_context.transaction_uuid) {
+          exact_transaction.entry.identity.transaction_uuid.value != execution_context.transaction_uuid) {
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4128,
                            "MGA.TRANSACTION_INVALID",
                            "sblr.ddl_drop_trigger.transaction_invalid");
@@ -34101,8 +32476,7 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
       terminal.descriptor_evidence_sha256 =
           ddl_drop_trigger_descriptor.evidence;
       terminal.availability = ddl_drop_trigger_availability_generation;
-      terminal.publication_barrier = TextToUuid(
-          ddl_drop_trigger_authority->publication_barrier_uuid);
+      terminal.publication_barrier = ddl_drop_trigger_authority->publication_barrier_uuid.bytes;
       drop_trigger_result_bytes = scratchbird::engine::sblr::
           EncodeSblrDdlDropTriggerResultV1(terminal);
       if (drop_trigger_result_bytes.empty()) {
@@ -34152,8 +32526,7 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
         terminal.availability != ddl_drop_trigger_descriptor.availability ||
         terminal.mutation_uuid !=
             ddl_drop_trigger_authority->mutation_uuid.bytes ||
-        terminal.publication_barrier != TextToUuid(
-            ddl_drop_trigger_authority->publication_barrier_uuid)) {
+        terminal.publication_barrier != ddl_drop_trigger_authority->publication_barrier_uuid.bytes) {
       return fail_result(
           SB_ENGINE_STATUS_CONFLICT, out_result, 4128,
           "MGA.AUTHORITY_MISMATCH",
@@ -34269,9 +32642,7 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
       if (!exact_transaction.ok() ||
           !statement_context_transaction_active(exact_transaction.entry.state) ||
           !exact_transaction.entry.identity.transaction_uuid.valid() ||
-          scratchbird::core::uuid::UuidToString(
-              exact_transaction.entry.identity.transaction_uuid.value) !=
-              execution_context.transaction_uuid) {
+          exact_transaction.entry.identity.transaction_uuid.value != execution_context.transaction_uuid) {
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4127,
                            "MGA.TRANSACTION_INVALID",
                            "sblr.ddl_create_procedure.transaction_invalid");
@@ -34517,10 +32888,8 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
       const auto receipt_uuid = view.receipt_uuid.bytes;
       const auto schema_uuid =
           ddl_create_procedure_authority->schema_uuid.bytes;
-      const auto transaction_uuid = TextToUuid(
-          ddl_create_procedure_authority->owning_transaction_uuid);
-      const auto statement_snapshot_uuid = TextToUuid(
-          ddl_create_procedure_authority->statement_snapshot_uuid);
+      const auto transaction_uuid = ddl_create_procedure_authority->owning_transaction_uuid.bytes;
+      const auto statement_snapshot_uuid = ddl_create_procedure_authority->statement_snapshot_uuid.bytes;
       const auto catalog_row_uuid =
           created.catalog_row_uuid.bytes;
       const auto mutation_uuid =
@@ -34559,8 +32928,7 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
           ddl_create_procedure_authority->descriptor_evidence_sha256.end(),
           terminal.body.begin() + 208);
       terminal.availability = ddl_create_procedure_availability_generation;
-      terminal.publication_barrier = TextToUuid(
-          ddl_create_procedure_authority->publication_barrier_uuid);
+      terminal.publication_barrier = ddl_create_procedure_authority->publication_barrier_uuid.bytes;
       create_procedure_result_bytes = scratchbird::engine::sblr::
           EncodeSblrDdlCreateProcedureResultV1(terminal);
       if (create_procedure_result_bytes.empty()) {
@@ -34589,8 +32957,7 @@ if(ddl_drop_timeseries_value_cache_root){auto c=receipt->engine_context;c.trace_
         ddl_create_procedure_authority->mutation_uuid.bytes;
     const auto body_uuid =
         ddl_create_procedure_authority->body_sblr_uuid.bytes;
-    const auto publication_barrier = TextToUuid(
-        ddl_create_procedure_authority->publication_barrier_uuid);
+    const auto publication_barrier = ddl_create_procedure_authority->publication_barrier_uuid.bytes;
     if (create_procedure_result_bytes.empty() ||
         !scratchbird::engine::sblr::DecodeSblrDdlCreateProcedureResultV1(
             create_procedure_result_bytes.data(),
@@ -34823,9 +33190,7 @@ if(ddl_drop_view_root){auto c=receipt->engine_context;c.trace_tags.push_back("pr
           !statement_context_transaction_active(
               exact_transaction.entry.state) ||
           !exact_transaction.entry.identity.transaction_uuid.valid() ||
-          scratchbird::core::uuid::UuidToString(
-              exact_transaction.entry.identity.transaction_uuid.value) !=
-              execution_context.transaction_uuid) {
+          exact_transaction.entry.identity.transaction_uuid.value != execution_context.transaction_uuid) {
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4125,
                            "MGA.TRANSACTION_INVALID",
                            "sblr.ddl_create_trigger.transaction_invalid");
@@ -35039,8 +33404,7 @@ if(ddl_drop_view_root){auto c=receipt->engine_context;c.trace_tags.push_back("pr
       terminal.descriptor_evidence_sha256 =
           ddl_create_trigger_descriptor.evidence;
       terminal.availability = ddl_create_trigger_availability_generation;
-      terminal.publication_barrier = TextToUuid(
-          ddl_create_trigger_authority->publication_barrier_uuid);
+      terminal.publication_barrier = ddl_create_trigger_authority->publication_barrier_uuid.bytes;
       create_trigger_result_bytes = scratchbird::engine::sblr::
           EncodeSblrDdlCreateTriggerResultV1(terminal);
       if (create_trigger_result_bytes.empty()) {
@@ -35093,8 +33457,7 @@ if(ddl_drop_view_root){auto c=receipt->engine_context;c.trace_tags.push_back("pr
             ddl_create_trigger_descriptor.availability ||
         terminal.mutation_uuid !=
             ddl_create_trigger_authority->mutation_uuid.bytes ||
-        terminal.publication_barrier != TextToUuid(
-            ddl_create_trigger_authority->publication_barrier_uuid)) {
+        terminal.publication_barrier != ddl_create_trigger_authority->publication_barrier_uuid.bytes) {
       return fail_result(
           SB_ENGINE_STATUS_CONFLICT, out_result, 4125,
           "MGA.AUTHORITY_MISMATCH",
@@ -35226,9 +33589,7 @@ if(ddl_drop_srs_root){auto c=receipt->engine_context;c.trace_tags.push_back("pri
           !statement_context_transaction_active(
               exact_transaction.entry.state) ||
           !exact_transaction.entry.identity.transaction_uuid.valid() ||
-          scratchbird::core::uuid::UuidToString(
-              exact_transaction.entry.identity.transaction_uuid.value) !=
-              execution_context.transaction_uuid) {
+          exact_transaction.entry.identity.transaction_uuid.value != execution_context.transaction_uuid) {
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4126,
                            "MGA.TRANSACTION_INVALID",
                            "sblr.ddl_create_schema.transaction_invalid");
@@ -35809,6 +34170,7 @@ bool CopyEngineDiagnosticSnapshot(
     for (const auto& field : diagnostic.fields) {
       copy.fields.push_back({field.key, field.value});
     }
+    if (!IsConsistentEngineDiagnosticSnapshot(copy)) return false;
     *snapshot = std::move(copy);
     return true;
   } catch (const std::bad_alloc&) {

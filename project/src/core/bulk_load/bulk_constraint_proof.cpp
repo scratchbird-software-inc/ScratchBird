@@ -37,7 +37,7 @@ Status ProofErrorStatus() {
 
 void AddEvidence(BulkConstraintProofResult* result,
                  std::string kind,
-                 std::string id) {
+                 BulkConstraintEvidenceValue id) {
   if (result != nullptr) {
     result->evidence.push_back({std::move(kind), std::move(id)});
   }
@@ -77,12 +77,12 @@ bool RefLess(const BulkConstraintProofKeyRef& left,
   if (key_compare != 0) {
     return key_compare < 0;
   }
-  const int row_compare = CompareUnsignedText(left.row_uuid, right.row_uuid);
+  const int row_compare = scratchbird::core::uuid::CompareUuid128(left.row_uuid, right.row_uuid);
   if (row_compare != 0) {
     return row_compare < 0;
   }
   const int version_compare =
-      CompareUnsignedText(left.version_uuid, right.version_uuid);
+      scratchbird::core::uuid::CompareUuid128(left.version_uuid, right.version_uuid);
   if (version_compare != 0) {
     return version_compare < 0;
   }
@@ -99,11 +99,10 @@ bool UnsafeLegacyKey(const BulkConstraintProofKeyRef& ref) {
 }
 
 std::string ConflictDetail(const std::string& reason,
-                           const std::string& constraint_uuid,
-                           const std::string& index_uuid,
                            const std::string& key) {
-  return reason + ":constraint=" + constraint_uuid + ":index=" +
-         index_uuid + ":key=" + key;
+  // Identity references are separately carried as binary evidence. Text
+  // detail contains only the diagnostic reason and the user key value.
+  return reason + ":key=" + key;
 }
 
 BulkConstraintProofResult Refuse(BulkConstraintProofResult result,
@@ -150,6 +149,13 @@ void AddBaseEvidence(const BulkConstraintProofRequest& request,
               std::to_string(request.local_transaction_id));
 }
 
+bool ValidKeyIdentities(const std::vector<BulkConstraintProofKeyRef>& keys) {
+  return std::all_of(keys.begin(), keys.end(), [](const auto& ref) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(ref.row_uuid) &&
+           scratchbird::core::uuid::IsEngineIdentityUuid(ref.version_uuid);
+  });
+}
+
 bool EffectiveKeyRef(const BulkConstraintProofKeyRef& ref,
                      bool nulls_distinct) {
   if (nulls_distinct && ref.null_key) {
@@ -182,8 +188,12 @@ BulkConstraintProofResult ProveUniqueConstraints(
   }
 
   for (const auto& proof : request.unique_proofs) {
-    if (proof.constraint_uuid.empty() || proof.index_uuid.empty() ||
-        proof.table_uuid.empty()) {
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(proof.constraint_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(proof.index_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(proof.table_uuid) ||
+        proof.table_uuid != request.object_uuid.value ||
+        !ValidKeyIdentities(proof.incoming_keys) ||
+        !ValidKeyIdentities(proof.visible_keys)) {
       return Refuse(std::move(result),
                     "SB-BULK-CONSTRAINT-UNIQUE-DESCRIPTOR-INVALID",
                     "core.bulk_load.constraint.unique_descriptor_invalid",
@@ -191,6 +201,7 @@ BulkConstraintProofResult ProveUniqueConstraints(
                     "unique constraint proof requires constraint and index UUIDs");
     }
 
+    AddEvidence(&result, "bulk_unique_proof_index", proof.index_uuid);
     std::vector<BulkConstraintProofKeyRef> incoming;
     const std::vector<BulkConstraintProofKeyRef>* incoming_for_visible_probe =
         &incoming;
@@ -209,8 +220,6 @@ BulkConstraintProofResult ProveUniqueConstraints(
                     "core.bulk_load.constraint.unique_unsafe_key_encoding",
                     "bulk_unique_proof_unsafe_key_encoding",
                     ConflictDetail("bulk_unique_proof_unsafe_key_encoding",
-                                   proof.constraint_uuid,
-                                   proof.index_uuid,
                                    std::move(key)));
     };
 
@@ -225,8 +234,6 @@ BulkConstraintProofResult ProveUniqueConstraints(
                     "core.bulk_load.constraint.unique_duplicate_batch",
                     "bulk_unique_proof_duplicate_in_batch",
                     ConflictDetail("bulk_unique_proof_duplicate_in_batch",
-                                   proof.constraint_uuid,
-                                   proof.index_uuid,
                                    key));
     };
 
@@ -241,8 +248,6 @@ BulkConstraintProofResult ProveUniqueConstraints(
                     "core.bulk_load.constraint.unique_presorted_order_invalid",
                     "bulk_unique_proof_presorted_order_invalid",
                     ConflictDetail("bulk_unique_proof_presorted_order_invalid",
-                                   proof.constraint_uuid,
-                                   proof.index_uuid,
                                    key));
     };
 
@@ -312,8 +317,6 @@ BulkConstraintProofResult ProveUniqueConstraints(
                       "core.bulk_load.constraint.unique_unsafe_key_encoding",
                       "bulk_unique_proof_unsafe_key_encoding",
                       ConflictDetail("bulk_unique_proof_unsafe_key_encoding",
-                                     proof.constraint_uuid,
-                                     proof.index_uuid,
                                      "SBK1"));
       }
       if (EffectiveKeyRef(ref, proof.nulls_distinct)) {
@@ -337,8 +340,6 @@ BulkConstraintProofResult ProveUniqueConstraints(
                     "core.bulk_load.constraint.unique_persisted_conflict",
                     "bulk_unique_proof_persisted_conflict",
                     ConflictDetail("bulk_unique_proof_persisted_conflict",
-                                   proof.constraint_uuid,
-                                   proof.index_uuid,
                                    ref.encoded_key));
     }
   }
@@ -355,9 +356,9 @@ BulkConstraintProofResult ProveUniqueConstraints(
                 "true");
     for (const auto& proof : request.unique_proofs) {
       AddEvidence(&result, "constraint_proof_store",
-                  "unique_preflight:" + proof.index_uuid);
+                  proof.index_uuid);
       AddEvidence(&result, "constraint_proof_hit",
-                  "unique_preflight:" + proof.index_uuid);
+                  proof.index_uuid);
     }
   }
   return result;
@@ -378,7 +379,17 @@ BulkConstraintProofResult ProveForeignKeys(
   }
 
   for (const auto& proof : request.foreign_key_proofs) {
-    if (proof.constraint_uuid.empty() || proof.parent_index_uuid.empty()) {
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(proof.constraint_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(proof.parent_index_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(proof.parent_table_uuid) ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(proof.child_table_uuid) ||
+        proof.child_table_uuid != request.object_uuid.value ||
+        (!proof.batch_parent_keys.empty() &&
+         (!proof.batch_local_parent_allowed ||
+          proof.parent_table_uuid != proof.child_table_uuid)) ||
+        !ValidKeyIdentities(proof.child_keys) ||
+        !ValidKeyIdentities(proof.visible_parent_keys) ||
+        !ValidKeyIdentities(proof.batch_parent_keys)) {
       return Refuse(std::move(result),
                     "SB-BULK-CONSTRAINT-FK-DESCRIPTOR-INVALID",
                     "core.bulk_load.constraint.fk_descriptor_invalid",
@@ -386,6 +397,7 @@ BulkConstraintProofResult ProveForeignKeys(
                     "foreign-key proof requires constraint and parent index UUIDs");
     }
 
+    AddEvidence(&result, "bulk_fk_proof_parent_index", proof.parent_index_uuid);
     std::unordered_set<std::string> parent_keys;
     for (const auto& ref : proof.visible_parent_keys) {
       if (!ref.null_key) {
@@ -419,8 +431,6 @@ BulkConstraintProofResult ProveForeignKeys(
                     "core.bulk_load.constraint.fk_parent_missing",
                     "bulk_fk_proof_parent_missing",
                     ConflictDetail("bulk_fk_proof_parent_missing",
-                                   proof.constraint_uuid,
-                                   proof.parent_index_uuid,
                                    child.encoded_key));
     }
   }
@@ -435,9 +445,9 @@ BulkConstraintProofResult ProveForeignKeys(
                 "visible_or_batch_parent_hash_hit");
     for (const auto& proof : request.foreign_key_proofs) {
       AddEvidence(&result, "constraint_proof_store",
-                  "foreign_key_parent_exists:" + proof.parent_index_uuid);
+                  proof.parent_index_uuid);
       AddEvidence(&result, "constraint_proof_hit",
-                  "foreign_key_parent_exists:" + proof.parent_index_uuid);
+                  proof.parent_index_uuid);
     }
   }
   return result;
@@ -449,6 +459,21 @@ BulkConstraintProofResult ProveBulkConstraints(
     const BulkConstraintProofRequest& request) {
   BulkConstraintProofResult result;
   AddBaseEvidence(request, &result);
+
+  using scratchbird::core::platform::UuidKind;
+  if (request.database_uuid.kind != UuidKind::database ||
+      request.object_uuid.kind != UuidKind::object ||
+      request.transaction_uuid.kind != UuidKind::transaction ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.database_uuid.value) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.object_uuid.value) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.transaction_uuid.value) ||
+      request.local_transaction_id == 0) {
+    return Refuse(std::move(result),
+                  "SB-BULK-CONSTRAINT-AUTHORITY-REQUIRED",
+                  "core.bulk_load.constraint.authority_required",
+                  "bulk_constraint_proof_authority_missing",
+                  "database, object, transaction UUIDs and local transaction ID are required");
+  }
 
   if (request.unique_proofs.empty() && request.foreign_key_proofs.empty()) {
     AddEvidence(&result, "bulk_constraint_proof_no_constraints", "true");
@@ -465,14 +490,6 @@ BulkConstraintProofResult ProveBulkConstraints(
     return result;
   }
 
-  if (!request.database_uuid.valid() || !request.object_uuid.valid() ||
-      !request.transaction_uuid.valid() || request.local_transaction_id == 0) {
-    return Refuse(std::move(result),
-                  "SB-BULK-CONSTRAINT-AUTHORITY-REQUIRED",
-                  "core.bulk_load.constraint.authority_required",
-                  "bulk_constraint_proof_authority_missing",
-                  "database, object, transaction UUIDs and local transaction ID are required");
-  }
 
   result = ProveUniqueConstraints(request, std::move(result));
   if (!result.status.ok() && result.refused) {

@@ -486,9 +486,9 @@ struct SblrExecutorAvailabilityRowIdentity {
 bool IsAdmittedExecutorAvailabilityIdentity(const SblrExecutorAvailabilityRowIdentity& identity);
 
 struct SblrExecutorAvailabilitySnapshot {
-  std::string snapshot_uuid;
+  EngineUuid snapshot_uuid;
   std::uint64_t generation{0};
-  std::string database_uuid;
+  EngineUuid database_uuid;
   std::string row_identity_sha256;
   bool installed{false};
   SblrExecutorAvailabilityState availability_state{

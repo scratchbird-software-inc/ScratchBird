@@ -14,31 +14,34 @@
 
 #include <string>
 #include <vector>
+#include <variant>
 
 namespace scratchbird::core::bulk_load {
 
 using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::Status;
 using scratchbird::core::platform::TypedUuid;
+using scratchbird::core::platform::Uuid;
+using BulkConstraintEvidenceValue = std::variant<std::string, Uuid>;
 using scratchbird::core::platform::u64;
 
 struct BulkConstraintProofEvidence {
   std::string evidence_kind;
-  std::string evidence_id;
+  BulkConstraintEvidenceValue evidence_id;
 };
 
 struct BulkConstraintProofKeyRef {
   std::string encoded_key;
-  std::string row_uuid;
-  std::string version_uuid;
+  Uuid row_uuid;
+  Uuid version_uuid;
   u64 source_ordinal = 0;
   bool null_key = false;
 };
 
 struct BulkUniqueProofRequest {
-  std::string constraint_uuid;
-  std::string index_uuid;
-  std::string table_uuid;
+  Uuid constraint_uuid;
+  Uuid index_uuid;
+  Uuid table_uuid;
   std::string column_name;
   bool nulls_distinct = true;
   bool incoming_keys_presorted = false;
@@ -47,12 +50,12 @@ struct BulkUniqueProofRequest {
 };
 
 struct BulkForeignKeyProofRequest {
-  std::string constraint_uuid;
-  std::string child_table_uuid;
+  Uuid constraint_uuid;
+  Uuid child_table_uuid;
   std::string child_column_name;
-  std::string parent_table_uuid;
+  Uuid parent_table_uuid;
   std::string parent_column_name;
-  std::string parent_index_uuid;
+  Uuid parent_index_uuid;
   bool batch_local_parent_allowed = true;
   std::vector<BulkConstraintProofKeyRef> child_keys;
   std::vector<BulkConstraintProofKeyRef> visible_parent_keys;

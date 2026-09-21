@@ -38,11 +38,11 @@ constexpr u32 kSourceFlags =
     kRelationHintPresentFlag | kExplicitAliasFlag;
 constexpr u32 kOutputNamePresentFlag = 1u << 0u;
 
-constexpr const char* kOperandInvalid = "SBLR.OPERAND.INVALID";
-constexpr const char* kTransactionStale = "MGA.TRANSACTION.STALE";
-constexpr const char* kOrderingInvalid = "SORT.ORDERING_VECTOR_INVALID";
+constexpr const char* kOperandInvalid = "SBLR.OPERAND_INVALID";
+constexpr const char* kBindingStale = "SBLR.QUERY_BINDING.STALE";
+constexpr const char* kOrderingInvalid = "SORT.ORDERING_VECTOR.INVALID";
 constexpr const char* kProjectionInvalid =
-    "PROJECTION.EXPRESSION_VECTOR_INVALID";
+    "PROJECTION.EXPRESSION_VECTOR.INVALID";
 constexpr const char* kPlanInvalid = "SBLR.PLAN_TREE.INVALID_HANDLE";
 constexpr const char* kResourceExceeded = "RESOURCE.BUDGET_EXCEEDED";
 
@@ -71,6 +71,10 @@ void ClearError(NarrowQueryBindingDemandError* error) {
 bool UuidPresent(const NarrowQueryUuid& value) {
   return std::any_of(value.begin(), value.end(),
                      [](byte octet) { return octet != 0; });
+}
+
+bool UuidV7(const NarrowQueryUuid& value) {
+  return (value[6] & 0xf0u) == 0x70u && (value[8] & 0xc0u) == 0x80u;
 }
 
 bool ValidProfile(NarrowQueryProfile profile) {
@@ -298,10 +302,10 @@ using SourceSpellingKey = std::pair<u32, std::string_view>;
 
 bool ValidateDemandStructure(const NarrowQueryBindingDemand& demand,
                              NarrowQueryBindingDemandError* error) {
-  if (!UuidPresent(demand.statement_receipt_uuid)) {
+  if (!UuidV7(demand.statement_receipt_uuid)) {
     return Fail(error, NarrowQueryBindingDemandErrorCode::receipt_invalid,
-                kTransactionStale, "statement_receipt_uuid", 0,
-                "authenticated statement receipt UUID is zero");
+                kBindingStale, "statement_receipt_uuid", 0,
+                "authenticated statement receipt UUID is not a canonical system UUIDv7");
   }
   if (!ValidProfile(demand.requested_profile)) {
     return Fail(error, NarrowQueryBindingDemandErrorCode::profile_invalid,
@@ -346,13 +350,15 @@ bool ValidateDemandStructure(const NarrowQueryBindingDemand& demand,
                   "source ordinals must be dense and zero based");
     }
     if (source.relation_object_hint_present !=
-        UuidPresent(source.relation_object_uuid_hint)) {
+        UuidPresent(source.relation_object_uuid_hint) ||
+        (source.relation_object_hint_present &&
+         !UuidV7(source.relation_object_uuid_hint))) {
       return Fail(
           error,
           NarrowQueryBindingDemandErrorCode::source_relation_hint_invalid,
           kPlanInvalid, "sources.relation_object_uuid_hint",
           static_cast<u32>(index),
-          "relation-object hint presence must exactly match a nonzero UUID");
+          "relation-object hint must be UUIDv7 when present and exactly nil when absent");
     }
     if (source.explicit_alias != !source.alias_spelling.empty() ||
         source.alias_spelling.size() >
@@ -621,12 +627,13 @@ bool PreflightSources(std::span<const byte> records,
         (flags & kRelationHintPresentFlag) != 0;
     const bool relation_nonzero =
         UuidPresent(LoadUuid(records, offset + 16u));
-    if (relation_present != relation_nonzero) {
+    if (relation_present != relation_nonzero ||
+        (relation_present && !UuidV7(LoadUuid(records, offset + 16u)))) {
       return Fail(
           error,
           NarrowQueryBindingDemandErrorCode::source_relation_hint_invalid,
           kPlanInvalid, "sources.relation_object_uuid_hint", index,
-          "relation-object hint presence does not match the encoded UUID");
+          "encoded relation-object hint must be UUIDv7 when present and nil when absent");
     }
     const bool explicit_alias = (flags & kExplicitAliasFlag) != 0;
     const auto alias = StringAt(
@@ -987,11 +994,11 @@ bool DecodeAndValidateNarrowQueryBindingDemand(
                 kOperandInvalid, "decoded", 0,
                 "decoded output pointer is null");
   }
-  if (!UuidPresent(context.authenticated_statement_receipt_uuid)) {
+  if (!UuidV7(context.authenticated_statement_receipt_uuid)) {
     return Fail(error, NarrowQueryBindingDemandErrorCode::receipt_invalid,
-                kTransactionStale,
+                kBindingStale,
                 "context.authenticated_statement_receipt_uuid", 0,
-                "authenticated statement receipt UUID is zero");
+                "authenticated statement receipt UUID is not a canonical system UUIDv7");
   }
   if (!ValidMgaRelationDecodedBytesPerPass(
           context.maximum_mga_relation_decoded_bytes_per_pass)) {
@@ -1050,14 +1057,14 @@ bool DecodeAndValidateNarrowQueryBindingDemand(
   }
 
   const auto encoded_receipt = LoadUuid(encoded, 48u);
-  if (!UuidPresent(encoded_receipt)) {
+  if (!UuidV7(encoded_receipt)) {
     return Fail(error, NarrowQueryBindingDemandErrorCode::receipt_invalid,
-                kTransactionStale, "statement_receipt_uuid", 0,
-                "carrier statement receipt UUID is zero");
+                kBindingStale, "statement_receipt_uuid", 0,
+                "carrier statement receipt UUID is not a canonical system UUIDv7");
   }
   if (encoded_receipt != context.authenticated_statement_receipt_uuid) {
     return Fail(error, NarrowQueryBindingDemandErrorCode::receipt_mismatch,
-                kTransactionStale, "statement_receipt_uuid", 0,
+                kBindingStale, "statement_receipt_uuid", 0,
                 "carrier receipt differs from the authenticated statement "
                 "receipt");
   }

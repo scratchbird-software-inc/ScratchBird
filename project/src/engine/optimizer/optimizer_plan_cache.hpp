@@ -1670,6 +1670,8 @@ BindCanonicalExecutablePlanToCurrentStatement(
     const CanonicalPreparedPhysicalPlan& plan,
     const executor::PhysicalMgaStatementContext& statement_context) {
   executor::TypedPhysicalNodeDag dag;
+  dag.profile_identity_owner = plan.profile_identity_owner;
+  dag.model_profile_identity_owner = plan.model_profile_identity_owner;
   dag.abi_version = plan.abi_version + 1;
   dag.selected_plan_uuid = plan.selected_plan_uuid;
   dag.root_physical_node_id = plan.root_physical_node_id;

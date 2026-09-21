@@ -87,62 +87,62 @@ MetricValidationResult RecordDomainMethodInvocation(std::string domain_uuid,
                                                     std::string reason);
 
 // SEARCH_KEY: SB_INSERT_OPTIMIZATION_METRIC_CONTRACTS
-MetricValidationResult RecordInsertBatchStarted(std::string object_uuid,
+MetricValidationResult RecordInsertBatchStarted(MetricUuid object_uuid,
                                                 std::string insert_mode,
                                                 std::string result);
-MetricValidationResult RecordInsertBatchFallback(std::string object_uuid,
+MetricValidationResult RecordInsertBatchFallback(MetricUuid object_uuid,
                                                  std::string insert_mode,
                                                  std::string reason);
 MetricValidationResult RecordInsertRowsInserted(double rows,
-                                                std::string object_uuid,
+                                                MetricUuid object_uuid,
                                                 std::string insert_mode);
 MetricValidationResult ObserveInsertRowsPerBatch(double rows,
-                                                 std::string object_uuid,
+                                                 MetricUuid object_uuid,
                                                  std::string insert_mode);
-MetricValidationResult RecordInsertTraceEvent(std::string object_uuid,
+MetricValidationResult RecordInsertTraceEvent(MetricUuid object_uuid,
                                               std::string insert_mode,
                                               std::string phase);
-MetricValidationResult RecordInsertCancel(std::string object_uuid,
+MetricValidationResult RecordInsertCancel(MetricUuid object_uuid,
                                           std::string insert_mode,
                                           std::string reason);
-MetricValidationResult RecordInsertPreparedDescriptorCache(std::string object_uuid,
+MetricValidationResult RecordInsertPreparedDescriptorCache(MetricUuid object_uuid,
                                                            std::string insert_mode,
                                                            bool cache_hit);
-MetricValidationResult RecordInsertRelationStateLoad(std::string object_uuid,
+MetricValidationResult RecordInsertRelationStateLoad(MetricUuid object_uuid,
                                                      std::string insert_mode,
                                                      bool full_state_load,
                                                      bool scoped_state_load,
                                                      std::string reason);
 MetricValidationResult RecordMgaRelationStateLoad(
-    std::string object_uuid,
+    MetricUuid object_uuid,
     std::string operation_family,
     std::string load_scope,
     std::string reason,
     double rows_materialized,
     double bytes_materialized,
     double allocation_units_materialized);
-MetricValidationResult PublishInsertAdaptiveBatchPlan(std::string object_uuid,
+MetricValidationResult PublishInsertAdaptiveBatchPlan(MetricUuid object_uuid,
                                                       std::string insert_mode,
                                                       double requested_rows,
                                                       double admitted_rows,
                                                       double admitted_bytes,
                                                       std::string reason);
 MetricValidationResult RecordInsertPreallocatedPages(double pages,
-                                                     std::string object_uuid,
+                                                     MetricUuid object_uuid,
                                                      std::string insert_mode,
                                                      std::string page_family,
                                                      std::string result,
                                                      std::string reason);
 MetricValidationResult ObserveInsertAllocationStall(double latency_microseconds,
-                                                    std::string object_uuid,
+                                                    MetricUuid object_uuid,
                                                     std::string insert_mode,
                                                     std::string wait_class,
                                                     std::string result);
-MetricValidationResult RecordInsertUniquePhysicalProbe(std::string object_uuid,
+MetricValidationResult RecordInsertUniquePhysicalProbe(MetricUuid object_uuid,
                                                        std::string insert_mode,
                                                        std::string result,
                                                        std::string reason);
-MetricValidationResult RecordInsertSlowPath(std::string object_uuid,
+MetricValidationResult RecordInsertSlowPath(MetricUuid object_uuid,
                                             std::string insert_mode,
                                             std::string chosen_path,
                                             std::string reason);

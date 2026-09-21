@@ -469,6 +469,9 @@ bool CanonicalizeDescriptorRuntimeNumericValue(
 bool TextSeedAbsent(
     const scratchbird::core::datatypes::DatatypeTextSeedAuthority& seed) {
   return !seed.active && seed.seed_pack_name.empty() &&
+         seed.database_uuid.is_nil() && seed.charset_uuid.is_nil() && seed.collation_uuid.is_nil() &&
+         seed.resource_epoch == 0 && seed.collation_epoch == 0 && !seed.unicode_collation &&
+         seed.comparison_profile == scratchbird::core::resources::CollationProfile::unbound &&
          seed.seed_pack_version.empty() && seed.charset_name.empty() &&
          seed.collation_name.empty() &&
          !seed.collation_case_insensitive &&

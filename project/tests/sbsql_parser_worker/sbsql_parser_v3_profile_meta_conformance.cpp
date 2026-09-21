@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "meta/meta_command_surface.hpp"
@@ -36,11 +37,11 @@ bool HasDiagnostic(const sbsql::MessageVectorSet& messages, std::string_view cod
 sbsql::SessionContext AuthenticatedSession() {
   sbsql::SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "session-profile-meta";
-  session.connection_uuid = "connection-profile-meta";
-  session.database_uuid = "019e17c1-0000-7000-8000-000000000001";
-  session.authenticated_user_uuid = "019e17c1-0000-7000-8000-000000000002";
-  session.dialect_profile_uuid = "sbsql.default";
+  session.session_uuid = scratchbird::tests::FixtureUuid(1101, 1);
+  session.connection_uuid = scratchbird::tests::FixtureUuid(1101, 2);
+  session.database_uuid = scratchbird::tests::FixtureUuid(1101, 3);
+  session.authenticated_user_uuid = scratchbird::tests::FixtureUuid(1101, 4);
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1101, 5);
   session.catalog_epoch = 3;
   session.security_policy_epoch = 5;
   session.descriptor_epoch = 7;
@@ -135,9 +136,11 @@ void VerifyGeneratedRegistryProfiles() {
     if (row.source_status == "cluster_private") ++cluster_private_status;
     if (row.cluster_scope == "cluster_private") ++cluster_private_scope;
   }
-  Require(rows.size() == 2617,
+  // Frozen public assignment metadata, not current Core coverage or executable
+  // feature acceptance. The owning generator manifest records these counts.
+  Require(rows.size() == 2619,
           "generated registry row count unexpectedly changed");
-  Require(native_now == 2580,
+  Require(native_now == 2582,
           "generated registry native-now profile unexpectedly changed");
   Require(native_future == 0, "generated registry must not retain native-future inventory rows");
   Require(cluster_private_status == 37,

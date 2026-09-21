@@ -8,6 +8,7 @@
 
 #include "wire/sbsql_test_wire.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
+#include "lowering/relational_identity_operand.hpp"
 #include "engine/sblr/relational_identity_codec.hpp"
 #include "wire/contextual_operand_freeze.hpp"
 #include "wire/native_query_artifact.hpp"
@@ -15,6 +16,7 @@
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "binder/descriptor_authority.hpp"
+#include "binder/engine_function_identity.hpp"
 #include "cst/cst.hpp"
 #include "embedded/embedded_engine_client.hpp"
 #include "ipc/sbps_client.hpp"
@@ -243,6 +245,7 @@
 #include <numeric>
 #include <optional>
 #include <set>
+#include <map>
 #include <sstream>
 #include <tuple>
 #include <utility>
@@ -281,8 +284,9 @@ using ipc::ParserTransactionSelector;
 constexpr std::size_t kMaxNameResolutionCacheEntries = 4096;
 constexpr std::size_t kMaxSharedNameResolutionCacheEntries = 16384;
 constexpr std::size_t kMaxStableRelationNameResolutionCacheEntries = 4096;
-constexpr std::string_view kGenerateSeriesFunctionUuid =
-    "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+constexpr core::platform::Uuid kGenerateSeriesFunctionUuid{{
+    0x01, 0x9d, 0xff, 0xbb, 0xf0, 0x00, 0x7e, 0x2c,
+    0xb4, 0x37, 0xeb, 0xbb, 0xc2, 0xd4, 0xf3, 0x5b}};
 
 thread_local std::string g_authoritative_multi_source_projection_proof_detail;
 
@@ -292,6 +296,12 @@ thread_local std::string g_authoritative_multi_source_projection_proof_detail;
 
 std::optional<std::array<std::uint8_t, 16>> CanonicalUuidBytes(
     std::string_view text);
+
+std::optional<std::array<std::uint8_t, 16>> CanonicalUuidBytes(
+    const core::platform::Uuid& identity) noexcept {
+  if (!core::uuid::IsEngineIdentityUuid(identity)) return std::nullopt;
+  return identity.bytes;
+}
 
 bool IsCanonicalStatementTimestamp(std::string_view value) {
   if (value.size() != 20 &&
@@ -524,10 +534,10 @@ bool ApplyExecutedTransactionState(const ServerExecutionResult& executed,
   // no valid next selector. Never retain or replay the finalized selector.
   if (executed.finality_applied) {
     const bool changed = session->local_transaction_id != 0 ||
-                         !session->transaction_uuid.empty();
+                         !session->transaction_uuid.is_nil();
     session->local_transaction_id = 0;
     session->snapshot_visible_through_local_transaction_id = 0;
-    session->transaction_uuid.clear();
+    session->transaction_uuid = {};
     session->transaction_timestamp.clear();
     session->transaction_context.clear();
     return changed;
@@ -761,28 +771,6 @@ std::string NativeFilterSemantic(
          core + ".v1";
 }
 
-std::optional<std::string_view> EngineIssuedAggregateFunctionUuid(
-    const ParserStatementContext& statement_context,
-    std::string_view function_name) {
-  std::string builtin_id = "sb.aggregate.";
-  builtin_id.reserve(builtin_id.size() + function_name.size());
-  for (const char ch : function_name) {
-    builtin_id.push_back(static_cast<char>(
-        std::tolower(static_cast<unsigned char>(ch))));
-  }
-  const auto profile = std::ranges::find_if(
-      statement_context.aggregate_function_profiles,
-      [&](const auto& candidate) {
-        return candidate.abi_version == 1 && candidate.executable &&
-               candidate.builtin_id == builtin_id;
-      });
-  if (profile == statement_context.aggregate_function_profiles.end() ||
-      !CanonicalUuidBytes(profile->function_uuid).has_value()) {
-    return std::nullopt;
-  }
-  return profile->function_uuid;
-}
-
 struct ExactProjectedDescriptorFields {
   std::optional<std::string> datatype_descriptor_uuid;
   std::string type_uuid;
@@ -931,8 +919,8 @@ bool ExactGraphProjectedDescriptorCohort(
   const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return false;
-  std::unordered_set<std::string> column_uuids;
-  std::unordered_set<std::string> type_descriptor_uuids;
+  std::set<core::platform::Uuid> column_uuids;
+  std::set<core::platform::Uuid> type_descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = projection.columns[ordinal];
     const auto fields = ParseExactProjectedDescriptor(
@@ -988,9 +976,9 @@ bool ExactGraphProjectedDescriptorCohort(
         column.type_descriptor_kind != "canonical_type_descriptor" ||
         column.canonical_type_name != kTypes[ordinal] ||
         column.nullable != kNullable[ordinal] || column.generated ||
-        column.identity_column || !column.charset_uuid.empty() ||
+        column.identity_column || !column.charset_uuid.is_nil() ||
         !column.charset_canonical_name.empty() ||
-        !column.collation_uuid.empty() ||
+        !column.collation_uuid.is_nil() ||
         !column.collation_canonical_name.empty() ||
         column.character_length != 0 || column.charset_min_bytes != 0 ||
         column.charset_max_bytes != 0 || column.charset_variable_width ||
@@ -1017,8 +1005,8 @@ bool ExactKeyValueStorageDescriptorCohort(
   const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return false;
-  std::unordered_set<std::string> column_uuids;
-  std::unordered_set<std::string> descriptor_uuids;
+  std::set<core::platform::Uuid> column_uuids;
+  std::set<core::platform::Uuid> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = projection.columns[ordinal];
     const auto fields = ParseExactProjectedDescriptor(
@@ -1048,9 +1036,9 @@ bool ExactKeyValueStorageDescriptorCohort(
         fields->nullable != kNullable[ordinal] ||
         fields->collation_uuid.has_value() || fields->width.has_value() ||
         fields->precision.has_value() || fields->scale.has_value() ||
-        !column.charset_uuid.empty() ||
+        !column.charset_uuid.is_nil() ||
         !column.charset_canonical_name.empty() ||
-        !column.collation_uuid.empty() ||
+        !column.collation_uuid.is_nil() ||
         !column.collation_canonical_name.empty() ||
         column.character_length != 0 || column.charset_min_bytes != 0 ||
         column.charset_max_bytes != 0 || column.charset_variable_width) {
@@ -1072,8 +1060,8 @@ bool ExactTimeSeriesStorageDescriptorCohort(
   const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return false;
-  std::unordered_set<std::string> column_uuids;
-  std::unordered_set<std::string> descriptor_uuids;
+  std::set<core::platform::Uuid> column_uuids;
+  std::set<core::platform::Uuid> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = projection.columns[ordinal];
     const auto fields = ParseExactProjectedDescriptor(
@@ -1101,9 +1089,9 @@ bool ExactTimeSeriesStorageDescriptorCohort(
         !fields.has_value() || fields->type_uuid != expected_type_uuid ||
         fields->nullable || fields->collation_uuid.has_value() ||
         fields->width.has_value() || fields->precision.has_value() ||
-        fields->scale.has_value() || !column.charset_uuid.empty() ||
+        fields->scale.has_value() || !column.charset_uuid.is_nil() ||
         !column.charset_canonical_name.empty() ||
-        !column.collation_uuid.empty() ||
+        !column.collation_uuid.is_nil() ||
         !column.collation_canonical_name.empty() ||
         column.character_length != 0 || column.charset_min_bytes != 0 ||
         column.charset_max_bytes != 0 || column.charset_variable_width ||
@@ -1145,8 +1133,8 @@ bool ExactVectorStorageDescriptorCohort(
   const auto manifest =
       scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
   if (!manifest.ok()) return false;
-  std::unordered_set<std::string> column_uuids;
-  std::unordered_set<std::string> descriptor_uuids;
+  std::set<core::platform::Uuid> column_uuids;
+  std::set<core::platform::Uuid> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = projection.columns[ordinal];
     const auto fields = ParseExactProjectedDescriptor(
@@ -1174,8 +1162,8 @@ bool ExactVectorStorageDescriptorCohort(
         fields->nullable || fields->collation_uuid.has_value() ||
         fields->timezone_profile_id.has_value() ||
         fields->precision.has_value() || fields->scale.has_value() ||
-        !column.charset_uuid.empty() || !column.charset_canonical_name.empty() ||
-        !column.collation_uuid.empty() ||
+        !column.charset_uuid.is_nil() || !column.charset_canonical_name.empty() ||
+        !column.collation_uuid.is_nil() ||
         !column.collation_canonical_name.empty()) {
       return false;
     }
@@ -1213,8 +1201,8 @@ bool ExactSearchStorageDescriptorCohort(
   }
   const auto text_uuid = scratchbird::core::uuid::UuidToString(
       type_row.manifest.descriptor_rows.front().descriptor_uuid.value);
-  std::unordered_set<std::string> column_uuids;
-  std::unordered_set<std::string> descriptor_uuids;
+  std::set<core::platform::Uuid> column_uuids;
+  std::set<core::platform::Uuid> descriptor_uuids;
   for (std::size_t ordinal = 0; ordinal < kNames.size(); ++ordinal) {
     const auto& column = projection.columns[ordinal];
     const auto fields = ParseExactProjectedDescriptor(
@@ -1232,8 +1220,8 @@ bool ExactSearchStorageDescriptorCohort(
         fields->nullable || fields->collation_uuid.has_value() ||
         fields->timezone_profile_id.has_value() || fields->width.has_value() ||
         fields->precision.has_value() || fields->scale.has_value() ||
-        !column.charset_uuid.empty() || !column.charset_canonical_name.empty() ||
-        !column.collation_uuid.empty() ||
+        !column.charset_uuid.is_nil() || !column.charset_canonical_name.empty() ||
+        !column.collation_uuid.is_nil() ||
         !column.collation_canonical_name.empty()) {
       return false;
     }
@@ -1297,12 +1285,12 @@ BuildEngineProjectedNativeBindingContext(
     return std::nullopt;
   };
   if (!ast.accepted() || !statement_context.complete() ||
-      statement_context.bound_ast_uuid.empty() ||
-      statement_context.count_function_uuid.empty() ||
-      statement_context.sum_function_uuid.empty() ||
-      statement_context.avg_function_uuid.empty() ||
-      statement_context.min_function_uuid.empty() ||
-      statement_context.max_function_uuid.empty() ||
+      !core::uuid::IsEngineIdentityUuid(statement_context.bound_ast_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(statement_context.count_function_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(statement_context.sum_function_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(statement_context.avg_function_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(statement_context.min_function_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(statement_context.max_function_uuid) ||
       statement_context.aggregate_function_profiles.size() != 43 ||
       statement_context.descriptor_profiles.empty()) {
     return fail("incomplete_statement_context");
@@ -1503,7 +1491,7 @@ BuildEngineProjectedNativeBindingContext(
     descriptor.canonical_type_name = "int64";
     context.descriptors.push_back(std::move(descriptor));
     context.expressions.push_back(
-        {output_expression_id, 1, std::string(kGenerateSeriesFunctionUuid),
+        {output_expression_id, 1, kGenerateSeriesFunctionUuid,
          std::nullopt, 0, 0, 0});
     context.outputs.push_back(
         {1, output_expression_id, "generate_series", 1, true, 0,
@@ -1605,7 +1593,7 @@ BuildEngineProjectedNativeBindingContext(
     const auto output_expression_id = static_cast<std::uint32_t>(
         relation.table_function_argument_expression_ids.size() + 1);
     context.expressions.push_back(
-        {output_expression_id, 1, std::string(kGenerateSeriesFunctionUuid),
+        {output_expression_id, 1, kGenerateSeriesFunctionUuid,
          std::nullopt, 0, 0, 0});
     context.outputs.push_back(
         {1, output_expression_id, "generate_series", 1, true, 0,
@@ -1694,17 +1682,9 @@ BuildEngineProjectedNativeBindingContext(
       return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
                     "canonical datatype catalog is unavailable");
     }
-    const auto canonical_type_uuid = [&](const std::string& type)
-        -> std::optional<std::string> {
-      const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
-          manifest.manifest,
+    const auto canonical_type_uuid = [&](const std::string& type) {
+      return LookupNativeCanonicalTypeIdentity(manifest.manifest,
           scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type));
-      if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
-          !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
-        return std::nullopt;
-      }
-      return scratchbird::core::uuid::UuidToString(
-          row.manifest.descriptor_rows.front().descriptor_uuid.value);
     };
     const auto uuid_type = canonical_type_uuid("uuid");
     const auto uint64_type = canonical_type_uuid("uint64");
@@ -1718,15 +1698,15 @@ BuildEngineProjectedNativeBindingContext(
       return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
                     "spatial/columnar datatype identities are unavailable");
     }
-    std::unordered_set<std::string> column_uuids;
-    std::unordered_set<std::string> descriptor_uuids;
+    std::set<core::platform::Uuid> column_uuids;
+    std::set<core::platform::Uuid> descriptor_uuids;
     std::unordered_set<std::string> column_names;
     std::unordered_map<std::string, std::uint32_t> descriptor_by_name;
-    const auto add_descriptor = [&](const std::string& descriptor_uuid,
-                                    const std::string& type_uuid,
+    const auto add_descriptor = [&](const core::platform::Uuid& descriptor_uuid,
+                                    const core::platform::Uuid& type_uuid,
                                     const std::string& canonical_type,
                                     const BoundNullability nullability,
-                                    const std::optional<std::string>& collation,
+                                    const std::optional<core::platform::Uuid>& collation,
                                     const std::optional<std::string>& timezone,
                                     const std::optional<std::uint32_t>& width,
                                     const std::optional<std::uint32_t>& precision,
@@ -1830,7 +1810,7 @@ BuildEngineProjectedNativeBindingContext(
       }
       if (!column.datatype_identity_present &&
           column.type_descriptor_uuid ==
-              "019d0000-0000-7000-8000-00000000d718") {
+              core::platform::Uuid{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,0xd7,0x18}}) {
         return refuse(
             "SB_MODEL_BINDING_INCOMPLETE_V1",
             "spatial/columnar canonical TEXT identity is unavailable");
@@ -1846,11 +1826,11 @@ BuildEngineProjectedNativeBindingContext(
                 projection.datatype_registry_generation,
                 canonical_datatype_descriptor_uuid,
                 column.datatype_descriptor_generation);
-        if (statement_context.literal_preliminary_receipt_uuid.empty() ||
+        if (statement_context.literal_preliminary_receipt_uuid.is_nil() ||
             !CanonicalUuidBytes(
                  statement_context.literal_preliminary_receipt_uuid)
                  .has_value() ||
-            projection.datatype_catalog_snapshot_uuid.empty() ||
+            projection.datatype_catalog_snapshot_uuid.is_nil() ||
             !CanonicalUuidBytes(projection.datatype_catalog_snapshot_uuid)
                  .has_value() ||
             projection.datatype_catalog_snapshot_uuid !=
@@ -1925,12 +1905,12 @@ BuildEngineProjectedNativeBindingContext(
     }
     const auto profile_for = [&](const std::uint8_t kind,
                                  const std::uint16_t slot,
-                                 const std::string& type_uuid) {
+                                 const core::platform::Uuid& type_uuid) {
       return std::ranges::find_if(
           statement_context.descriptor_profiles, [&](const auto& profile) {
             return profile.profile_kind == kind && profile.slot == slot &&
                    profile.type_uuid == type_uuid && !profile.nullable &&
-                   profile.collation_uuid.empty() && profile.width == 0 &&
+                   profile.collation_uuid.is_nil() && profile.width == 0 &&
                    profile.precision == 0 && profile.scale == 0 &&
                    CanonicalUuidBytes(profile.descriptor_uuid).has_value();
           });
@@ -1989,7 +1969,7 @@ BuildEngineProjectedNativeBindingContext(
           profile->nullable ||
           !CanonicalUuidBytes(profile->descriptor_uuid).has_value() ||
           !CanonicalUuidBytes(profile->type_uuid).has_value() ||
-          (!profile->collation_uuid.empty() &&
+          (!profile->collation_uuid.is_nil() &&
            !CanonicalUuidBytes(profile->collation_uuid).has_value())) {
         return std::nullopt;
       }
@@ -2004,7 +1984,7 @@ BuildEngineProjectedNativeBindingContext(
       placeholder.type_uuid = profile->type_uuid;
       placeholder.canonical_type_name = "text";
       placeholder.nullability = BoundNullability::kNonNull;
-      if (!profile->collation_uuid.empty()) {
+      if (!profile->collation_uuid.is_nil()) {
         placeholder.collation_uuid = profile->collation_uuid;
       }
       if (profile->width != 0) {
@@ -2095,7 +2075,7 @@ BuildEngineProjectedNativeBindingContext(
     }
     std::vector<std::string> output_names;
     std::vector<std::uint32_t> output_descriptors;
-    std::vector<std::string> output_bindings;
+    std::vector<core::platform::Uuid> output_bindings;
     if (spatial) {
       output_names = {"row_uuid", "spatial_value", "crs_uuid"};
       for (std::size_t index = 0; index < 3; ++index) {
@@ -2150,8 +2130,8 @@ BuildEngineProjectedNativeBindingContext(
         continue;
       }
       std::optional<std::uint32_t> descriptor_id;
-      std::optional<std::string> bound_name_uuid;
-      std::optional<std::string> function_uuid;
+      std::optional<core::platform::Uuid> bound_name_uuid;
+      std::optional<core::platform::Uuid> function_uuid;
       if (expression.operator_name == "SPATIAL_SOURCE" ||
           expression.operator_name == "COLUMNAR_SOURCE") {
         descriptor_id = context.catalog_relations.front().columns.front()
@@ -2342,17 +2322,9 @@ BuildEngineProjectedNativeBindingContext(
       return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
                     "canonical datatype catalog is unavailable");
     }
-    const auto canonical_type_uuid = [&](const std::string& type)
-        -> std::optional<std::string> {
-      const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
-          manifest.manifest,
+    const auto canonical_type_uuid = [&](const std::string& type) {
+      return LookupNativeCanonicalTypeIdentity(manifest.manifest,
           scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type));
-      if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
-          !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
-        return std::nullopt;
-      }
-      return scratchbird::core::uuid::UuidToString(
-          row.manifest.descriptor_rows.front().descriptor_uuid.value);
     };
     const auto uuid_type = canonical_type_uuid("uuid");
     const auto uint64_type = canonical_type_uuid("uint64");
@@ -2378,11 +2350,11 @@ BuildEngineProjectedNativeBindingContext(
     const auto exact_result_profile = [&](const auto* profile,
                                           const std::uint8_t kind,
                                           const std::uint16_t slot,
-                                          const std::string& type_uuid) {
+                                          const core::platform::Uuid& type_uuid) {
       return profile->profile_kind == kind && profile->slot == slot &&
              profile->type_uuid == type_uuid &&
              CanonicalUuidBytes(profile->descriptor_uuid).has_value() &&
-             !profile->nullable && profile->collation_uuid.empty() &&
+             !profile->nullable && profile->collation_uuid.is_nil() &&
              profile->width == 0 && profile->precision == 0 &&
              profile->scale == 0;
     };
@@ -2390,7 +2362,7 @@ BuildEngineProjectedNativeBindingContext(
         public_profiles{document_uuid_profile, analyzer_uuid_profile,
                         analyzer_generation_profile, score_profile,
                         rank_profile};
-    std::unordered_set<std::string> public_profile_descriptor_uuids;
+    std::set<core::platform::Uuid> public_profile_descriptor_uuids;
     if (!exact_result_profile(document_uuid_profile, 12, 0, *uuid_type) ||
         !exact_result_profile(analyzer_uuid_profile, 12, 1, *uuid_type) ||
         !exact_result_profile(analyzer_generation_profile, 13, 0,
@@ -2406,10 +2378,10 @@ BuildEngineProjectedNativeBindingContext(
                     "search V9 result descriptor identities are invalid");
     }
     std::unordered_map<std::string, std::uint32_t> descriptor_by_name;
-    std::unordered_map<std::string, std::uint32_t> scalar_descriptor_by_type;
-    std::unordered_set<std::string> descriptor_uuids;
-    const auto add_descriptor = [&](const std::string& descriptor_uuid,
-                                    const std::string& type_uuid,
+    std::map<NativeDescriptorIdentityKey, std::uint32_t> scalar_descriptor_by_type;
+    std::set<core::platform::Uuid> descriptor_uuids;
+    const auto add_descriptor = [&](const core::platform::Uuid& descriptor_uuid,
+                                    const core::platform::Uuid& type_uuid,
                                     const std::string& canonical_type)
         -> std::optional<std::uint32_t> {
       if (!CanonicalUuidBytes(descriptor_uuid).has_value() ||
@@ -2417,7 +2389,7 @@ BuildEngineProjectedNativeBindingContext(
         return std::nullopt;
       }
       if (const auto existing = scalar_descriptor_by_type.find(
-              descriptor_uuid + "\x1f" + type_uuid);
+              NativeDescriptorIdentityKey{descriptor_uuid, type_uuid});
           existing != scalar_descriptor_by_type.end()) {
         return existing->second;
       }
@@ -2430,7 +2402,7 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.nullability = BoundNullability::kNonNull;
       descriptor.canonical_type_name = canonical_type;
       context.descriptors.push_back(std::move(descriptor));
-      scalar_descriptor_by_type.emplace(descriptor_uuid + "\x1f" + type_uuid,
+      scalar_descriptor_by_type.emplace(NativeDescriptorIdentityKey{descriptor_uuid, type_uuid},
                                         context.descriptors.back().descriptor_id);
       return context.descriptors.back().descriptor_id;
     };
@@ -2511,10 +2483,10 @@ BuildEngineProjectedNativeBindingContext(
       const auto expression_id = next_expression_id++;
       context.expressions.push_back(
           {expression_id, public_descriptors[ordinal], std::nullopt,
-           ordinal == 0 ? std::optional<std::string>{resolved.object_uuid}
+           ordinal == 0 ? std::optional<core::platform::Uuid>{resolved.object_uuid}
                         : (ordinal == 1 || ordinal == 2
-                               ? std::optional<std::string>{analyzer.object_uuid}
-                               : std::optional<std::string>{
+                               ? std::optional<core::platform::Uuid>{analyzer.object_uuid}
+                               : std::optional<core::platform::Uuid>{
                                      resolved.object_uuid})});
       context.outputs.push_back(
           {static_cast<std::uint32_t>(ordinal + 1), expression_id,
@@ -2540,7 +2512,7 @@ BuildEngineProjectedNativeBindingContext(
     for (const auto& expression : ast.expressions) {
       if (expression.expression_kind == NativeExpressionAstKind::kWildcard) continue;
       std::optional<std::uint32_t> descriptor_id;
-      std::optional<std::string> bound_name_uuid;
+      std::optional<core::platform::Uuid> bound_name_uuid;
       if (expression.expression_id ==
               *search_source->model_search_alias_expression_id ||
           filter_alias_expression_id == expression.expression_id) {
@@ -2686,17 +2658,9 @@ BuildEngineProjectedNativeBindingContext(
       return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
                     "canonical datatype catalog is unavailable");
     }
-    const auto canonical_type_uuid = [&](const std::string& type)
-        -> std::optional<std::string> {
-      const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
-          manifest.manifest,
+    const auto canonical_type_uuid = [&](const std::string& type) {
+      return LookupNativeCanonicalTypeIdentity(manifest.manifest,
           scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type));
-      if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
-          !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
-        return std::nullopt;
-      }
-      return scratchbird::core::uuid::UuidToString(
-          row.manifest.descriptor_rows.front().descriptor_uuid.value);
     };
     const auto uuid_type = canonical_type_uuid("uuid");
     const auto real64_type = canonical_type_uuid("real64");
@@ -2738,9 +2702,9 @@ BuildEngineProjectedNativeBindingContext(
                     "vector REAL64 result descriptor cohort is invalid");
     }
     std::unordered_map<std::string, std::uint32_t> descriptor_by_name;
-    std::unordered_set<std::string> descriptor_uuids;
-    const auto add_descriptor = [&](const std::string& descriptor_uuid,
-                                    const std::string& type_uuid,
+    std::set<core::platform::Uuid> descriptor_uuids;
+    const auto add_descriptor = [&](const core::platform::Uuid& descriptor_uuid,
+                                    const core::platform::Uuid& type_uuid,
                                     const std::string& canonical_type,
                                     const std::string& element_profile,
                                     const std::optional<std::uint32_t> width)
@@ -2859,7 +2823,7 @@ BuildEngineProjectedNativeBindingContext(
         continue;
       }
       std::optional<std::uint32_t> descriptor_id;
-      std::optional<std::string> bound_name_uuid;
+      std::optional<core::platform::Uuid> bound_name_uuid;
       if (expression.expression_id ==
           *vector_source->model_vector_alias_expression_id) {
         descriptor_id = descriptor_by_name.at("embedding");
@@ -3058,18 +3022,10 @@ BuildEngineProjectedNativeBindingContext(
       return refuse("SB_MODEL_BINDING_INCOMPLETE_V1",
                     "canonical datatype catalog is unavailable");
     }
-    std::unordered_set<std::string> descriptor_uuids;
-    const auto canonical_type_uuid = [&](const std::string& type)
-        -> std::optional<std::string> {
-      const auto row = scratchbird::core::datatypes::LookupDatatypeCatalogRow(
-          datatype_manifest.manifest,
+    std::set<core::platform::Uuid> descriptor_uuids;
+    const auto canonical_type_uuid = [&](const std::string& type) {
+      return LookupNativeCanonicalTypeIdentity(datatype_manifest.manifest,
           scratchbird::core::datatypes::CanonicalTypeIdFromStableName(type));
-      if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
-          !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) {
-        return std::nullopt;
-      }
-      return scratchbird::core::uuid::UuidToString(
-          row.manifest.descriptor_rows.front().descriptor_uuid.value);
     };
     const auto uuid_type_uuid = canonical_type_uuid("uuid");
     if (!uuid_type_uuid.has_value() ||
@@ -3100,7 +3056,7 @@ BuildEngineProjectedNativeBindingContext(
     catalog_relation.resource_epoch =
         storage_projection.validated_resource_epoch;
     std::unordered_map<std::string, std::uint32_t> descriptor_by_name;
-    std::unordered_map<std::string, std::string> column_uuid_by_name;
+    std::unordered_map<std::string, core::platform::Uuid> column_uuid_by_name;
     descriptor_by_name.emplace("row_uuid", 1);
     column_uuid_by_name.emplace("row_uuid", storage_projection.descriptor_uuid);
     descriptor_by_name.emplace("series_uuid", 2);
@@ -3164,7 +3120,7 @@ BuildEngineProjectedNativeBindingContext(
     const auto count_descriptor_id =
         downsample ? add_canonical_descriptor("int64", false)
                    : std::optional<std::uint32_t>{};
-    const auto add_derived_descriptor = [&](const std::string& descriptor_uuid,
+    const auto add_derived_descriptor = [&](const core::platform::Uuid& descriptor_uuid,
                                             const std::uint32_t type_source_id,
                                             const bool timezone)
         -> std::optional<std::uint32_t> {
@@ -3258,7 +3214,7 @@ BuildEngineProjectedNativeBindingContext(
         continue;
       }
       std::optional<std::uint32_t> descriptor_id;
-      std::optional<std::string> bound_name_uuid;
+      std::optional<core::platform::Uuid> bound_name_uuid;
       if (expression.expression_id ==
           *time_series_source->model_time_series_alias_expression_id) {
         descriptor_id = descriptor_by_name.at("row_uuid");
@@ -3344,7 +3300,7 @@ BuildEngineProjectedNativeBindingContext(
           time_series_source->model_time_series_aggregate_id == "COUNT"
               ? *count_aggregate_descriptor_id
               : value_descriptor_id};
-      const std::array<std::string, 7> bound_names{
+      const std::array<core::platform::Uuid, 7> bound_names{
           column_uuid_by_name.at("series_uuid"),
           column_uuid_by_name.at("metric_uuid"),
           column_uuid_by_name.at("point_timestamp"),
@@ -3599,8 +3555,8 @@ BuildEngineProjectedNativeBindingContext(
     catalog_relation.resource_epoch =
         storage_projection.validated_resource_epoch;
     std::unordered_map<std::string, std::uint32_t> descriptor_by_name;
-    std::unordered_map<std::string, std::string> column_uuid_by_name;
-    std::unordered_set<std::string> descriptor_uuids;
+    std::unordered_map<std::string, core::platform::Uuid> column_uuid_by_name;
+    std::set<core::platform::Uuid> descriptor_uuids;
     const auto datatype_manifest =
         scratchbird::core::datatypes::LoadCurrentCoreDatatypeCatalogManifest();
     if (!datatype_manifest.ok()) {
@@ -3730,7 +3686,7 @@ BuildEngineProjectedNativeBindingContext(
         continue;
       }
       std::optional<std::uint32_t> descriptor_id;
-      std::optional<std::string> bound_name_uuid;
+      std::optional<core::platform::Uuid> bound_name_uuid;
       if (key_expression_ids.contains(expression.expression_id)) {
         descriptor_id = key_descriptor_id;
       } else if (expression.expression_kind ==
@@ -3997,9 +3953,9 @@ BuildEngineProjectedNativeBindingContext(
     catalog_relation.security_epoch = resolved.security_epoch;
     catalog_relation.resource_epoch = projection.validated_resource_epoch;
     std::unordered_map<std::string, std::uint32_t> column_descriptor_by_name;
-    std::unordered_map<std::string, std::string> column_uuid_by_name;
-    std::unordered_set<std::string> descriptor_uuids;
-    std::unordered_set<std::string> column_uuids;
+    std::unordered_map<std::string, core::platform::Uuid> column_uuid_by_name;
+    std::set<core::platform::Uuid> descriptor_uuids;
+    std::set<core::platform::Uuid> column_uuids;
     for (std::size_t ordinal = 0; ordinal < projection.columns.size(); ++ordinal) {
       const auto& column = projection.columns[ordinal];
       const auto descriptor_fields = ParseExactProjectedDescriptor(
@@ -4055,7 +4011,7 @@ BuildEngineProjectedNativeBindingContext(
           !CanonicalUuidBytes(profile->descriptor_uuid).has_value() ||
           !descriptor_uuids.insert(profile->descriptor_uuid).second ||
           !CanonicalUuidBytes(profile->type_uuid).has_value() ||
-          (!profile->collation_uuid.empty() &&
+          (!profile->collation_uuid.is_nil() &&
            !CanonicalUuidBytes(profile->collation_uuid).has_value()) ||
           profile->scale > profile->precision) {
         return std::nullopt;
@@ -4068,7 +4024,7 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.nullability = profile->nullable
                                    ? BoundNullability::kNullable
                                    : BoundNullability::kNonNull;
-      if (!profile->collation_uuid.empty()) {
+      if (!profile->collation_uuid.is_nil()) {
         descriptor.collation_uuid = profile->collation_uuid;
       }
       if (profile->width != 0) {
@@ -4123,7 +4079,7 @@ BuildEngineProjectedNativeBindingContext(
         continue;
       }
       std::optional<std::uint32_t> descriptor_id;
-      std::optional<std::string> bound_name_uuid;
+      std::optional<core::platform::Uuid> bound_name_uuid;
       switch (expression.expression_kind) {
         case NativeExpressionAstKind::kIdentifier: {
           if (expression.qualified_identifier.empty() ||
@@ -4359,8 +4315,8 @@ BuildEngineProjectedNativeBindingContext(
     }
 
     std::unordered_map<std::string, std::uint32_t> column_descriptor_by_name;
-    std::unordered_map<std::string, std::string> column_uuid_by_name;
-    std::unordered_set<std::string> descriptor_uuids;
+    std::unordered_map<std::string, core::platform::Uuid> column_uuid_by_name;
+    std::set<core::platform::Uuid> descriptor_uuids;
     NativeCatalogRelationBindingInput catalog_relation;
     if (!expression_backed_unnest) {
       const auto& resolved = resolved_object_reference_seeds.front().resolved;
@@ -4391,7 +4347,7 @@ BuildEngineProjectedNativeBindingContext(
       catalog_relation.security_epoch = resolved.security_epoch;
       catalog_relation.resource_epoch = projection.validated_resource_epoch;
 
-      std::unordered_set<std::string> column_uuids;
+      std::set<core::platform::Uuid> column_uuids;
       for (std::size_t ordinal = 0; ordinal < projection.columns.size();
            ++ordinal) {
         const auto& column = projection.columns[ordinal];
@@ -4458,7 +4414,7 @@ BuildEngineProjectedNativeBindingContext(
           !CanonicalUuidBytes(profile->descriptor_uuid).has_value() ||
           !descriptor_uuids.insert(profile->descriptor_uuid).second ||
           !CanonicalUuidBytes(profile->type_uuid).has_value() ||
-          (!profile->collation_uuid.empty() &&
+          (!profile->collation_uuid.is_nil() &&
            !CanonicalUuidBytes(profile->collation_uuid).has_value()) ||
           profile->scale > profile->precision) {
         return std::nullopt;
@@ -4471,7 +4427,7 @@ BuildEngineProjectedNativeBindingContext(
       descriptor.nullability = profile->nullable
                                    ? BoundNullability::kNullable
                                    : BoundNullability::kNonNull;
-      if (!profile->collation_uuid.empty()) {
+      if (!profile->collation_uuid.is_nil()) {
         descriptor.collation_uuid = profile->collation_uuid;
       }
       if (profile->width != 0) {
@@ -4539,7 +4495,7 @@ BuildEngineProjectedNativeBindingContext(
         continue;
       }
       std::optional<std::uint32_t> descriptor_id;
-      std::optional<std::string> bound_name_uuid;
+      std::optional<core::platform::Uuid> bound_name_uuid;
       const bool exact_document_unnest_root =
           expression_backed_unnest &&
           document_source->model_document_expression_id ==
@@ -4933,28 +4889,39 @@ BuildEngineProjectedNativeBindingContext(
         ast.expressions, [&](const auto& candidate) {
           return candidate.expression_id == invocation.function_expression_id;
         });
-    constexpr std::string_view kRowNumberFunctionUuid =
-        "019de5fc-2400-7539-bcce-00eef3ae7220";
-    constexpr std::string_view kRankFunctionUuid =
-        "019de5fc-2400-7b94-870d-0dd789ca70ab";
-    constexpr std::string_view kDenseRankFunctionUuid =
-        "019de5fc-2400-741d-bef0-f079fd3ba494";
-    constexpr std::string_view kPercentRankFunctionUuid =
-        "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
-    constexpr std::string_view kCumeDistFunctionUuid =
-        "019de5fc-2400-721c-be64-2568b64a02b9";
-    constexpr std::string_view kNtileFunctionUuid =
-        "019de5fc-2400-7047-9474-232ca488c094";
-    constexpr std::string_view kLagFunctionUuid =
-        "019de5fc-2400-782c-8436-9ac310301738";
-    constexpr std::string_view kLeadFunctionUuid =
-        "019de5fc-2400-7a06-bc3c-6747cf5be66f";
-    constexpr std::string_view kFirstValueFunctionUuid =
-        "019de5fc-2400-7264-90fb-d25bd0f806f2";
-    constexpr std::string_view kLastValueFunctionUuid =
-        "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
-    constexpr std::string_view kNthValueFunctionUuid =
-        "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
+    constexpr core::platform::Uuid kRowNumberFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x75, 0x39,
+        0xbc, 0xce, 0x00, 0xee, 0xf3, 0xae, 0x72, 0x20}};
+    constexpr core::platform::Uuid kRankFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7b, 0x94,
+        0x87, 0x0d, 0x0d, 0xd7, 0x89, 0xca, 0x70, 0xab}};
+    constexpr core::platform::Uuid kDenseRankFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x74, 0x1d,
+        0xbe, 0xf0, 0xf0, 0x79, 0xfd, 0x3b, 0xa4, 0x94}};
+    constexpr core::platform::Uuid kPercentRankFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0x86,
+        0x86, 0xfe, 0x96, 0xf3, 0xf2, 0x7b, 0x5d, 0xd6}};
+    constexpr core::platform::Uuid kCumeDistFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x72, 0x1c,
+        0xbe, 0x64, 0x25, 0x68, 0xb6, 0x4a, 0x02, 0xb9}};
+    constexpr core::platform::Uuid kNtileFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x70, 0x47,
+        0x94, 0x74, 0x23, 0x2c, 0xa4, 0x88, 0xc0, 0x94}};
+    constexpr core::platform::Uuid kLagFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x78, 0x2c,
+        0x84, 0x36, 0x9a, 0xc3, 0x10, 0x30, 0x17, 0x38}};
+    constexpr core::platform::Uuid kLeadFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7a, 0x06,
+        0xbc, 0x3c, 0x67, 0x47, 0xcf, 0x5b, 0xe6, 0x6f}};
+    constexpr core::platform::Uuid kFirstValueFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x72, 0x64,
+        0x90, 0xfb, 0xd2, 0x5b, 0xd0, 0xf8, 0x06, 0xf2}};
+    constexpr core::platform::Uuid kLastValueFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0x23,
+        0xa5, 0xbe, 0x7e, 0xd3, 0xf1, 0xa5, 0xc3, 0xec}};
+    constexpr core::platform::Uuid kNthValueFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0xc9,
+        0x80, 0xe6, 0x9f, 0x2c, 0xcf, 0x08, 0x07, 0x6f}};
     const bool rank_window =
         function_expression != ast.expressions.end() &&
         function_expression->operator_name == "RANK";
@@ -5089,21 +5056,19 @@ BuildEngineProjectedNativeBindingContext(
         aggregate_boolean_window
             ? EngineIssuedAggregateFunctionUuid(
                   statement_context, function_expression->operator_name)
-            : std::optional<std::string_view>{};
-    const std::string_view expected_function_uuid =
+            : std::optional<core::platform::Uuid>{};
+    const core::platform::Uuid expected_function_uuid =
         aggregate_window
             ? (aggregate_boolean_window
                    ? boolean_aggregate_function_uuid.value_or(
-                         std::string_view{})
+                         core::platform::Uuid{})
                    : (function_expression->operator_name == "SUM"
-                   ? std::string_view(statement_context.sum_function_uuid)
+                   ? statement_context.sum_function_uuid
                    : (function_expression->operator_name == "MIN"
-                          ? std::string_view(statement_context.min_function_uuid)
+                          ? statement_context.min_function_uuid
                           : (function_expression->operator_name == "MAX"
-                                 ? std::string_view(
-                                       statement_context.max_function_uuid)
-                                 : std::string_view(
-                                       statement_context.count_function_uuid)))))
+                                 ? statement_context.max_function_uuid
+                                 : statement_context.count_function_uuid))))
             : (value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
@@ -5274,7 +5239,7 @@ BuildEngineProjectedNativeBindingContext(
         result_profile->nullable !=
             (value_window && !aggregate_count_window) ||
         ((aggregate_boolean_window || boolean_navigation_value) &&
-         (!result_profile->collation_uuid.empty() ||
+         (!result_profile->collation_uuid.is_nil() ||
           result_profile->width != 0 || result_profile->precision != 0 ||
           result_profile->scale != 0)) ||
         !CanonicalUuidBytes(result_profile->descriptor_uuid).has_value() ||
@@ -5413,7 +5378,7 @@ BuildEngineProjectedNativeBindingContext(
           order_profile->slot != 0 ||
           !CanonicalUuidBytes(order_profile->descriptor_uuid).has_value() ||
           !CanonicalUuidBytes(order_profile->type_uuid).has_value() ||
-          !order_profile->collation_uuid.empty() || order_profile->width != 0 ||
+          !order_profile->collation_uuid.is_nil() || order_profile->width != 0 ||
           order_profile->precision != 0 || order_profile->scale != 0 ||
           has_qualify || ast.window_definitions.size() != 1 ||
           definition.name.has_value() || definition.base_name.has_value() ||
@@ -6946,10 +6911,10 @@ BuildEngineProjectedNativeBindingContext(
           const auto projection_bound_name =
               source.source_kind == NativeRelationSourceAstKind::kSearch &&
                       (ordinal == 1 || ordinal == 2)
-                  ? std::optional<std::string>{
+                  ? std::optional<core::platform::Uuid>{
                         resolved_object_reference_seeds[resolution_ordinal + 1]
                             .resolved.object_uuid}
-                  : std::optional<std::string>{resolved.object_uuid};
+                  : std::optional<core::platform::Uuid>{resolved.object_uuid};
           context.expressions.push_back(
               {projection_expression_id, context.descriptors.back().descriptor_id,
                std::nullopt, projection_bound_name});
@@ -7152,7 +7117,7 @@ BuildEngineProjectedNativeBindingContext(
           }
           const auto* expression = expression_for(ast_id);
           std::optional<std::uint32_t> descriptor_id;
-          std::optional<std::string> bound_name_uuid;
+          std::optional<core::platform::Uuid> bound_name_uuid;
           if (expression->expression_kind ==
                   NativeExpressionAstKind::kIdentifier &&
               source.alias.has_value() &&
@@ -8193,7 +8158,7 @@ BuildEngineProjectedNativeBindingContext(
       context.descriptors.push_back(std::move(descriptor));
       context.expressions.push_back(
           {aggregate_expression->expression_id, *aggregate_binding_id,
-           std::string(*sum_function_uuid), std::nullopt});
+           *sum_function_uuid, std::nullopt});
       aggregate_output_name = "total_amount";
       aggregate_semantic =
           "aggregate.grouped-int64-key-sum.v1";
@@ -8440,7 +8405,7 @@ BuildEngineProjectedNativeBindingContext(
       context.descriptors.push_back(std::move(descriptor));
       context.expressions.push_back(
           {*aggregate_binding_id, *aggregate_binding_id,
-           std::string(*aggregate_function_uuid),
+           *aggregate_function_uuid,
            std::nullopt});
       if (string_agg_function || listagg_function) {
         const auto separator_expression = std::ranges::find_if(
@@ -8889,7 +8854,7 @@ BuildEngineProjectedNativeBindingContext(
     descriptor.nullability = profile->nullable
                                  ? BoundNullability::kNullable
                                  : BoundNullability::kNonNull;
-    if (!profile->collation_uuid.empty()) {
+    if (!profile->collation_uuid.is_nil()) {
       descriptor.collation_uuid = profile->collation_uuid;
     }
     if (profile->width != 0) descriptor.width_precision_scale.width = profile->width;
@@ -9026,8 +8991,8 @@ BuildEngineProjectedNativeBindingContext(
 
   for (const auto& expression : ast.expressions) {
     auto descriptor = descriptor_by_expression.find(expression.expression_id);
-    std::optional<std::string> function_uuid;
-    std::optional<std::string> bound_name_uuid;
+    std::optional<core::platform::Uuid> function_uuid;
+    std::optional<core::platform::Uuid> bound_name_uuid;
     if (descriptor == descriptor_by_expression.end()) {
       std::optional<std::uint32_t> selected;
       if (expression.expression_kind == NativeExpressionAstKind::kIdentifier) {
@@ -10067,56 +10032,19 @@ EncodeContextualTextPrebindRequestV2(
   state.request.resource_epoch = statement_context.preliminary_resource_epoch;
   state.request.mga_snapshot_uuid = *mga;
 
-  const auto exact_handle_list = [](const std::vector<std::uint32_t>& handles) {
-    if (handles.empty()) return std::string{"-"};
-    std::string encoded;
-    for (const auto handle : handles) {
-      if (!encoded.empty()) encoded.push_back(',');
-      encoded.append(std::to_string(handle));
-    }
-    return encoded;
-  };
   const auto exact_lowered_expression =
       [&](const BoundExpressionAstRecord& expression) {
+        const auto expected = MakeRelationalExpressionOperand(expression);
+        if (!expected) return false;
         const SblrOperand* lowered_expression = nullptr;
         for (const auto& operand : lowered.operands) {
-          if (operand.type != "relational_expression_v1" ||
-              operand.name != std::to_string(expression.expression_id)) {
-            continue;
-          }
+          if (operand.type != expected->type || operand.name != expected->name) continue;
           if (lowered_expression != nullptr) return false;
           lowered_expression = &operand;
         }
-        if (lowered_expression == nullptr) return false;
-        const auto fields = SplitCanonicalFields(lowered_expression->value);
-        if (fields.size() != 8 ||
-            fields[0] != std::to_string(
-                             static_cast<std::uint8_t>(
-                                 expression.expression_kind) +
-                             1) ||
-            fields[1] != exact_handle_list(expression.child_expression_ids) ||
-            fields[2] != std::to_string(expression.result_descriptor_id) ||
-            fields[3] != expression.bound_function_uuid.value_or("-") ||
-            fields[4] != expression.bound_name_uuid.value_or("-") ||
-            fields[5] !=
-                (expression.literal_kind.has_value()
-                     ? std::to_string(
-                           static_cast<std::uint8_t>(*expression.literal_kind) +
-                           1)
-                     : "-")) {
-          return false;
-        }
-        const auto exact_optional_hex = [](std::string_view encoded,
-                                           const auto& expected) {
-          if (!expected.has_value()) return encoded == "-";
-          const auto decoded = DecodeCanonicalHexBytes(encoded);
-          return decoded.has_value() &&
-                 std::string(decoded->begin(), decoded->end()) == *expected;
-        };
-        return exact_optional_hex(fields[6],
-                                  expression.canonical_operator_name) &&
-               exact_optional_hex(fields[7],
-                                  expression.literal_or_parameter_ref);
+        return lowered_expression && lowered_expression->value.empty() &&
+            lowered_expression->canonical_value_kind == expected->canonical_value_kind &&
+            lowered_expression->canonical_value_body == expected->canonical_value_body;
       };
 
   std::vector<const BoundExpressionAstRecord*> contextual_literals;
@@ -10376,7 +10304,7 @@ EncodeContextualTextPrebindRequestV2(
         target_descriptor->datatype_registry_generation !=
             projection.datatype_registry_generation ||
         target_descriptor->collation_uuid !=
-            std::optional<std::string>{projected_column->collation_uuid} ||
+            std::optional<core::platform::Uuid>{projected_column->collation_uuid} ||
         target_descriptor->width_precision_scale.width !=
             expected_target_width ||
         target_descriptor->nullability !=
@@ -10687,7 +10615,7 @@ bool ConsumeContextualTextPrebindResultV2(
         target_descriptor->datatype_registry_generation !=
             profile.datatype_registry_generation ||
         target_descriptor->collation_uuid !=
-            std::optional<std::string>{occurrence.target_collation_uuid} ||
+            std::optional<core::platform::Uuid>{occurrence.target_collation_uuid} ||
         target_descriptor->width_precision_scale.width !=
             (occurrence.target_character_length == 0
                  ? std::optional<std::uint32_t>{}
@@ -11188,16 +11116,11 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
   std::vector<LiteralNode> nodes;
   std::unordered_set<std::uint32_t> consumed_contextual_nodes;
   for (const auto& operand : lowered.operands) {
-    if (operand.type != "relational_expression_v1") continue;
-    const auto fields = SplitCanonicalFields(operand.value);
-    if (fields.size() != 8 || fields[0] != "1") continue;
-    std::uint32_t node_id = 0;
-    const auto [node_end, node_error] = std::from_chars(
-        operand.name.data(), operand.name.data() + operand.name.size(), node_id);
-    if (node_error != std::errc{} ||
-        node_end != operand.name.data() + operand.name.size() || node_id == 0) {
-      return std::nullopt;
-    }
+    if (operand.type != "relational_expression_v2") continue;
+    scratchbird::engine::internal_api::RelationalExpressionRecord expression;
+    if (!DecodeRelationalExpressionOperand(operand, &expression)) return std::nullopt;
+    if (expression.expression_kind != scratchbird::engine::internal_api::RelationalExpressionKind::kLiteral) continue;
+    const auto node_id = expression.expression_id;
     const auto bound_literal = bound_literals.find(node_id);
     // SBXN is the exact proof table for negotiated numeric literals and
     // contextual TEXT equality literals.  Other typed literals (for example
@@ -11206,18 +11129,19 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
     if (bound_literal == bound_literals.end()) {
       continue;
     }
-    if (fields[1] != "-" || (fields[5] != "1" && fields[5] != "2")) {
+    if (!expression.child_expression_ids.empty() ||
+        (expression.literal_kind != scratchbird::engine::internal_api::RelationalLiteralKind::kNumeric &&
+         expression.literal_kind != scratchbird::engine::internal_api::RelationalLiteralKind::kString)) {
       return std::nullopt;
     }
-    const auto literal = DecodeCanonicalHexBytes(fields[7]);
-    const auto descriptor = descriptors.find(std::string(fields[2]));
+    const auto& literal = expression.literal_or_parameter_ref;
+    const auto descriptor = descriptors.find(std::to_string(expression.result_descriptor_id));
     if (!literal.has_value() || descriptor == descriptors.end() ||
-        ((fields[5] == "1") !=
+        ((expression.literal_kind == scratchbird::engine::internal_api::RelationalLiteralKind::kNumeric) !=
          (bound_literal->second->literal_kind ==
           NativeLiteralAstKind::kNumeric)) ||
         bound_literal->second->result_descriptor_id == 0 ||
-        fields[2] !=
-            std::to_string(bound_literal->second->result_descriptor_id)) {
+        expression.result_descriptor_id != bound_literal->second->result_descriptor_id) {
       return std::nullopt;
     }
     LiteralNode node;
@@ -12101,34 +12025,34 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
     canonical_operand.ordinal =
         static_cast<std::uint32_t>(canonical_operands.size() + 1);
     canonical_operand.type = operand.type;
+    const bool binary_expression = operand.type == "relational_expression_v2";
+    scratchbird::engine::internal_api::RelationalExpressionRecord expression_record;
+    if (binary_expression && !DecodeRelationalExpressionOperand(operand, &expression_record)) return std::nullopt;
+    const auto expression_key = binary_expression ? std::to_string(expression_record.expression_id) : operand.name;
     const bool numeric_name = !operand.name.empty() &&
         std::ranges::all_of(operand.name, [](unsigned char ch) {
           return ch >= '0' && ch <= '9';
         });
-    const auto property_uuid =
-        (operand.type == "relational_property_v1" ||
-         operand.type == "relational_property_v2")
-            ? CanonicalUuidBytes(operand.name)
-            : std::optional<std::array<std::uint8_t, 16>>{};
+    if (operand.type == "relational_property_v1" || operand.type == "relational_property_v2") return std::nullopt;
     const auto literal_reference =
-        operand.type == "relational_expression_v1" && expression_nodes.has_value()
-            ? expression_nodes->references.find(operand.name)
+        binary_expression && expression_nodes.has_value()
+            ? expression_nodes->references.find(expression_key)
             : (expression_nodes.has_value() ? expression_nodes->references.end()
                                             : decltype(expression_nodes->references.end()){});
     const bool is_literal_reference =
         expression_nodes.has_value() &&
         literal_reference != expression_nodes->references.end();
     const auto parameter_reference =
-        operand.type == "relational_expression_v1" && parameter_nodes.has_value()
-            ? parameter_nodes->references.find(operand.name)
+        binary_expression && parameter_nodes.has_value()
+            ? parameter_nodes->references.find(expression_key)
             : (parameter_nodes.has_value() ? parameter_nodes->references.end()
                                            : decltype(parameter_nodes->references.end()){});
     const bool is_parameter_reference =
         parameter_nodes.has_value() &&
         parameter_reference != parameter_nodes->references.end();
     const auto variable_reference =
-        operand.type == "relational_expression_v1" && variable_nodes.has_value()
-            ? variable_nodes->references.find(operand.name)
+        binary_expression && variable_nodes.has_value()
+            ? variable_nodes->references.find(expression_key)
             : (variable_nodes.has_value() ? variable_nodes->references.end()
                                           : decltype(variable_nodes->references.end()){});
     const bool is_variable_reference =
@@ -12138,18 +12062,16 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
     if (numeric_name && !is_literal_reference && !is_parameter_reference &&
         !is_variable_reference) {
       encoded_name = "slot_" + operand.name;
-    } else if (property_uuid.has_value()) {
-      static constexpr char kHex[] = "0123456789abcdef";
-      encoded_name = "property_";
-      encoded_name.reserve(41);
-      for (const auto byte : *property_uuid) {
-        encoded_name.push_back(kHex[byte >> 4]);
-        encoded_name.push_back(kHex[byte & 0x0f]);
-      }
     } else {
       encoded_name = operand.name;
     }
     canonical_operand.name = std::move(encoded_name);
+    if (is_literal_reference || is_parameter_reference || is_variable_reference) {
+      // These independently defined typed reference carriers keep their exact
+      // occurrence naming; they do not contain the retired delimiter tuple.
+      canonical_operand.type = "relational_expression_v1";
+      canonical_operand.name = expression_key;
+    }
     if (engine_sblr::IsRelationalContextIdentitySlot(operand.name)) {
       scratchbird::core::platform::Uuid identity;
       if (is_literal_reference || is_parameter_reference || is_variable_reference ||
@@ -12161,7 +12083,41 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
         return std::nullopt;
       canonical_operand.value_kind = engine_sblr::SblrValueKind::uuid_ref;
       canonical_operand.value_body = operand.canonical_value_body;
-    } else if (operand.canonical_value_kind != 0 || !operand.canonical_value_body.empty()) {
+    } else if (operand.type == "relational_row_pattern_v2" ||
+               operand.canonical_value_kind == static_cast<std::uint16_t>(engine_sblr::SblrValueKind::relational_row_pattern)) {
+      engine::internal_api::RelationalRowPatternRecord pattern;
+      if (!DecodeRelationalRowPatternOperand(operand, &pattern)) return std::nullopt;
+      canonical_operand.value_kind = engine_sblr::SblrValueKind::relational_row_pattern;
+      canonical_operand.value_body = operand.canonical_value_body;
+    } else if (operand.type == "relational_property_v3" ||
+               operand.canonical_value_kind == static_cast<std::uint16_t>(engine_sblr::SblrValueKind::relational_property)) {
+      engine::internal_api::RelationalPropertyRecord property;
+      if (!DecodeRelationalPropertyOperand(operand, &property)) return std::nullopt;
+      canonical_operand.value_kind = engine_sblr::SblrValueKind::relational_property;
+      canonical_operand.value_body = operand.canonical_value_body;
+    } else if (operand.type == "relational_window_definition_v2" ||
+               operand.canonical_value_kind == static_cast<std::uint16_t>(engine_sblr::SblrValueKind::relational_window_definition)) {
+      engine::internal_api::RelationalWindowDefinitionRecord definition;
+      if (!DecodeRelationalWindowDefinitionOperand(operand, &definition)) return std::nullopt;
+      canonical_operand.value_kind = engine_sblr::SblrValueKind::relational_window_definition;
+      canonical_operand.value_body = operand.canonical_value_body;
+    } else if (operand.type == "relational_window_invocation_v2" ||
+               operand.canonical_value_kind == static_cast<std::uint16_t>(engine_sblr::SblrValueKind::relational_window_invocation)) {
+      engine::internal_api::RelationalWindowInvocationRecord invocation;
+      if (!DecodeRelationalWindowInvocationOperand(operand, &invocation)) return std::nullopt;
+      canonical_operand.value_kind = engine_sblr::SblrValueKind::relational_window_invocation;
+      canonical_operand.value_body = operand.canonical_value_body;
+    } else if (operand.type == "relational_node_binding_v2" ||
+               operand.canonical_value_kind == static_cast<std::uint16_t>(engine_sblr::SblrValueKind::relational_node_binding)) {
+      engine_sblr::RelationalNodeBindingRecord binding;
+      if (!DecodeRelationalNodeBindingOperand(operand, &binding)) return std::nullopt;
+      canonical_operand.value_kind = engine_sblr::SblrValueKind::relational_node_binding;
+      canonical_operand.value_body = operand.canonical_value_body;
+    } else if (binary_expression && !is_literal_reference && !is_parameter_reference && !is_variable_reference) {
+      canonical_operand.value_kind = engine_sblr::SblrValueKind::relational_expression;
+      canonical_operand.value_body = operand.canonical_value_body;
+    } else if ((operand.canonical_value_kind != 0 || !operand.canonical_value_body.empty()) &&
+               !is_literal_reference && !is_parameter_reference && !is_variable_reference) {
       scratchbird::engine::internal_api::RelationalTypeDescriptor descriptor;
       if (is_literal_reference || is_parameter_reference || is_variable_reference ||
           !operand.value.empty() || operand.type != "relational_descriptor_v3" ||
@@ -16320,7 +16276,7 @@ std::vector<ObjectReference> ExtractCatalogDdlObjectReferences(const CstDocument
     return refs;
   }
 
-  if (IsWord(cst.tokens[first_token], "ALTER")) {
+  if (IsWord(cst.tokens[first_token], "ALTER") || IsWord(cst.tokens[first_token], "RENAME")) {
     std::size_t marker = first_token + 1;
     std::string object_class = ExtractDdlObjectClassAt(cst, &marker);
     if (!object_class.empty()) push_ref(marker, std::move(object_class));
@@ -19694,7 +19650,7 @@ std::optional<CanonicalBytes> BuildDmlDeleteRowsBindDemand(
   const auto relation =
       CanonicalUuidBytes(lowered.resolved_object_uuids.front());
   const auto target_uuid =
-      ReadLoweredJsonStringField(lowered.payload, "target_object_uuid");
+      FindDmlObjectIdentity(lowered, "target_object_uuid");
   const auto predicate_kind =
       ReadLoweredJsonStringField(lowered.payload, "predicate_kind");
   const auto predicate_column =
@@ -19703,8 +19659,8 @@ std::optional<CanonicalBytes> BuildDmlDeleteRowsBindDemand(
       ReadLoweredJsonStringField(lowered.payload, "predicate_value");
   const auto predicate_type =
       ReadLoweredJsonStringField(lowered.payload, "predicate_value_type");
-  if (!relation || !target_uuid.valid || !target_uuid.present ||
-      target_uuid.value != lowered.resolved_object_uuids.front() ||
+  if (!relation || !target_uuid ||
+      *target_uuid != lowered.resolved_object_uuids.front() ||
       !predicate_kind.valid || !predicate_column.valid ||
       !predicate_value.valid || !predicate_type.valid) {
     return std::nullopt;
@@ -19733,9 +19689,9 @@ std::optional<CanonicalBytes> BuildDmlDeleteRowsBindDemand(
       ReadLoweredJsonStringField(lowered.payload, "target_uuid_resolution");
   const auto result_policy =
       ReadLoweredJsonStringField(lowered.payload, "result_payload_policy");
-  const std::array<const LoweredJsonStringField*, 11> fields{
+  const std::array<const LoweredJsonStringField*, 10> fields{
       &envelope_kind, &operation_id, &surface_variant, &target_kind,
-      &target_uuid, &target_resolution, &result_policy, &predicate_kind,
+      &target_resolution, &result_policy, &predicate_kind,
       &predicate_column, &predicate_value, &predicate_type};
   if (std::ranges::any_of(fields, [](const auto* field) {
         return field == nullptr || !field->valid;
@@ -19744,8 +19700,8 @@ std::optional<CanonicalBytes> BuildDmlDeleteRowsBindDemand(
       !operation_id.present || operation_id.value != "dml.delete_rows" ||
       !surface_variant.present || surface_variant.value != "delete" ||
       !target_kind.present || target_kind.value != "table" ||
-      !target_uuid.present || !CanonicalUuidBytes(target_uuid.value) ||
-      target_uuid.value != lowered.resolved_object_uuids.front() ||
+      !target_uuid ||
+      *target_uuid != lowered.resolved_object_uuids.front() ||
       !target_resolution.present ||
       target_resolution.value != "server_name_registry_required" ||
       !result_policy.present || result_policy.value != "summary_only" ||
@@ -19847,7 +19803,7 @@ std::optional<CanonicalBytes> BuildDmlUpdateRowsBindDemand(
   const auto relation =
       CanonicalUuidBytes(lowered.resolved_object_uuids.front());
   const auto target_uuid =
-      ReadLoweredJsonStringField(lowered.payload, "target_object_uuid");
+      FindDmlObjectIdentity(lowered, "target_object_uuid");
   const auto assignment_column =
       ReadLoweredJsonStringField(lowered.payload, "assignment_column");
   const auto assignment_value =
@@ -19864,8 +19820,8 @@ std::optional<CanonicalBytes> BuildDmlUpdateRowsBindDemand(
       ReadLoweredJsonStringField(lowered.payload, "predicate_value");
   const auto predicate_type =
       ReadLoweredJsonStringField(lowered.payload, "predicate_value_type");
-  if (!relation || !target_uuid.valid || !target_uuid.present ||
-      target_uuid.value != lowered.resolved_object_uuids.front() ||
+  if (!relation || !target_uuid ||
+      *target_uuid != lowered.resolved_object_uuids.front() ||
       !assignment_column.valid || !assignment_value.valid ||
       !assignment_type.valid || !assignment_plan.valid ||
       !predicate_kind.valid || !predicate_column.valid ||
@@ -20014,7 +19970,7 @@ BuildCanonicalDmlUpdateSubmission(
   const auto target_kind =
       ReadLoweredJsonStringField(lowered.payload, "target_object_kind");
   const auto target_uuid =
-      ReadLoweredJsonStringField(lowered.payload, "target_object_uuid");
+      FindDmlObjectIdentity(lowered, "target_object_uuid");
   const auto target_resolution =
       ReadLoweredJsonStringField(lowered.payload, "target_uuid_resolution");
   const auto result_policy =
@@ -20036,9 +19992,9 @@ BuildCanonicalDmlUpdateSubmission(
   const auto predicate_type =
       ReadLoweredJsonStringField(lowered.payload, "predicate_value_type");
 
-  const std::array<const LoweredJsonStringField*, 15> fields{
+  const std::array<const LoweredJsonStringField*, 14> fields{
       &envelope_kind, &operation_id, &surface_variant, &target_kind,
-      &target_uuid, &target_resolution, &result_policy, &assignment_column,
+      &target_resolution, &result_policy, &assignment_column,
       &assignment_value, &assignment_type, &assignment_plan, &predicate_kind,
       &predicate_column, &predicate_value, &predicate_type};
   if (std::ranges::any_of(fields, [](const auto* field) {
@@ -20048,8 +20004,8 @@ BuildCanonicalDmlUpdateSubmission(
       !operation_id.present || operation_id.value != "dml.update_rows" ||
       !surface_variant.present || surface_variant.value != "update" ||
       !target_kind.present || target_kind.value != "table" ||
-      !target_uuid.present || !CanonicalUuidBytes(target_uuid.value) ||
-      target_uuid.value != lowered.resolved_object_uuids.front() ||
+      !target_uuid ||
+      *target_uuid != lowered.resolved_object_uuids.front() ||
       !target_resolution.present ||
       target_resolution.value != "server_name_registry_required" ||
       !result_policy.present || result_policy.value != "summary_only" ||
@@ -20153,7 +20109,7 @@ std::optional<std::uint16_t> PlanImportRowsFormatFamilyCode(
 
 std::optional<CanonicalBytes> BuildDmlPlanImportRowsBindDemand(
     const ParserStatementContext& statement_context,
-    std::string_view target_table_uuid, std::string_view source_kind,
+    const core::platform::Uuid& target_table_uuid, std::string_view source_kind,
     std::string_view format_family) {
   constexpr std::uint16_t kHeaderBytes = 120;
   const auto receipt =
@@ -20199,19 +20155,19 @@ std::optional<CanonicalBytes> BuildDmlPlanImportRowsBindDemand(
     return std::nullopt;
   }
   const auto target_uuid =
-      ReadLoweredJsonStringField(lowered.payload, "target_object_uuid");
+      FindDmlObjectIdentity(lowered, "target_object_uuid");
   const auto source_kind =
       ReadLoweredJsonStringField(lowered.payload, "source_kind");
   const auto format_family =
       ReadLoweredJsonStringField(lowered.payload, "format_family");
-  if (!target_uuid.valid || !target_uuid.present ||
-      target_uuid.value != lowered.resolved_object_uuids.front() ||
+  if (!target_uuid ||
+      *target_uuid != lowered.resolved_object_uuids.front() ||
       !source_kind.valid || !source_kind.present ||
       !format_family.valid || !format_family.present) {
     return std::nullopt;
   }
   return BuildDmlPlanImportRowsBindDemand(
-      statement_context, target_uuid.value, source_kind.value,
+      statement_context, *target_uuid, source_kind.value,
       format_family.value);
 }
 
@@ -22193,47 +22149,6 @@ std::string StripStatementTerminator(std::string sql) {
   return sql;
 }
 
-std::optional<ServerManagementCommand> ParseServerManagementCommand(std::string_view sql) {
-  const auto normalized = ToUpperAscii(StripStatementTerminator(std::string(sql)));
-  ServerManagementCommand command;
-  command.audit_reason = "sbsql_sbwp_tls_database_lifecycle_route";
-  if (normalized == "VERIFY DATABASE") {
-    command.operation_key = "verify_database";
-    command.operation_id = "lifecycle.verify_database";
-  } else if (normalized == "INSPECT DATABASE" || normalized == "DIAGNOSE DATABASE") {
-    command.operation_key = normalized.starts_with("INSPECT") ? "inspect_database" : "diagnose_database";
-    command.operation_id = "lifecycle.inspect_database";
-  } else if (normalized == "SHOW SERVER LIFECYCLE") {
-    command.operation_key = "show_server_lifecycle";
-    command.operation_id = "lifecycle.show_server_lifecycle";
-  } else if (normalized == "SHOW DATABASE SHUTDOWN STATE") {
-    command.operation_key = "show_database_shutdown_state";
-    command.operation_id = "lifecycle.show_database_shutdown_state";
-  } else if (normalized == "SHUTDOWN DATABASE") {
-    command.operation_key = "shutdown_database";
-    command.operation_id = "lifecycle.shutdown_database";
-    command.mode =
-        "acknowledgements_satisfied:true;"
-        "drain_complete:true";
-  } else if (normalized == "SHUTDOWN DATABASE FORCE" || normalized == "FORCE SHUTDOWN DATABASE") {
-    command.operation_key = "shutdown_database_force";
-    command.operation_id = "lifecycle.shutdown_force";
-    command.mode =
-        "shutdown_mode:force;"
-        "acknowledgements_satisfied:true;"
-        "force_termination_policy_uuid:019e0ec6-d13c-7000-8000-000000000013;"
-        "recovery_evidence_preserved:true";
-  } else if (normalized == "DROP DATABASE" || normalized == "DROP DATABASE LOGICAL" ||
-             normalized == "DROP DATABASE LOGICAL PRESERVE") {
-    command.operation_key = "drop_database";
-    command.operation_id = "lifecycle.drop_database";
-    command.mode = "drop_mode:logical";
-  } else {
-    return std::nullopt;
-  }
-  return command;
-}
-
 std::string CopyStreamParserJsonEnvelope(std::string_view kind,
                                          std::uint64_t total_rows,
                                          std::uint64_t reject_rows) {
@@ -22951,13 +22866,13 @@ bool Rcp079BuildAndBind(const std::string_view sql,
   const auto verified = VerifySblrEnvelope(lowered);
   const auto lowered_operation_count =
       std::ranges::count_if(lowered.operands, [](const auto& operand) {
-           if (operand.type != "relational_expression_v1") return false;
+           scratchbird::engine::internal_api::RelationalExpressionRecord expression;
+           if (!DecodeRelationalExpressionOperand(operand, &expression)) return false;
            static constexpr std::array<std::string_view, 6> kOperations{
                "SPATIAL_SOURCE", "SPATIAL_MATCH", "SPATIAL_NEAREST",
                "COLUMNAR_SOURCE", "COLUMNAR_FILTER", "COLUMNAR_PROJECT"};
            return std::ranges::any_of(kOperations, [&](const auto operation) {
-             return operand.value.find("|" + HexEncodeRouteText(operation) +
-                                       "|") != std::string::npos;
+             return expression.operator_name == operation;
            });
          });
   const bool exact_authoritative_text =
@@ -24317,8 +24232,9 @@ std::uint64_t ContextualTextLiteralV2ParserProofMaskImpl() {
           std::string(kTextTypeUuid) +
           "|1|datatype.text.utf8.v1|1|1|0|" + collation +
           "|-|256|-|-|" + receipt + "|" + catalog + "|1|1"});
-  package_lowered.operands.push_back(
-      {"relational_expression_v1", "17", "1|-|9|-|-|2|-|78"});
+  const auto package_literal_operand = MakeRelationalExpressionOperand(literal_expression);
+  if (!package_literal_operand) return mask;
+  package_lowered.operands.push_back(*package_literal_operand);
   ParserStatementContext package_statement;
   package_statement.catalog_epoch_uuid = Rcp073ProofUuid(9140);
   ParserStatementContext::DescriptorProfile wire_value_profile;
@@ -27069,64 +26985,6 @@ bool SbsqlTestWireSession::DisconnectExecutionRoute(MessageVectorSet* messages) 
   return false;
 }
 
-PipelineResult SbsqlTestWireSession::RunServerManagementCommand(
-    const ServerManagementCommand& command) {
-  ScopedParserState active(metrics_,
-                           session_.authenticated && HasExecutionRoute(),
-                           ParserState::kActive,
-                           ParserState::kAuthenticated);
-  PipelineResult result;
-  result.statement_family = "runtime_management";
-  result.operation_family = "sblr.management.runtime_operation.v3";
-  result.server_operation_id = command.operation_id;
-  if (!HasExecutionRoute()) {
-    result.messages.diagnostics.push_back(MakeDiagnostic(
-        "SBSQL.SERVER.UNAVAILABLE",
-        "ERROR",
-        "server lifecycle management requires an execution route",
-        "sbp_sbsql.wire"));
-    return result;
-  }
-  if (!session_.authenticated) {
-    result.messages.diagnostics.push_back(MakeDiagnostic(
-        "SBSQL.AUTH.REQUIRED",
-        "ERROR",
-        "server lifecycle management requires an authenticated server session",
-        "sbp_sbsql.wire"));
-    return result;
-  }
-  ServerManagementResult managed;
-  if (config_.embedded_engine_direct && embedded_client_ != nullptr) {
-    managed = embedded_client_->Manage(session_,
-                                       command.operation_key,
-                                       "",
-                                       command.mode,
-                                       command.audit_reason,
-                                       30000,
-                                       false);
-  } else {
-    managed = server_client_->Manage(session_,
-                            command.operation_key,
-                            "",
-                            command.mode,
-                            command.audit_reason,
-                            30000,
-                            false);
-  }
-  if (!managed.accepted) {
-    result.messages = managed.messages;
-    return result;
-  }
-  result.accepted = true;
-  result.server_row_count = 1;
-  result.server_result_payload =
-      "row[0]=operation_key=" + command.operation_key +
-      ";operation_id=" + command.operation_id +
-      ";route=sbwp_tls_listener_parser_sbps_server_engine" +
-      ";accepted=true;payload_bytes=" + std::to_string(managed.payload.size()) + "\n";
-  return result;
-}
-
 bool SbsqlTestWireSession::FinalizeSuccessfulAutocommitForWire(
     PipelineResult* statement_result) {
   if (statement_result == nullptr || !statement_result->accepted ||
@@ -27359,12 +27217,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                            submit && session_.authenticated && HasExecutionRoute(),
                            ParserState::kActive,
                            ParserState::kAuthenticated);
-  if (auto management = ParseServerManagementCommand(sql)) {
-    auto result = RunServerManagementCommand(*management);
-    mark_phase("server_management");
-    WriteParserPipelinePhaseTrace(sql, result, phase_micros);
-    return result;
-  }
+  // Lifecycle SQL has the same resource, parse/bind/lower, submit and finality
+  // boundaries as other statements. In particular, parse-only calls must not
+  // issue management requests or manufacture engine shutdown evidence.
   if (sql.size() > config_.resource_budget.max_statement_bytes) {
     if (metrics_) {
       metrics_->Increment("sys.metrics.parsers.resource.limit_exceeded_total");

@@ -12,7 +12,10 @@
 
 #include <array>
 #include <cstdint>
+#include <set>
 #include <string>
+#include <utility>
+#include <variant>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -183,6 +186,9 @@ bool SecurityContextHasRight(const EngineRequestContext& context,
 bool SecurityContextHasAnyAdmin(const EngineRequestContext& context,
                                 const std::vector<std::string>& rights);
 bool IsKnownSecurityRight(const std::string& right);
+// Immutable vocabulary shared by validation and bootstrap-right projection.
+// Membership in this set is not itself a grant.
+const std::set<std::string>& KnownSecurityRights();
 bool IsSupportedSecurityAuthorityClass(const std::string& authority_class);
 bool IsClusterSecurityAuthorityClass(const std::string& authority_class);
 SecurityProviderCapabilities SecurityProviderCapabilitiesFor(std::string provider_family);
@@ -196,8 +202,22 @@ MaterializedAuthorizationDecision EvaluateMaterializedAuthorization(
     const EngineMaterializedAuthorizationContext& authorization_context,
     const std::string& right,
     const EngineUuid& target_uuid);
-void AddSecurityEvidence(EngineApiResult* result, std::string kind, std::string id);
-void AddSecurityRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields);
+void AddSecurityEvidence(EngineApiResult* result, std::string kind, EngineEvidenceValue id);
+// Preserve the caller's explicit value category. UUID identity never travels
+// through TEXT, and UUID-looking user TEXT never becomes identity by spelling.
+// Convenience fields are not bound descriptors or authorization receipts.
+using SecurityRowValue = std::variant<std::string, EngineUuid, EngineTypedValue>;
+using SecurityRowFields = std::vector<std::pair<std::string, SecurityRowValue>>;
+void AddSecurityRow(EngineApiResult* result, SecurityRowFields fields);
+template<class Allocator>
+void AddSecurityRow(EngineApiResult* result,
+                    std::vector<std::pair<std::string, std::string>, Allocator> fields) {
+  SecurityRowFields typed;
+  typed.reserve(fields.size());
+  for (auto& [name, value] : fields)
+    typed.emplace_back(std::move(name), std::move(value));
+  AddSecurityRow(result, std::move(typed));
+}
 EngineApiDiagnostic AppendSecurityEvidenceEvent(const EngineRequestContext& context,
                                                 const std::string& operation_id,
                                                 const std::string& evidence_kind,

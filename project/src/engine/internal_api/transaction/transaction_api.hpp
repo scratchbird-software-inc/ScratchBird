@@ -11,6 +11,7 @@
 #include "api_types.hpp"
 #include "procedural/procedural_block_ir.hpp"
 #include "transaction_snapshot.hpp"
+#include "inventory_publication_io.hpp"
 
 #include <mutex>
 #include <array>
@@ -86,8 +87,12 @@ struct EngineSetTransactionCharacteristicsResult : EngineApiResult {};
 EngineSetTransactionCharacteristicsResult EngineSetTransactionCharacteristics(
     const EngineSetTransactionCharacteristicsRequest& request);
 
-struct EngineCommitTransactionRequest : EngineApiRequest {};
+struct EngineCommitTransactionRequest : EngineApiRequest {
+  scratchbird::storage::database::InventoryPageSyncPolicy inventory_page_sync_policy =
+      scratchbird::storage::database::InventoryPageSyncPolicy::batched;
+};
 struct EngineCommitTransactionResult : EngineApiResult {
+  scratchbird::storage::database::InventoryPublicationIo inventory_publication_io;
   std::string commit_finality_state = "not_final";
   bool engine_finality_known = false;
   bool post_inventory_secondary_failure = false;
@@ -95,6 +100,8 @@ struct EngineCommitTransactionResult : EngineApiResult {
 EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransactionRequest& request);
 
 struct EngineAutocommitBoundaryRequest : EngineApiRequest {
+  scratchbird::storage::database::InventoryPageSyncPolicy inventory_page_sync_policy =
+      scratchbird::storage::database::InventoryPageSyncPolicy::batched;
   bool statement_succeeded = true;
   std::string replacement_isolation_level;
   EngineProfileSet transaction_policy_profile;
@@ -166,6 +173,7 @@ struct EngineLockNamedRequest : EngineApiRequest {};
 struct EngineLockNamedResult : EngineApiResult {
   std::string lock_surface;
   std::string lock_decision;
+  // Opaque NLK1 binary map key. Never render this member as UTF-8.
   std::string resource_key;
   bool acquired = false;
 };
@@ -175,6 +183,7 @@ struct EngineUnlockNamedRequest : EngineApiRequest {};
 struct EngineUnlockNamedResult : EngineApiResult {
   std::string lock_surface;
   std::string release_outcome;
+  // Opaque NLK1 binary map key. Never render this member as UTF-8.
   std::string resource_key;
   bool released = false;
 };

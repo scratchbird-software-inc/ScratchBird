@@ -111,7 +111,7 @@ EngineDmlDeleteRowsExecuteResultV1 ExecuteDmlDeleteRowsDescriptorV1(
     auto observed = ObserveDmlDeleteRecoveryAuthorityV1(context, lease->store().chain());
     if (!observed.ok) return recover_failure(observed.diagnostic);
     const auto& bundle = lease->bundle();
-    const auto marker_key = MgaSavepointUuidKey(datatype_operator_projection::UuidText(bundle.reserved_statement_savepoint_uuid));
+    const auto marker_key = MgaSavepointUuidKey(datatype_operator_projection::UuidValue(bundle.reserved_statement_savepoint_uuid));
     const auto prior_marker = ObserveUniqueMgaSavepointMarkerV1(context, marker_key);
     if (!prior_marker.ok) return recover_failure(prior_marker.diagnostic);
     if (!lease->has_live_binding() || observed.head.lifecycle_state != State::bound ||

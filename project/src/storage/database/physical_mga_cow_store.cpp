@@ -8,6 +8,10 @@
 
 #include "physical_mga_cow_store.hpp"
 #include "catalog_schema_definition.hpp"
+#include "catalog_metric_retention_policy.hpp"
+#include "catalog_metric_descriptor.hpp"
+#include "catalog_metric_label_schema.hpp"
+#include "catalog_metric_series.hpp"
 
 #include "database_format.hpp"
 #include "disk_device.hpp"
@@ -1852,6 +1856,15 @@ DecodedNativeCatalogRows DecodeNativeCatalogRows(const RowDataPageBody& body,
         prior->second,decoded.metadata.at(row.version_uuid)))
       return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.schema_origin_changed");
     if (prior!=decoded.metadata.end()) {
+      if (!catalog::CatalogMetricSeriesPreservesOrigin(prior->second,decoded.metadata.at(row.version_uuid)))
+        return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.metric_series_origin_changed");
+      if (!catalog::CatalogMetricLabelSchemaPreservesOrigin(prior->second,decoded.metadata.at(row.version_uuid)))
+        return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.metric_label_schema_origin_changed");
+      if (!catalog::CatalogMetricDescriptorPreservesOrigin(prior->second,decoded.metadata.at(row.version_uuid)))
+        return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.metric_descriptor_origin_changed");
+      if (!catalog::CatalogMetricRetentionPolicyPreservesOrigin(
+          prior->second,decoded.metadata.at(row.version_uuid)))
+        return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.metric_retention_origin_changed");
       const auto before=decoded.names.find(row.previous_version_uuid),after=decoded.names.find(row.version_uuid);
       if ((before!=decoded.names.end() || after!=decoded.names.end()) &&
           (before==decoded.names.end() || after==decoded.names.end() ||
@@ -2239,6 +2252,10 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
             return fail(E::invalid_chain);
         }
         if (!catalog::CatalogSchemaDefinitionPreservesOrigin(before,after) ||
+            !catalog::CatalogMetricRetentionPolicyPreservesOrigin(before,after) ||
+            !catalog::CatalogMetricDescriptorPreservesOrigin(before,after) ||
+            !catalog::CatalogMetricSeriesPreservesOrigin(before,after) ||
+            !catalog::CatalogMetricLabelSchemaPreservesOrigin(before,after) ||
             before.definition_version==std::numeric_limits<u64>::max() || after.definition_version!=before.definition_version+1 ||
             after.schema_epoch<before.schema_epoch || after.security_epoch<before.security_epoch || after.resource_epoch<before.resource_epoch ||
             after.catalog_generation<before.catalog_generation || after.dependency_generation<before.dependency_generation ||
@@ -2296,6 +2313,45 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
   } catch (const std::bad_alloc&) { return fail(E::resource_exhausted); }
     catch (const std::length_error&) { return fail(E::resource_exhausted); }
     catch (...) { return fail(E::io_failure); }
+}
+
+NativeMetricCatalogReadResult ReadLocalNativeMetricCatalogFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>& devices,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding& relation,
+    const scratchbird::transaction::mga::TransactionIdentity& reader,
+    const scratchbird::transaction::mga::PublishedSnapshotPin& pin,
+    const scratchbird::core::platform::Uuid& metric_uuid, u64 descriptor_generation,
+    u64 maximum_retained_image_bytes) noexcept {
+  using E = NativeMetricCatalogReadError;
+  const auto fail = [](E error) { NativeMetricCatalogReadResult r; r.error=error; return r; };
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(metric_uuid) || !descriptor_generation)
+    return fail(E::invalid_request);
+  try {
+    NativeMetricCatalogReadResult result;
+    result.source=ReadNativePinnedCatalogVersionsFromOpenDevices(database_uuid,devices,checkpoint,
+        catalog_selector,relation_role,relation,reader,pin,maximum_retained_image_bytes);
+    if (!result.source.ok()) { result.error=E::source_failure; return result; }
+    std::vector<scratchbird::core::catalog::CatalogMetricRowView> views;
+    views.reserve(result.source.rows.size());
+    for (const auto& row : result.source.rows)
+      views.push_back({&row.metadata,row.provisional});
+    result.dependencies=scratchbird::core::catalog::ResolveLocalCatalogMetricBindings(
+        views,metric_uuid,descriptor_generation);
+    if (!result.dependencies.ok()) { result.error=E::dependency_failure; return result; }
+    const auto final_pin=pin.Resolve();
+    if (!final_pin.ok() || final_pin.descriptor.snapshot_uuid.value!=result.source.snapshot_uuid) {
+      result.dependencies={};
+      result.diagnostic=final_pin.diagnostic;
+      result.error=E::snapshot_failure;
+      return result;
+    }
+    result.error=E::none;
+    return result;
+  } catch (const std::bad_alloc&) { return fail(E::resource_exhausted); }
+    catch (const std::length_error&) { return fail(E::resource_exhausted); }
+    catch (...) { return fail(E::read_failure); }
 }
 
 NativeCatalogVersionReadResult ReadNativeCatalogVersionsFromOpenDevice(
@@ -2412,6 +2468,10 @@ PreparedNativeCatalogMutation PrepareNativeCatalogVersion(
         previous->metadata.record.header.kind != request.metadata.record.header.kind ||
         previous->metadata.record.header.deleted ||
         !catalog::CatalogSchemaDefinitionPreservesOrigin(previous->metadata,request.metadata) ||
+        !catalog::CatalogMetricRetentionPolicyPreservesOrigin(previous->metadata,request.metadata) ||
+        !catalog::CatalogMetricDescriptorPreservesOrigin(previous->metadata,request.metadata) ||
+        !catalog::CatalogMetricSeriesPreservesOrigin(previous->metadata,request.metadata) ||
+        !catalog::CatalogMetricLabelSchemaPreservesOrigin(previous->metadata,request.metadata) ||
         (is_name && (!previous->name_payload ||
          !catalog::CatalogNamePayloadPreservesIdentity(*previous->name_payload,*request.name_payload))) ||
         previous->metadata.definition_version == std::numeric_limits<u64>::max() ||

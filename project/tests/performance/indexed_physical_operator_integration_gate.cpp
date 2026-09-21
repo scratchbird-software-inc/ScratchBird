@@ -15,6 +15,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -114,8 +115,9 @@ bool HasEvidence(
   return std::any_of(evidence.begin(),
                      evidence.end(),
                      [&](const auto& item) {
+                       const auto* text = std::get_if<std::string>(&item.evidence_id);
                        return item.evidence_kind == kind &&
-                              item.evidence_id.find(id) != std::string::npos;
+                              text != nullptr && text->find(id) != std::string::npos;
                      });
 }
 
@@ -296,13 +298,26 @@ void TestMergeOrderedInput() {
   Require(HasEvidence(result.evidence, "merge_ordered_input_advance", "left:1"),
           "merge ordered advance evidence missing");
   Require(HasEvidence(result.evidence,
-                      "merge_ordered_left_stream_evidence",
-                      "indexed_physical_operator_scan_kind=merge_ordered_left"),
+                      "merge_ordered_left_stream_evidence.indexed_physical_operator_scan_kind",
+                      "merge_ordered_left"),
           "merge ordered left stream evidence missing");
   Require(HasEvidence(result.evidence,
-                      "merge_ordered_right_stream_evidence",
-                      "indexed_physical_operator_scan_kind=merge_ordered_right"),
+                      "merge_ordered_right_stream_evidence.indexed_physical_operator_scan_kind",
+                      "merge_ordered_right"),
           "merge ordered right stream evidence missing");
+  for (const auto& [kind, expected] :
+       std::vector<std::pair<std::string, platform::Uuid>>{
+           {"merge_ordered_left_index_uuid", left.tree.index_uuid.value},
+           {"merge_ordered_right_index_uuid", right.index_uuid.value}}) {
+    const auto evidence = std::find_if(result.evidence.begin(), result.evidence.end(),
+        [&](const auto& item) { return item.evidence_kind == kind; });
+    Require(evidence != result.evidence.end(), "merge index identity evidence missing");
+    const auto* identity = std::get_if<platform::Uuid>(&evidence->evidence_id);
+    Require(identity && *identity == expected,
+            "merge index identity was changed or converted to text");
+    Require(!HasEvidence(result.evidence, kind, ""),
+            "binary merge identity was accepted as text evidence");
+  }
 }
 
 void TestFailClosedDiagnostics() {

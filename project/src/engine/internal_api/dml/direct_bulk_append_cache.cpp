@@ -9,10 +9,12 @@
 #include "dml/direct_bulk_append_cache.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -42,9 +44,9 @@ struct DirectAppendIndexEntryCacheRecord {
   std::uint64_t observer_local_transaction_id = 0;
   std::uint64_t savepoint_authority_generation = 0;
   std::vector<CrudIndexEntryRecord> entries;
-  std::map<std::string, std::set<std::string>> keys_by_index;
-  std::map<std::string, LogicalKeyProjection> logical_keys_by_index;
-  std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
+  std::map<EngineUuid, std::set<std::string>> keys_by_index;
+  std::map<EngineUuid, LogicalKeyProjection> logical_keys_by_index;
+  std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>
       entry_by_index_key;
   bool entry_lookup_materialized = true;
 };
@@ -54,42 +56,52 @@ std::mutex& DirectAppendIndexEntryCacheMutex() {
   return mutex;
 }
 
-std::map<std::string, DirectAppendIndexEntryCacheRecord>&
+// A structured key preserves raw identity bytes and separates the route path
+// from identity/epoch fields. Neither UUID ordering nor cache membership grants
+// visibility: the MGA generation and row-count checks below still apply.
+using DirectBulkCacheKey = std::tuple<
+    std::string, EngineUuid, EngineUuid, EngineUuid, EngineUuid, EngineUuid,
+    EngineUuid, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t>;
+
+DirectBulkCacheKey DirectBulkAppendContextCacheKey(
+    const EngineRequestContext& context, const EngineUuid& table_uuid) {
+  return {context.database_path, context.database_uuid, table_uuid,
+          context.transaction_uuid, context.session_uuid, context.principal_uuid,
+          context.current_role_uuid, context.local_transaction_id,
+          context.catalog_generation_id, context.security_epoch,
+          CurrentMgaSavepointAuthorityGeneration(context)};
+}
+
+std::map<DirectBulkCacheKey, DirectAppendIndexEntryCacheRecord>&
 DirectAppendIndexEntryCache() {
-  static std::map<std::string, DirectAppendIndexEntryCacheRecord> cache;
+  static std::map<DirectBulkCacheKey, DirectAppendIndexEntryCacheRecord> cache;
   return cache;
 }
 
-std::map<std::string, DirectBulkAppendContextCacheRecord>&
+std::map<DirectBulkCacheKey, DirectBulkAppendContextCacheRecord>&
 DirectBulkAppendContextCache() {
-  static std::map<std::string, DirectBulkAppendContextCacheRecord> cache;
+  static std::map<DirectBulkCacheKey, DirectBulkAppendContextCacheRecord> cache;
   return cache;
 }
 
-std::string DirectAppendIndexEntryCacheKey(const EngineRequestContext& context,
-                                           const std::string& table_uuid) {
-  return context.database_path + "\n" + table_uuid;
+DirectBulkCacheKey DirectAppendIndexEntryCacheKey(
+    const EngineRequestContext& context, const EngineUuid& table_uuid) {
+  return DirectBulkAppendContextCacheKey(context, table_uuid);
 }
 
 void DirectEvictAppendIndexEntryCache(const EngineRequestContext& context,
-                                     const std::string& table_uuid) {
+                                     const EngineUuid& table_uuid) {
   const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
-  DirectAppendIndexEntryCache().erase(
-      DirectAppendIndexEntryCacheKey(context, table_uuid));
-}
-
-std::string DirectBulkAppendContextCacheKey(const EngineRequestContext& context,
-                                            const std::string& table_uuid) {
-  return context.database_path + "\n" +
-         std::to_string(context.local_transaction_id) + "\n" +
-         context.session_uuid + "\n" +
-         context.principal_uuid + "\n" +
-         context.current_role_uuid + "\n" +
-         std::to_string(context.catalog_generation_id) + "\n" +
-         std::to_string(context.security_epoch) + "\n" +
-         std::to_string(CurrentMgaSavepointAuthorityGeneration(context)) +
-         "\n" +
-         table_uuid;
+  auto& cache = DirectAppendIndexEntryCache();
+  for (auto it = cache.begin(); it != cache.end();) {
+    if (std::get<0>(it->first) == context.database_path &&
+        std::get<1>(it->first) == context.database_uuid &&
+        std::get<2>(it->first) == table_uuid) {
+      it = cache.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 bool DirectAppendIndexCacheAuthorityMatches(
@@ -101,19 +113,19 @@ bool DirectAppendIndexCacheAuthorityMatches(
              CurrentMgaSavepointAuthorityGeneration(context);
 }
 
-std::map<std::string, std::set<std::string>> DirectBuildIndexKeyCache(
+std::map<EngineUuid, std::set<std::string>> DirectBuildIndexKeyCache(
     const std::vector<CrudIndexEntryRecord>& entries) {
-  std::map<std::string, std::set<std::string>> keys_by_index;
+  std::map<EngineUuid, std::set<std::string>> keys_by_index;
   for (const auto& entry : entries) {
     keys_by_index[entry.index_uuid].insert(entry.key_value);
   }
   return keys_by_index;
 }
 
-std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
+std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>
 DirectBuildIndexEntryKeyCache(
     const std::vector<CrudIndexEntryRecord>& entries) {
-  std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
+  std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>
       entry_by_index_key;
   for (const auto& entry : entries) {
     entry_by_index_key[entry.index_uuid][entry.key_value] = entry;
@@ -122,11 +134,11 @@ DirectBuildIndexEntryKeyCache(
 }
 
 bool DirectLookupAppendIndexEntryCache(const EngineRequestContext& context,
-                                       const std::string& table_uuid,
+                                       const EngineUuid& table_uuid,
                                        std::uint64_t row_version_count,
                                        std::vector<CrudIndexEntryRecord>* entries,
-                                       std::map<std::string, std::set<std::string>>* keys_by_index,
-                                       std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>* entry_by_index_key) {
+                                       std::map<EngineUuid, std::set<std::string>>* keys_by_index,
+                                       std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>* entry_by_index_key) {
   if (entries == nullptr && keys_by_index == nullptr &&
       entry_by_index_key == nullptr) {
     return false;
@@ -142,20 +154,29 @@ bool DirectLookupAppendIndexEntryCache(const EngineRequestContext& context,
       !DirectAppendIndexCacheAuthorityMatches(found->second, context)) {
     return false;
   }
-  if (entries != nullptr) {
-    *entries = found->second.entries;
-  }
+  if (entry_by_index_key != nullptr && !found->second.entry_lookup_materialized)
+    return false;
+  // All copies precede publication; allocation failure cannot leave a caller
+  // with a new key set paired with an old entry set.
+  auto staged_entries = entries != nullptr ? found->second.entries
+                                           : std::vector<CrudIndexEntryRecord>{};
+  auto staged_keys = keys_by_index != nullptr ? found->second.keys_by_index
+      : std::map<EngineUuid, std::set<std::string>>{};
+  auto staged_lookup = entry_by_index_key != nullptr
+      ? found->second.entry_by_index_key
+      : std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>{};
+  if (entries != nullptr) entries->swap(staged_entries);
   if (keys_by_index != nullptr) {
-    *keys_by_index = found->second.keys_by_index;
+    keys_by_index->swap(staged_keys);
   }
   if (entry_by_index_key != nullptr) {
-    *entry_by_index_key = found->second.entry_by_index_key;
+    entry_by_index_key->swap(staged_lookup);
   }
   return true;
 }
 
 bool DirectAppendIndexEntryCacheAvailable(const EngineRequestContext& context,
-                                          const std::string& table_uuid,
+                                          const EngineUuid& table_uuid,
                                           std::uint64_t row_version_count,
                                           bool require_entry_lookup) {
   const std::uint64_t metadata_event_sequence =
@@ -172,12 +193,12 @@ bool DirectAppendIndexEntryCacheAvailable(const EngineRequestContext& context,
 
 bool DirectBuildAppendIndexConflictCaches(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_version_count,
     const std::vector<CrudIndexRecord>& indexes,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch,
-    std::map<std::string, std::set<std::string>>* keys_by_index,
-    std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>*
+    std::map<EngineUuid, std::set<std::string>>* keys_by_index,
+    std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>*
         entry_by_index_key) {
   if (keys_by_index == nullptr && entry_by_index_key == nullptr) {
     return false;
@@ -194,6 +215,15 @@ bool DirectBuildAppendIndexConflictCaches(
     return false;
   }
   auto& record = found->second;
+  if (entry_by_index_key != nullptr && !record.entry_lookup_materialized) {
+    return false;
+  }
+  // This API accumulates conflicts. Retain that contract while publishing both
+  // outputs together only after every provider projection/copy succeeds.
+  auto staged_keys = keys_by_index != nullptr ? *keys_by_index
+      : std::map<EngineUuid, std::set<std::string>>{};
+  auto staged_lookup = entry_by_index_key != nullptr ? *entry_by_index_key
+      : std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>{};
   for (const auto& index : indexes) {
     if (!DirectIndexIsUnique(index)) {
       continue;
@@ -214,14 +244,14 @@ bool DirectBuildAppendIndexConflictCaches(
     const auto cached_entries = record.entry_by_index_key.find(index.index_uuid);
     const auto append = [&](const auto& logical_key, const auto& physical_keys) {
       if (keys_by_index != nullptr) {
-        (*keys_by_index)[index.index_uuid].insert(logical_key);
+        staged_keys[index.index_uuid].insert(logical_key);
       }
       if (entry_by_index_key != nullptr &&
           cached_entries != record.entry_by_index_key.end()) {
         for (const auto& key : physical_keys) {
           const auto entry = cached_entries->second.find(key);
           if (entry != cached_entries->second.end()) {
-            (*entry_by_index_key)[index.index_uuid][key] = entry->second;
+            staged_lookup[index.index_uuid][key] = entry->second;
           }
         }
       }
@@ -243,12 +273,14 @@ bool DirectBuildAppendIndexConflictCaches(
       }
     }
   }
+  if (keys_by_index != nullptr) keys_by_index->swap(staged_keys);
+  if (entry_by_index_key != nullptr) entry_by_index_key->swap(staged_lookup);
   return true;
 }
 
 bool DirectLookupBulkAppendContextCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_version_count,
     DirectBulkAppendContextCacheRecord* record) {
   if (record == nullptr) return false;
@@ -263,13 +295,14 @@ bool DirectLookupBulkAppendContextCache(
       !found->second.state) {
     return false;
   }
-  *record = found->second;
+  auto staged = found->second;
+  *record = std::move(staged);
   return true;
 }
 
 void DirectStoreBulkAppendContextCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_version_count,
     const MgaRelationReadView& state,
     const std::vector<CrudIndexRecord>& visible_indexes,
@@ -293,7 +326,7 @@ void DirectStoreBulkAppendContextCache(
 
 bool DirectAdvanceBulkAppendContextCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t previous_row_version_count,
     std::uint64_t next_row_version_count,
     bool index_entries_authoritative,
@@ -317,7 +350,7 @@ bool DirectAdvanceBulkAppendContextCache(
 
 void DirectStoreAppendIndexEntryCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t row_version_count,
     const MgaRelationReadView& state,
     const std::vector<CrudIndexEntryRecord>& entries) {
@@ -331,10 +364,7 @@ void DirectStoreAppendIndexEntryCache(
       visible_entries.push_back(entry);
     }
   }
-  const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
-  auto& record =
-      DirectAppendIndexEntryCache()[DirectAppendIndexEntryCacheKey(context,
-                                                                  table_uuid)];
+  DirectAppendIndexEntryCacheRecord record;
   record.row_version_count = row_version_count;
   record.metadata_event_sequence =
       CurrentMgaRelationMetadataEventSequence(context);
@@ -346,6 +376,9 @@ void DirectStoreAppendIndexEntryCache(
   record.keys_by_index = DirectBuildIndexKeyCache(record.entries);
   record.entry_by_index_key = DirectBuildIndexEntryKeyCache(record.entries);
   record.entry_lookup_materialized = true;
+  const auto key = DirectAppendIndexEntryCacheKey(context, table_uuid);
+  const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
+  DirectAppendIndexEntryCache().insert_or_assign(key, std::move(record));
 }
 
 std::vector<CrudIndexEntryRecord> DirectIndexEntriesFromExactBatches(
@@ -353,8 +386,8 @@ std::vector<CrudIndexEntryRecord> DirectIndexEntriesFromExactBatches(
     const std::vector<MgaExactIndexEntryAppendBatch>& batches) {
   std::vector<CrudIndexEntryRecord> entries;
   for (const auto& batch : batches) {
-    const std::string table_uuid =
-        batch.index.table_uuid.empty() ? batch.table_uuid
+    const EngineUuid table_uuid =
+        batch.index.table_uuid.is_nil() ? batch.table_uuid
                                        : batch.index.table_uuid;
     for (const auto& exact : batch.entries) {
       CrudIndexEntryRecord entry;
@@ -379,8 +412,8 @@ std::vector<CrudIndexEntryRecord> DirectIndexEntriesFromRetailBatches(
     const std::vector<MgaIndexEntryAppendBatch>& batches) {
   std::vector<CrudIndexEntryRecord> entries;
   for (const auto& batch : batches) {
-    const std::string table_uuid =
-        batch.index.table_uuid.empty() ? batch.table_uuid
+    const EngineUuid table_uuid =
+        batch.index.table_uuid.is_nil() ? batch.table_uuid
                                        : batch.index.table_uuid;
     for (const auto& row : batch.rows) {
       for (const auto& key : CrudIndexKeysForValues(batch.index, row.values)) {
@@ -425,16 +458,42 @@ void DirectAppendIndexEntryToCacheRecord(
   }
 }
 
+// An append may allocate after modifying an entry vector or index map. If it
+// does not finish, discard that advisory record rather than expose a partial
+// proof cache at either the old or new row count. The cache mutex is held for
+// the guard's whole lifetime; erasing this iterator does not allocate.
+class DirectAppendCacheMutationGuard {
+ public:
+  explicit DirectAppendCacheMutationGuard(
+      std::map<DirectBulkCacheKey, DirectAppendIndexEntryCacheRecord>::iterator it)
+      : it_(it) {}
+  ~DirectAppendCacheMutationGuard() {
+    if (!finished_) DirectAppendIndexEntryCache().erase(it_);
+  }
+  DirectAppendCacheMutationGuard(const DirectAppendCacheMutationGuard&) = delete;
+  DirectAppendCacheMutationGuard& operator=(const DirectAppendCacheMutationGuard&) = delete;
+  void Finish() noexcept { finished_ = true; }
+
+ private:
+  std::map<DirectBulkCacheKey, DirectAppendIndexEntryCacheRecord>::iterator it_;
+  bool finished_ = false;
+};
+
 void DirectAppendIndexEntriesToCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t previous_row_version_count,
     std::uint64_t appended_row_count,
     const std::vector<CrudIndexEntryRecord>& appended_entries) {
   const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
-  auto& record =
-      DirectAppendIndexEntryCache()[DirectAppendIndexEntryCacheKey(context,
-                                                                  table_uuid)];
+  const auto [it, inserted] = DirectAppendIndexEntryCache().try_emplace(
+      DirectAppendIndexEntryCacheKey(context, table_uuid));
+  DirectAppendCacheMutationGuard mutation(it);
+  auto& record = it->second;
+  if (appended_row_count >
+      std::numeric_limits<std::uint64_t>::max() - previous_row_version_count) {
+    return;
+  }
   const auto metadata_event_sequence =
       CurrentMgaRelationMetadataEventSequence(context);
   const auto savepoint_authority_generation =
@@ -447,7 +506,6 @@ void DirectAppendIndexEntriesToCache(
     if (previous_row_version_count != 0) {
       // A delta is not a complete cache rebuild. Missing prior entries must
       // force a scoped reload on the next request, not certify a partial set.
-      DirectAppendIndexEntryCache().erase(DirectAppendIndexEntryCacheKey(context, table_uuid));
       return;
     }
     DirectClearAppendIndexEntryCacheRecord(&record);
@@ -460,20 +518,26 @@ void DirectAppendIndexEntriesToCache(
   record.observer_local_transaction_id = context.local_transaction_id;
   record.savepoint_authority_generation =
       savepoint_authority_generation;
+  mutation.Finish();
 }
 
 void DirectAppendIndexBatchesToCache(
     const EngineRequestContext& context,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     std::uint64_t previous_row_version_count,
     std::uint64_t appended_row_count,
     const std::vector<MgaExactIndexEntryAppendBatch>& exact_batches,
     const std::vector<MgaIndexEntryAppendBatch>& retail_batches,
     bool materialize_entry_lookup) {
   const std::lock_guard<std::mutex> guard(DirectAppendIndexEntryCacheMutex());
-  auto& record =
-      DirectAppendIndexEntryCache()[DirectAppendIndexEntryCacheKey(context,
-                                                                  table_uuid)];
+  const auto [it, inserted] = DirectAppendIndexEntryCache().try_emplace(
+      DirectAppendIndexEntryCacheKey(context, table_uuid));
+  DirectAppendCacheMutationGuard mutation(it);
+  auto& record = it->second;
+  if (appended_row_count >
+      std::numeric_limits<std::uint64_t>::max() - previous_row_version_count) {
+    return;
+  }
   const auto metadata_event_sequence =
       CurrentMgaRelationMetadataEventSequence(context);
   const auto savepoint_authority_generation =
@@ -484,18 +548,22 @@ void DirectAppendIndexBatchesToCache(
       record.savepoint_authority_generation !=
           savepoint_authority_generation) {
     if (previous_row_version_count != 0) {
-      DirectAppendIndexEntryCache().erase(DirectAppendIndexEntryCacheKey(context, table_uuid));
       return;
     }
     DirectClearAppendIndexEntryCacheRecord(&record);
+  }
+  if (materialize_entry_lookup && !record.entry_lookup_materialized) {
+    // A previous key-only append deliberately omitted this projection. Build
+    // it from every retained entry before claiming it is complete again.
+    record.entry_by_index_key = DirectBuildIndexEntryKeyCache(record.entries);
   }
   record.entry_lookup_materialized = materialize_entry_lookup;
   if (!materialize_entry_lookup) {
     record.entry_by_index_key.clear();
   }
   for (const auto& batch : exact_batches) {
-    const std::string batch_table_uuid =
-        batch.index.table_uuid.empty() ? batch.table_uuid
+    const EngineUuid batch_table_uuid =
+        batch.index.table_uuid.is_nil() ? batch.table_uuid
                                        : batch.index.table_uuid;
     for (const auto& exact : batch.entries) {
       CrudIndexEntryRecord entry;
@@ -515,8 +583,8 @@ void DirectAppendIndexBatchesToCache(
     }
   }
   for (const auto& batch : retail_batches) {
-    const std::string batch_table_uuid =
-        batch.index.table_uuid.empty() ? batch.table_uuid
+    const EngineUuid batch_table_uuid =
+        batch.index.table_uuid.is_nil() ? batch.table_uuid
                                        : batch.index.table_uuid;
     for (const auto& row : batch.rows) {
       for (const auto& key : CrudIndexKeysForValues(batch.index, row.values)) {
@@ -542,6 +610,7 @@ void DirectAppendIndexBatchesToCache(
   record.observer_local_transaction_id = context.local_transaction_id;
   record.savepoint_authority_generation =
       savepoint_authority_generation;
+  mutation.Finish();
 }
 
 }  // namespace scratchbird::engine::internal_api::dml::detail

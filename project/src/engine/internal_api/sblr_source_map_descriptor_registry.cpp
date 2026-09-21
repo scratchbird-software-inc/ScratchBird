@@ -1,31 +1,424 @@
+// Copyright (c) 2026 ScratchBird Software Inc.
+// SPDX-License-Identifier: MPL-2.0
 #include "sblr_source_map_descriptor_registry.hpp"
 #include "api_diagnostics.hpp"
 #include "hash_digest.hpp"
+#include "storage/disk/disk_device.hpp"
 #include "uuid.hpp"
+
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
-#include <fstream>
+#include <limits>
+#include <map>
 #include <mutex>
-#include <sstream>
-#include <unordered_map>
-#if !defined(_WIN32)
-#include <fcntl.h>
-#include <unistd.h>
-#endif
-namespace scratchbird::engine::internal_api {namespace{
-std::mutex m;std::unordered_map<std::string,SblrSourceMapDescriptorSnapshotV1> live;std::unordered_map<std::string,std::uint64_t> high;constexpr std::string_view magic="SBSMR1",domain="ScratchBird.SblrSourceMapDescriptorRegistry.V1";
-EngineApiDiagnostic D(std::string c,std::string k,std::string d={}){return MakeEngineApiDiagnostic(std::move(c),std::move(k),std::move(d));}EngineApiDiagnostic O(){return MakeEngineApiDiagnostic("OK","ok",{},false);}bool Tag(const EngineRequestContext&c,std::string_view t){return std::find(c.trace_tags.begin(),c.trace_tags.end(),t)!=c.trace_tags.end();}bool Authority(const EngineRequestContext&c){return c.security_context_present&&c.statement_metadata_snapshot_engine_owned&&Tag(c,"private_source_map_registry");}bool Admin(const EngineRequestContext&c){return c.security_context_present&&Tag(c,"right:SBLR_SOURCE_MAP_REGISTRY_ADMIN");}std::string Path(const EngineRequestContext&c){return c.database_path+".sb.sblr_source_map_registry.v1";}std::string H(std::string_view v){auto d=scratchbird::core::hash::ComputeSha256Digest(reinterpret_cast<const scratchbird::core::platform::byte*>(v.data()),v.size());return d.ok()?"sha256:"+scratchbird::core::hash::HexLower(d.digest):"";}void F(std::string*o,std::string_view v){o->append(std::to_string(v.size()));o->push_back(':');o->append(v);}std::string Material(const SblrSourceMapDescriptorSnapshotV1&s,std::uint64_t prior,std::string_view reason){std::string o(domain);for(const auto&v:{s.descriptor_uuid,s.registry_snapshot_uuid,s.statement_receipt_uuid,s.database_uuid,s.session_uuid,s.transaction_uuid,s.bound_ast_sha256,s.vector_sha256})F(&o,v);for(auto n:{s.descriptor_generation,s.registry_generation,prior,static_cast<std::uint64_t>(s.lifecycle)})F(&o,std::to_string(n));F(&o,reason);return o;}std::string New(std::uint64_t salt){auto now=static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count());auto u=scratchbird::core::uuid::GenerateEngineIdentityV7(scratchbird::core::platform::UuidKind::object,now+salt);return u.ok()?scratchbird::core::uuid::UuidToString(u.value.value):"";}std::string Hex(const std::vector<std::uint8_t>&v){static const char h[]="0123456789abcdef";std::string o;for(auto b:v){o.push_back(h[b>>4]);o.push_back(h[b&15]);}return o;}std::string Rec(const SblrSourceMapDescriptorSnapshotV1&s,std::uint64_t prior,std::string_view reason){std::ostringstream o;o<<magic<<'\t'<<s.descriptor_uuid<<'\t'<<s.descriptor_generation<<'\t'<<s.registry_snapshot_uuid<<'\t'<<s.registry_generation<<'\t'<<s.statement_receipt_uuid<<'\t'<<s.database_uuid<<'\t'<<s.session_uuid<<'\t'<<s.transaction_uuid<<'\t'<<s.bound_ast_sha256<<'\t'<<s.vector_sha256<<'\t'<<static_cast<unsigned>(s.lifecycle)<<'\t'<<prior<<'\t'<<reason<<'\t'<<s.decision_evidence_sha256<<'\t'<<Hex(s.canonical_smvd);return o.str();}bool Append(const EngineRequestContext&c,const std::string&line){std::ofstream o(Path(c),std::ios::binary|std::ios::app);if(!o)return false;o<<line<<'\n';o.flush();if(!o)return false;
-#if defined(_WIN32)
-return true;
-#else
-int fd=::open(Path(c).c_str(),O_WRONLY|O_CLOEXEC);bool ok=fd>=0&&::fsync(fd)==0;if(fd>=0)::close(fd);return ok;
-#endif
-}bool Publish(const EngineRequestContext&c,const SblrSourceMapDescriptorSnapshotV1&s,std::uint64_t prior,std::string_view reason){auto r=Rec(s,prior,reason);return Append(c,"E\t"+r)&&Append(c,"S\t"+r);}SblrSourceMapRegistryResultV1 Hidden(){SblrSourceMapRegistryResultV1 r;r.diagnostic=D("SECURITY.ACCESS_DENIED","sblr.source_map.hidden");return r;}std::string U(const std::array<std::uint8_t,16>&b){constexpr char h[]="0123456789abcdef";std::string o;for(size_t i=0;i<16;++i){if(i==4||i==6||i==8||i==10)o.push_back('-');o.push_back(h[b[i]>>4]);o.push_back(h[b[i]&15]);}return o;}std::string S(const std::array<std::uint8_t,32>&b){constexpr char h[]="0123456789abcdef";std::string o="sha256:";for(auto x:b){o.push_back(h[x>>4]);o.push_back(h[x&15]);}return o;}
-std::vector<std::string> Split(std::string_view v){std::vector<std::string>o;size_t b=0;while(b<=v.size()){auto e=v.find('\t',b);o.emplace_back(v.substr(b,e==std::string_view::npos?v.size()-b:e-b));if(e==std::string_view::npos)break;b=e+1;}return o;}bool N(std::string_view v,std::uint64_t*n){if(v.empty())return false;std::uint64_t x=0;for(char c:v){if(c<'0'||c>'9'||x>(UINT64_MAX-(c-'0'))/10)return false;x=x*10+(c-'0');}*n=x;return true;}bool Unhex(std::string_view v,std::vector<std::uint8_t>*o){if(v.size()%2)return false;o->clear();auto d=[](char c){return c>='0'&&c<='9'?c-'0':c>='a'&&c<='f'?c-'a'+10:-1;};for(size_t i=0;i<v.size();i+=2){auto a=d(v[i]),b=d(v[i+1]);if(a<0||b<0)return false;o->push_back((a<<4)|b);}return true;}bool DecodeRecord(const std::string&line,char kind,SblrSourceMapDescriptorSnapshotV1*s,std::uint64_t*prior,std::string*reason){auto f=Split(line);std::uint64_t life=0;if(f.size()!=17||f[0]!=std::string(1,kind)||f[1]!=magic||!N(f[3],&s->descriptor_generation)||!N(f[5],&s->registry_generation)||!N(f[12],&life)||life<1||life>2||!N(f[13],prior)||!Unhex(f[16],&s->canonical_smvd))return false;s->descriptor_uuid=f[2];s->registry_snapshot_uuid=f[4];s->statement_receipt_uuid=f[6];s->database_uuid=f[7];s->session_uuid=f[8];s->transaction_uuid=f[9];s->bound_ast_sha256=f[10];s->vector_sha256=f[11];s->lifecycle=static_cast<SblrSourceMapLifecycleV1>(life);*reason=f[14];s->decision_evidence_sha256=f[15];auto decoded=scratchbird::engine::sblr::DecodeSblrSourceMapDescriptorVectorV1(s->canonical_smvd.data(),s->canonical_smvd.size());return decoded.status==scratchbird::engine::sblr::SblrSourceMapDecodeStatusV1::ok&&U(decoded.vector.descriptor_uuid)==s->descriptor_uuid&&decoded.vector.descriptor_generation==s->descriptor_generation&&U(decoded.vector.registry_snapshot_uuid)==s->registry_snapshot_uuid&&decoded.vector.registry_generation<=s->registry_generation&&U(decoded.vector.statement_receipt_uuid)==s->statement_receipt_uuid&&S(decoded.vector.bound_ast_sha256)==s->bound_ast_sha256&&S(decoded.vector.vector_sha256)==s->vector_sha256&&s->decision_evidence_sha256==H(Material(*s,*prior,*reason));}bool Replay(const EngineRequestContext&c,std::unordered_map<std::string,SblrSourceMapDescriptorSnapshotV1>*states,std::uint64_t*h){states->clear();*h=0;std::ifstream in(Path(c),std::ios::binary);if(!in)return !std::filesystem::exists(Path(c));std::vector<std::string>lines;std::string line;while(std::getline(in,line))lines.push_back(line);if(!in.eof()||lines.size()%2)return false;for(size_t i=0;i<lines.size();i+=2){SblrSourceMapDescriptorSnapshotV1 e,s;std::uint64_t ep=0,sp=0;std::string er,sr;if(!DecodeRecord(lines[i],'E',&e,&ep,&er)||!DecodeRecord(lines[i+1],'S',&s,&sp,&sr)||lines[i].substr(2)!=lines[i+1].substr(2)||ep!=sp||er!=sr||s.database_uuid!=c.database_uuid||s.registry_generation<=*h)return false;auto it=states->find(s.descriptor_uuid);if((it==states->end()&&(sp!=0||s.descriptor_generation!=1||s.lifecycle!=SblrSourceMapLifecycleV1::active))||(it!=states->end()&&(sp!=it->second.registry_generation||s.statement_receipt_uuid!=it->second.statement_receipt_uuid||s.bound_ast_sha256!=it->second.bound_ast_sha256||s.registry_snapshot_uuid!=it->second.registry_snapshot_uuid||s.vector_sha256!=it->second.vector_sha256||s.canonical_smvd!=it->second.canonical_smvd||s.lifecycle!=SblrSourceMapLifecycleV1::revoked)))return false;(*states)[s.descriptor_uuid]=s;*h=s.registry_generation;}return true;}
+#include <span>
+#include <stdexcept>
+#include <string_view>
+#include <type_traits>
+
+namespace scratchbird::engine::internal_api {
+namespace {
+using Bytes = std::vector<std::uint8_t>;
+using Sha = SblrSourceMapHashV2;
+using Snapshot = SblrSourceMapDescriptorSnapshotV1;
+using Result = SblrSourceMapRegistryResultV1;
+namespace disk = scratchbird::storage::disk;
+constexpr std::size_t kHeader = 128, kRecordHeader = 264;
+constexpr std::size_t kMaximumBytes = 64U * 1024U * 1024U;
+constexpr std::size_t kMaximumSmvd = 426136;
+constexpr std::string_view kMagic{"SBSMR2\0\0", 8};
+constexpr std::string_view kSnapshotDomain = "ScratchBird.SourceMapRegistrySnapshot.V2";
+constexpr std::string_view kRecordDomain = "ScratchBird.SourceMapRegistryRecord.V2";
+std::mutex registry_mutex; // Synchronization only; no cross-node cached state.
+std::atomic<std::uint64_t> temporary_ordinal{0};
+struct Failure { const char* code; const char* key; };
+[[noreturn]] void Hidden() { throw Failure{"SECURITY.ACCESS_DENIED", "sblr.source_map.hidden"}; }
+[[noreturn]] void Stale() { throw Failure{"SBLR.SOURCE_MAP.STALE", "sblr.source_map.registry_corrupt"}; }
+[[noreturn]] void Invalid() { throw Failure{"SBLR.OPERAND_INVALID", "sblr.source_map.binding_invalid"}; }
+[[noreturn]] void Io() { throw Failure{"SBLR.EXECUTION_FAILED", "sblr.source_map.publication_unconfirmed"}; }
+[[noreturn]] void Limit() { throw Failure{"RESOURCE.BUDGET_EXCEEDED", "sblr.source_map.registry_limit"}; }
+bool Valid(const EngineUuid& id) { return core::uuid::IsEngineIdentityUuid(id); }
+bool Nonzero(const Sha& hash) {
+  return std::any_of(hash.begin(), hash.end(), [](auto b) { return b != 0; });
 }
-SblrSourceMapRegistryResultV1 IssueSblrSourceMapDescriptorV1(const EngineRequestContext&c,const std::string&receipt,const std::string&bound,const std::string&snapshot,std::uint64_t generation,std::vector<scratchbird::engine::sblr::SblrSourceMapEntryV1> entries){std::lock_guard l(m);if(!Authority(c))return Hidden();SblrSourceMapRegistryResultV1 out;if(entries.empty()||!generation||receipt.empty()||bound.rfind("sha256:",0)||snapshot.empty()){out.diagnostic=D("SBLR.OPERAND_INVALID","sblr.source_map.issue_invalid");return out;}auto&h=high[c.database_uuid];SblrSourceMapDescriptorSnapshotV1 s;s.descriptor_uuid=New(h+1);s.descriptor_generation=1;s.registry_snapshot_uuid=snapshot;s.registry_generation=++h;s.statement_receipt_uuid=receipt;s.database_uuid=c.database_uuid;s.session_uuid=c.session_uuid;s.transaction_uuid=c.transaction_uuid;s.bound_ast_sha256=bound;s.lifecycle=SblrSourceMapLifecycleV1::active;scratchbird::engine::sblr::SblrSourceMapDescriptorVectorV1 v;auto parsed=scratchbird::core::uuid::ParseUuid(s.descriptor_uuid);std::copy(parsed.value.bytes.begin(),parsed.value.bytes.end(),v.descriptor_uuid.begin());v.descriptor_generation=1;parsed=scratchbird::core::uuid::ParseUuid(snapshot);std::copy(parsed.value.bytes.begin(),parsed.value.bytes.end(),v.registry_snapshot_uuid.begin());v.registry_generation=s.registry_generation;parsed=scratchbird::core::uuid::ParseUuid(receipt);std::copy(parsed.value.bytes.begin(),parsed.value.bytes.end(),v.statement_receipt_uuid.begin());for(size_t i=0;i<32;++i){auto hex=bound.substr(7+i*2,2);v.bound_ast_sha256[i]=std::stoul(hex,nullptr,16);}v.entries=std::move(entries);s.canonical_smvd=scratchbird::engine::sblr::EncodeSblrSourceMapDescriptorVectorV1(&v);if(s.canonical_smvd.empty()){out.diagnostic=D("SBLR.OPERAND_INVALID","sblr.source_map.vector_invalid");return out;}s.vector_sha256=S(v.vector_sha256);s.decision_evidence_sha256=H(Material(s,0,"issue"));if(!Publish(c,s,0,"issue")){out.diagnostic=D("SBLR.EXECUTION_FAILED","sblr.source_map.publish_failed");return out;}live[s.descriptor_uuid]=s;out.ok=true;out.snapshot=s;out.diagnostic=O();out.evidence.push_back({"sblr.source_map.issue",s.decision_evidence_sha256});return out;}
-SblrSourceMapRegistryResultV1 LookupSblrSourceMapDescriptorV1(const EngineRequestContext&c,const std::string&receipt,const std::string&id,std::uint64_t dg,const std::string&bound,const std::string&snapshot,std::uint64_t rg){std::lock_guard l(m);if(!Authority(c))return Hidden();auto it=live.find(id);if(it==live.end()||it->second.statement_receipt_uuid!=receipt||it->second.database_uuid!=c.database_uuid||it->second.session_uuid!=c.session_uuid)return Hidden();SblrSourceMapRegistryResultV1 out;if(it->second.descriptor_generation!=dg||it->second.bound_ast_sha256!=bound||it->second.registry_snapshot_uuid!=snapshot||it->second.registry_generation!=rg||it->second.lifecycle!=SblrSourceMapLifecycleV1::active){out.diagnostic=D("SBLR.SOURCE_MAP.STALE","sblr.source_map.stale");return out;}out.ok=true;out.snapshot=it->second;out.diagnostic=O();return out;}
-EngineApiDiagnostic RevokeSblrSourceMapDescriptorsV1(const EngineRequestContext&c,const std::string&receipt,const std::string&reason){std::lock_guard l(m);if(!Authority(c))return D("SECURITY.ACCESS_DENIED","sblr.source_map.revoke_denied");bool any=false;for(auto it=live.begin();it!=live.end();){if(it->second.statement_receipt_uuid!=receipt){++it;continue;}auto s=it->second;auto prior=s.registry_generation;s.registry_generation=++high[s.database_uuid];s.lifecycle=SblrSourceMapLifecycleV1::revoked;s.decision_evidence_sha256=H(Material(s,prior,reason));if(!Publish(c,s,prior,reason))return D("SBLR.EXECUTION_FAILED","sblr.source_map.revoke_failed");it=live.erase(it);any=true;}return any?O():D("SECURITY.ACCESS_DENIED","sblr.source_map.hidden");}
-EngineApiDiagnostic RecoverSblrSourceMapDescriptorRegistryV1(const EngineRequestContext&c){std::lock_guard l(m);if(!Admin(c))return D("SECURITY.ACCESS_DENIED","sblr.source_map.recovery_denied");std::unordered_map<std::string,SblrSourceMapDescriptorSnapshotV1> states;std::uint64_t h=0;if(!Replay(c,&states,&h))return D("SBLR.SOURCE_MAP.STALE","sblr.source_map.registry_corrupt");high[c.database_uuid]=h;for(auto&[id,s]:states)if(s.lifecycle==SblrSourceMapLifecycleV1::active){auto prior=s.registry_generation;s.registry_generation=++high[s.database_uuid];s.lifecycle=SblrSourceMapLifecycleV1::revoked;s.decision_evidence_sha256=H(Material(s,prior,"recovery.revoke"));if(!Publish(c,s,prior,"recovery.revoke"))return D("SBLR.EXECUTION_FAILED","sblr.source_map.recovery_publish_failed");}for(auto it=live.begin();it!=live.end();)if(it->second.database_uuid==c.database_uuid)it=live.erase(it);else++it;return O();}
+EngineUuid NewUuid() {
+  const auto id = core::uuid::IssueRuntimeIdentityV7();
+  if (!id || !Valid(*id)) Io();
+  return *id;
 }
+void Receipt(const EngineRequestContext& c, const EngineUuid& receipt) {
+  if (!c.security_context_present || !c.statement_metadata_snapshot_engine_owned ||
+      !Valid(c.database_uuid) || !Valid(c.principal_uuid) || !Valid(c.session_uuid) ||
+      !Valid(receipt) || c.statement_receipt_uuid != receipt ||
+      (!c.transaction_uuid.is_nil() && !Valid(c.transaction_uuid))) Hidden();
+}
+void Owner(const EngineRequestContext& c, const EngineUuid& receipt, const Snapshot& s) {
+  if (s.database_uuid != c.database_uuid || s.principal_uuid != c.principal_uuid ||
+      s.session_uuid != c.session_uuid || s.statement_receipt_uuid != receipt ||
+      s.transaction_uuid != c.transaction_uuid) Hidden();
+}
+Result Success() {
+  Result out;
+  out.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {}, false);
+  out.ok = true;
+  return out;
+}
+Result Error(const char* code, const char* key) {
+  Result out;
+  out.diagnostic = MakeEngineApiDiagnostic(code, key, {});
+  return out;
+}
+template<class F> Result Run(F&& work) {
+  try {
+    try {
+      std::lock_guard lock(registry_mutex);
+      return work();
+    } catch (const Failure& error) {
+      return Error(error.code, error.key);
+    }
+  } catch (const std::bad_alloc&) {
+    return Error("RESOURCE.BUDGET_EXCEEDED", "sblr.source_map.allocation_failed");
+  } catch (const std::length_error&) {
+    return Error("RESOURCE.BUDGET_EXCEEDED", "sblr.source_map.extent_failed");
+  } catch (const std::filesystem::filesystem_error&) {
+    return Error("SBLR.EXECUTION_FAILED", "sblr.source_map.filesystem_failed");
+  }
+}
+static_assert(std::is_nothrow_move_constructible_v<Result>);
+std::uint64_t Get(const std::uint8_t* p, std::size_t at, unsigned width) {
+  std::uint64_t n = 0;
+  for (unsigned i = 0; i < width; ++i) n |= std::uint64_t(p[at+i]) << (8*i);
+  return n;
+}
+void Put(Bytes& out, std::size_t at, std::uint64_t n, unsigned width) {
+  for (unsigned i = 0; i < width; ++i) out[at+i] = static_cast<std::uint8_t>(n >> (8*i));
+}
+template<class A> void Copy(Bytes& out, std::size_t at, const A& value) {
+  std::copy(value.begin(), value.end(), out.begin()+at);
+}
+template<class A> void Read(const std::uint8_t* p, A& out) {
+  std::copy_n(p, out.size(), out.begin());
+}
+Sha Hash(std::string_view domain, std::span<const std::uint8_t> prefix,
+         std::span<const std::uint8_t> body) {
+  Bytes bytes;
+  if (prefix.size() > kMaximumBytes || body.size() > kMaximumBytes-prefix.size()) Limit();
+  bytes.reserve(domain.size()+prefix.size()+body.size());
+  bytes.insert(bytes.end(), domain.begin(), domain.end());
+  bytes.insert(bytes.end(), prefix.begin(), prefix.end());
+  bytes.insert(bytes.end(), body.begin(), body.end());
+  const auto digest = core::hash::ComputeSha256Digest(bytes);
+  if (!digest.ok() || digest.digest_bytes != 32 || !Nonzero(digest.digest)) Io();
+  return digest.digest;
+}
+void Validate(const Snapshot& s) {
+  for (const auto& id : {s.descriptor_uuid, s.registry_snapshot_uuid,
+                        s.statement_receipt_uuid, s.database_uuid, s.session_uuid,
+                        s.principal_uuid, s.publication_uuid})
+    if (!Valid(id)) Stale();
+  if ((!s.transaction_uuid.is_nil() && !Valid(s.transaction_uuid)) ||
+      s.descriptor_uuid == s.publication_uuid || s.descriptor_generation != 1 ||
+      !s.registry_generation || !s.publication_generation ||
+      (s.lifecycle != SblrSourceMapLifecycleV1::active &&
+       s.lifecycle != SblrSourceMapLifecycleV1::revoked) ||
+      s.canonical_smvd.size() > kMaximumSmvd) Stale();
+  const auto decoded = engine::sblr::DecodeSblrSourceMapDescriptorVectorV1(
+      s.canonical_smvd.data(), s.canonical_smvd.size());
+  if (decoded.status != engine::sblr::SblrSourceMapDecodeStatusV1::ok ||
+      decoded.canonical_bytes != s.canonical_smvd ||
+      decoded.vector.descriptor_uuid != s.descriptor_uuid.bytes ||
+      decoded.vector.descriptor_generation != s.descriptor_generation ||
+      decoded.vector.registry_snapshot_uuid != s.registry_snapshot_uuid.bytes ||
+      decoded.vector.registry_generation != s.registry_generation ||
+      decoded.vector.statement_receipt_uuid != s.statement_receipt_uuid.bytes ||
+      decoded.vector.bound_ast_sha256 != s.bound_ast_sha256 ||
+      decoded.vector.vector_sha256 != s.vector_sha256) Stale();
+}
+Bytes EncodeRecord(Snapshot& s) {
+  Validate(s);
+  Bytes out(kRecordHeader+s.canonical_smvd.size(), 0);
+  Put(out, 0, out.size(), 4);
+  out[4] = static_cast<std::uint8_t>(s.lifecycle);
+  Put(out, 8, s.descriptor_generation, 8);
+  Put(out, 16, s.registry_generation, 8);
+  Put(out, 24, s.publication_generation, 8);
+  Copy(out, 32, s.descriptor_uuid.bytes); Copy(out, 48, s.registry_snapshot_uuid.bytes);
+  Copy(out, 64, s.statement_receipt_uuid.bytes); Copy(out, 80, s.database_uuid.bytes);
+  Copy(out, 96, s.session_uuid.bytes); Copy(out, 112, s.transaction_uuid.bytes);
+  Copy(out, 128, s.principal_uuid.bytes); Copy(out, 144, s.publication_uuid.bytes);
+  Copy(out, 160, s.bound_ast_sha256); Copy(out, 192, s.vector_sha256);
+  Put(out, 224, s.canonical_smvd.size(), 4);
+  Copy(out, kRecordHeader, s.canonical_smvd);
+  s.decision_evidence_sha256 = Hash(kRecordDomain, {out.data(), 232},
+                                  {out.data()+kRecordHeader, out.size()-kRecordHeader});
+  Copy(out, 232, s.decision_evidence_sha256);
+  return out;
+}
+Snapshot DecodeRecord(std::span<const std::uint8_t> bytes) {
+  if (bytes.size() < kRecordHeader || bytes.size() > kRecordHeader+kMaximumSmvd) Stale();
+  const auto* p = bytes.data();
+  if (Get(p, 0, 4) != bytes.size() || Get(p, 224, 4) != bytes.size()-kRecordHeader ||
+      p[5] || p[6] || p[7] || Get(p, 228, 4)) Stale();
+  Snapshot s;
+  s.lifecycle = static_cast<SblrSourceMapLifecycleV1>(p[4]);
+  s.descriptor_generation = Get(p, 8, 8); s.registry_generation = Get(p, 16, 8);
+  s.publication_generation = Get(p, 24, 8);
+  Read(p+32, s.descriptor_uuid.bytes); Read(p+48, s.registry_snapshot_uuid.bytes);
+  Read(p+64, s.statement_receipt_uuid.bytes); Read(p+80, s.database_uuid.bytes);
+  Read(p+96, s.session_uuid.bytes); Read(p+112, s.transaction_uuid.bytes);
+  Read(p+128, s.principal_uuid.bytes); Read(p+144, s.publication_uuid.bytes);
+  Read(p+160, s.bound_ast_sha256); Read(p+192, s.vector_sha256);
+  Read(p+232, s.decision_evidence_sha256);
+  s.canonical_smvd.assign(bytes.begin()+kRecordHeader, bytes.end());
+  const auto expected_hash = s.decision_evidence_sha256;
+  const auto exact = EncodeRecord(s);
+  if (expected_hash != s.decision_evidence_sha256 ||
+      !std::equal(exact.begin(), exact.end(), bytes.begin(), bytes.end())) Stale();
+  return s;
+}
+
+class Registry {
+ public:
+  std::map<std::array<std::uint8_t,16>, Snapshot> states;
+  explicit Registry(const EngineRequestContext& c) : database_(c.database_uuid) {
+    if (!c.security_context_present || !c.statement_metadata_snapshot_engine_owned ||
+        !Valid(database_) || c.database_path.empty()) Hidden();
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(c.database_path, error) || error) Hidden();
+    path_ = c.database_path+".sb.sblr_source_map_registry.v1";
+    const auto status = std::filesystem::symlink_status(path_, error);
+    if (status.type() == std::filesystem::file_type::not_found &&
+        (!error || error == std::errc::no_such_file_or_directory)) return;
+    if (error) Io();
+    if (!std::filesystem::is_regular_file(status)) Stale();
+    disk::FileDevice file;
+    if (!file.Open(path_, disk::FileOpenMode::open_existing).ok()) Io();
+    const auto size = file.Size();
+    if (!size.ok()) Io();
+    if (size.size_bytes > kMaximumBytes) Limit();
+    if (size.size_bytes < kHeader) Stale();
+    Bytes bytes(static_cast<std::size_t>(size.size_bytes));
+    const auto read = file.ReadAt(0, bytes.data(), bytes.size());
+    if (!read.ok() || read.bytes_transferred != bytes.size()) Io();
+    Decode(bytes);
+    // Re-establish durability after an earlier unknown post-rename outcome.
+    if (!file.Sync().ok() || !disk::SyncParentDirectoryPath(path_).ok() ||
+        !file.Close().ok()) Io();
+  }
+  void NextPublication() {
+    if (generation_ == UINT64_MAX) Stale();
+    ++generation_;
+    publication_ = NewUuid();
+    if (states.contains(publication_.bytes)) Stale();
+  }
+  void Stamp(Snapshot& s) const {
+    s.publication_generation = generation_;
+    s.publication_uuid = publication_;
+  }
+  // Encodes every record before any durable change. Also stages record evidence
+  // for copying into the result before Publish().
+  Bytes Encode() {
+    Bytes bytes(kHeader, 0);
+    Copy(bytes, 0, kMagic); Put(bytes, 16, 2, 2); Put(bytes, 18, kHeader, 2);
+    if (!generation_ || !Valid(publication_) ||
+        states.size() > std::numeric_limits<std::uint32_t>::max()) Stale();
+    Put(bytes, 20, states.size(), 4); Put(bytes, 24, generation_, 8);
+    Copy(bytes, 32, database_.bytes); Copy(bytes, 48, publication_.bytes);
+    Copy(bytes, 64, snapshot_hash_);
+    for (auto& [id, s] : states) {
+      if (id != s.descriptor_uuid.bytes || s.database_uuid != database_ ||
+          s.publication_generation > generation_ ||
+          (s.publication_generation == generation_ && s.publication_uuid != publication_)) Stale();
+      if (s.canonical_smvd.size() > kMaximumSmvd ||
+          kRecordHeader+s.canonical_smvd.size() > kMaximumBytes-bytes.size()) Limit();
+      const auto record = EncodeRecord(s);
+      bytes.insert(bytes.end(), record.begin(), record.end());
+    }
+    Put(bytes, 8, bytes.size(), 8);
+    const auto hash = Hash(kSnapshotDomain, {bytes.data(), 96},
+                           {bytes.data()+kHeader, bytes.size()-kHeader});
+    Copy(bytes, 96, hash);
+    return bytes;
+  }
+  void Publish(const Bytes& bytes) {
+    const auto ordinal = temporary_ordinal.fetch_add(1, std::memory_order_relaxed);
+    const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto temporary = path_+".tmp."+std::to_string(tick)+"."+std::to_string(ordinal);
+    const std::filesystem::path temporary_path(temporary);
+    const std::filesystem::path temporary_lock(temporary+".sb.owner.lock");
+    struct Cleanup {
+      const std::filesystem::path& path;
+      const std::filesystem::path& lock;
+      bool owned=false;
+      bool lock_owned=false;
+      ~Cleanup() {
+        // Only this exclusive temporary's lock may be removed. Never unlink
+        // the stable registry/node lock, whose inode carries live ownership.
+        try {
+          std::error_code ignored;
+          if (owned) std::filesystem::remove(path, ignored);
+          if (lock_owned) std::filesystem::remove(lock, ignored);
+        } catch (...) { /* Unselected temporary paths have no authority. */ }
+      }
+    } cleanup{temporary_path,temporary_lock};
+    {
+      disk::FileDevice file;
+      if (!file.Open(temporary, disk::FileOpenMode::create_new).ok()) Io();
+      cleanup.owned = true;
+      cleanup.lock_owned = true;
+      const auto write = file.WriteAt(0, bytes.data(), bytes.size());
+      if (!write.ok() || write.bytes_transferred != bytes.size() ||
+          !file.Sync().ok() || !file.Close().ok()) Io();
+    }
+    std::error_code error;
+    std::filesystem::rename(temporary, path_, error);
+    if (error) Io();
+    cleanup.owned = false;
+    if (!disk::SyncParentDirectoryPath(path_).ok()) Io();
+  }
+ private:
+  std::string path_;
+  EngineUuid database_, publication_;
+  std::uint64_t generation_=0;
+  Sha snapshot_hash_{};
+  void Decode(const Bytes& bytes) {
+    const auto* p = bytes.data();
+    if (!std::equal(kMagic.begin(), kMagic.end(), bytes.begin()) ||
+        Get(p, 8, 8) != bytes.size() || Get(p, 16, 2) != 2 ||
+        Get(p, 18, 2) != kHeader) Stale();
+    EngineUuid database;
+    Read(p+32, database.bytes);
+    if (database != database_) Hidden();
+    generation_ = Get(p, 24, 8); Read(p+48, publication_.bytes);
+    Sha previous{}; Read(p+64, previous); Read(p+96, snapshot_hash_);
+    if (!generation_ || !Valid(publication_) ||
+        (generation_ == 1 ? Nonzero(previous) : !Nonzero(previous)) ||
+        snapshot_hash_ != Hash(kSnapshotDomain, {p,96}, {p+kHeader,bytes.size()-kHeader})) Stale();
+    const auto count = Get(p, 20, 4);
+    if (!count || count > (bytes.size()-kHeader)/kRecordHeader) Stale();
+    std::size_t offset = kHeader;
+    std::array<std::uint8_t,16> last{};
+    for (std::uint64_t index = 0; index < count; ++index) {
+      if (bytes.size()-offset < kRecordHeader) Stale();
+      const auto size = Get(p+offset, 0, 4);
+      if (size < kRecordHeader || size > bytes.size()-offset ||
+          size > kRecordHeader+kMaximumSmvd) Stale();
+      auto s = DecodeRecord({p+offset,static_cast<std::size_t>(size)});
+      if (s.database_uuid != database_ || s.descriptor_uuid.bytes <= last ||
+          s.descriptor_uuid == publication_ || s.publication_generation > generation_ ||
+          (s.publication_generation == generation_ && s.publication_uuid != publication_)) Stale();
+      last = s.descriptor_uuid.bytes;
+      states.emplace(last, std::move(s));
+      offset += static_cast<std::size_t>(size);
+    }
+    if (offset != bytes.size()) Stale();
+  }
+};
+} // namespace
+
+Result IssueSblrSourceMapDescriptorV1(
+    const EngineRequestContext& c, const EngineUuid& receipt, const Sha& bound,
+    const EngineUuid& registry, std::uint64_t generation,
+    std::vector<engine::sblr::SblrSourceMapEntryV1> entries) {
+  return Run([&] {
+    Receipt(c, receipt);
+    Registry store(c);
+    for (const auto& [id, existing] : store.states) {
+      (void)id;
+      if (existing.statement_receipt_uuid == receipt) Owner(c, receipt, existing);
+    }
+    if (!Valid(registry) || !generation || !Nonzero(bound) || entries.empty()) Invalid();
+    store.NextPublication();
+    Snapshot s;
+    s.descriptor_uuid = NewUuid(); s.descriptor_generation = 1;
+    s.registry_snapshot_uuid = registry; s.registry_generation = generation;
+    s.statement_receipt_uuid = receipt; s.database_uuid = c.database_uuid;
+    s.session_uuid = c.session_uuid; s.transaction_uuid = c.transaction_uuid;
+    s.principal_uuid = c.principal_uuid; s.bound_ast_sha256 = bound;
+    s.lifecycle = SblrSourceMapLifecycleV1::active;
+    store.Stamp(s);
+    engine::sblr::SblrSourceMapDescriptorVectorV1 v;
+    v.descriptor_uuid = s.descriptor_uuid.bytes; v.descriptor_generation = 1;
+    v.registry_snapshot_uuid = registry.bytes; v.registry_generation = generation;
+    v.statement_receipt_uuid = receipt.bytes; v.bound_ast_sha256 = bound;
+    v.entries = std::move(entries);
+    s.canonical_smvd = engine::sblr::EncodeSblrSourceMapDescriptorVectorV1(&v);
+    if (s.canonical_smvd.empty()) Invalid();
+    s.vector_sha256 = v.vector_sha256;
+    const auto [found, added] = store.states.emplace(s.descriptor_uuid.bytes, std::move(s));
+    if (!added) Stale();
+    const auto bytes = store.Encode();
+    auto out = Success();
+    out.snapshot = found->second;
+    store.Publish(bytes);
+    return out;
+  });
+}
+Result LookupSblrSourceMapDescriptorV1(
+    const EngineRequestContext& c, const EngineUuid& receipt,
+    const EngineUuid& descriptor, std::uint64_t descriptor_generation,
+    const Sha& bound, const EngineUuid& registry, std::uint64_t generation) {
+  return Run([&] {
+    Receipt(c, receipt);
+    if (!Valid(descriptor)) Invalid();
+    Registry store(c);
+    const auto found = store.states.find(descriptor.bytes);
+    if (found == store.states.end()) Hidden();
+    Owner(c, receipt, found->second);
+    const auto& s = found->second;
+    if (s.lifecycle != SblrSourceMapLifecycleV1::active ||
+        s.descriptor_generation != descriptor_generation ||
+        s.registry_snapshot_uuid != registry || s.registry_generation != generation ||
+        s.bound_ast_sha256 != bound) Stale();
+    auto out = Success(); out.snapshot = s; return out;
+  });
+}
+EngineApiDiagnostic RevokeSblrSourceMapDescriptorsV1(
+    const EngineRequestContext& c, const EngineUuid& receipt) {
+  return Run([&] {
+    Receipt(c, receipt);
+    Registry store(c);
+    bool any = false;
+    for (const auto& [id, s] : store.states) {
+      (void)id;
+      if (s.statement_receipt_uuid == receipt) {
+        Owner(c, receipt, s);
+        any = any || s.lifecycle == SblrSourceMapLifecycleV1::active;
+      }
+    }
+    auto out = Success();
+    if (!any) return out;
+    store.NextPublication();
+    for (auto& [id, s] : store.states) {
+      (void)id;
+      if (s.statement_receipt_uuid == receipt && s.lifecycle == SblrSourceMapLifecycleV1::active) {
+        s.lifecycle = SblrSourceMapLifecycleV1::revoked; store.Stamp(s);
+      }
+    }
+    const auto bytes = store.Encode();
+    store.Publish(bytes);
+    return out;
+  }).diagnostic;
+}
+EngineApiDiagnostic RecoverSblrSourceMapDescriptorRegistryV1(const EngineRequestContext& c) {
+  return Run([&] {
+    Registry store(c);
+    auto out = Success();
+    if (std::none_of(store.states.begin(), store.states.end(), [](const auto& item) {
+          return item.second.lifecycle == SblrSourceMapLifecycleV1::active;
+        })) return out;
+    store.NextPublication();
+    for (auto& [id, s] : store.states) {
+      (void)id;
+      if (s.lifecycle == SblrSourceMapLifecycleV1::active) {
+        s.lifecycle = SblrSourceMapLifecycleV1::revoked; store.Stamp(s);
+      }
+    }
+    const auto bytes = store.Encode();
+    store.Publish(bytes);
+    return out;
+  }).diagnostic;
+}
+} // namespace scratchbird::engine::internal_api

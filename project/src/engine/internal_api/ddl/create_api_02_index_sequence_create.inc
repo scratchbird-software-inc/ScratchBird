@@ -245,6 +245,21 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
         "ddl.create_table",
         UnsupportedCrudFeatureDiagnostic("ddl.create_table", "constraints"));
   }
+  if (!HasMgaBoundColumnIdentities(request.table_columns)) {
+    return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
+        MakeInvalidRequestDiagnostic("ddl.create_table", "bound_column_identities_required"));
+  }
+  for (const auto& column : request.table_columns) {
+    const auto& descriptor = column.descriptor;
+    const auto datatype = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+        request.context.datatype_catalog_snapshot_uuid, request.context.datatype_catalog_generation,
+        request.context.datatype_registry_generation, descriptor.datatype_descriptor_uuid,
+        descriptor.datatype_descriptor_generation);
+    if (!datatype.ok || datatype.row.type_uuid != descriptor.type_uuid) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
+          MakeInvalidRequestDiagnostic("ddl.create_table", "bound_column_datatype_catalog_mismatch"));
+    }
+  }
   const auto loaded = LoadCrudState(request.context);
   if (!loaded.ok) {
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table", loaded.diagnostic);
@@ -897,6 +912,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   created_table.table_uuid = table_uuid;
   created_table.default_name = table_name;
   created_table.columns = columns;
+  created_table.bound_columns = request.table_columns;
   created_table.temporary = temporary_options.temporary;
   created_table.temporary_scope = temporary_options.temporary ? temporary_options.scope : "";
   created_table.temporary_session_uuid =
@@ -913,6 +929,7 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
   catalog_request.target_object.object_kind = "table";
   catalog_request.target_schema.uuid = target_schema_uuid;
   catalog_request.localized_names = table_names;
+  catalog_request.columns = request.table_columns;
   if (created_table.temporary && created_table.temporary_scope != "global") {
     catalog_request.name_namespace.kind =
         EngineCatalogNameNamespaceKind::kSessionTemporary;
@@ -928,6 +945,14 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
     return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context,
                                                              "ddl.create_table",
                                                              diagnostic);
+  }
+  created_table.bound_relation_generation = catalog_created.bound_object_identity.object_descriptor_generation;
+  // PersistCatalogColumnAndConstraintMetadata records this exact publication
+  // epoch for every column in the accepted creation cohort.
+  created_table.bound_column_generation = catalog_created.metadata_cache_epoch;
+  if (!created_table.bound_relation_generation || !created_table.bound_column_generation) {
+    return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
+        MakeInvalidRequestDiagnostic("ddl.create_table", "catalog_column_publication_generation_required"));
   }
   std::vector<CrudIndexRecord> implicit_support_indexes;
   for (const auto& [column_name, column_descriptor] : columns) {

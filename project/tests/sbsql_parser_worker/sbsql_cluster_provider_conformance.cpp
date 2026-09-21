@@ -15,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <variant>
 
 namespace {
 
@@ -47,7 +48,8 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) return true;
+    const auto* text = std::get_if<std::string>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && text != nullptr && *text == id) return true;
   }
   return false;
 }

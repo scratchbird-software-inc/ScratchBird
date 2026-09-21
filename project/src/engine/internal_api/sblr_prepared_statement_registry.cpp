@@ -4,6 +4,7 @@
 #include "sblr_prepared_statement_registry.hpp"
 
 #include "api_diagnostics.hpp"
+#include "api_result_snapshot_codec.hpp"
 #include "engine/sblr/sblr_stmt_execute_runtime.hpp"
 #include "hash_digest.hpp"
 #include "uuid.hpp"
@@ -38,9 +39,9 @@ constexpr std::size_t kMaximumRecordCount = 4096;
 constexpr std::size_t kMaximumExecutionCount = 4096;
 constexpr std::size_t kMaximumCollectionCount = 1ULL << 20U;
 constexpr std::string_view kSessionDomain =
-    "ScratchBird.SblrPreparedStatementRegistry.V1";
+    "ScratchBird.SblrPreparedStatementRegistry.V2";
 constexpr std::string_view kRecordDomain =
-    "ScratchBird.SblrPreparedStatementRegistryRecord.V1";
+    "ScratchBird.SblrPreparedStatementRegistryRecord.V2";
 constexpr std::string_view kExecutionDomain =
     "ScratchBird.SblrPreparedStatementExecutionRecord.V1";
 
@@ -121,446 +122,37 @@ SblrPreparedStatementRegistryHashV1 DomainHash(
   return Hash(material);
 }
 
-bool CanonicalUuidBytes(std::string_view text,
-                        SblrPreparedStatementRegistryUuidV1* bytes) {
-  if (bytes == nullptr) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() ||
-      scratchbird::core::uuid::UuidToString(parsed.value) != text) {
-    return false;
-  }
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            bytes->begin());
-  return NonZero(*bytes);
-}
-
-std::string UuidText(const SblrPreparedStatementRegistryUuidV1& value) {
-  scratchbird::core::platform::Uuid uuid{};
-  std::copy(value.begin(), value.end(), uuid.bytes.begin());
-  return scratchbird::core::uuid::UuidToString(uuid);
-}
-
-class CanonicalWriter {
- public:
-  void U8(std::uint8_t value) {
-    if (!Room(1)) return;
-    bytes_.push_back(value);
-  }
-  void U16(std::uint16_t value) {
-    U8(static_cast<std::uint8_t>(value));
-    U8(static_cast<std::uint8_t>(value >> 8U));
-  }
-  void U32(std::uint32_t value) {
-    for (std::size_t index = 0; index != 4; ++index) {
-      U8(static_cast<std::uint8_t>(value >> (index * 8U)));
-    }
-  }
-  void U64(std::uint64_t value) {
-    for (std::size_t index = 0; index != 8; ++index) {
-      U8(static_cast<std::uint8_t>(value >> (index * 8U)));
-    }
-  }
-  void Raw(const std::uint8_t* data, std::size_t size) {
-    if (!Room(size)) return;
-    if (size == 0) return;
-    if (data == nullptr) {
-      ok_ = false;
-      return;
-    }
-    bytes_.insert(bytes_.end(), data, data + size);
-  }
-  void Text(std::string_view value) {
-    if (value.size() > std::numeric_limits<std::uint32_t>::max()) {
-      ok_ = false;
-      return;
-    }
-    U32(static_cast<std::uint32_t>(value.size()));
-    Raw(reinterpret_cast<const std::uint8_t*>(value.data()), value.size());
-  }
-  void Blob(const std::vector<std::uint8_t>& value) {
-    if (value.size() > std::numeric_limits<std::uint32_t>::max()) {
-      ok_ = false;
-      return;
-    }
-    U32(static_cast<std::uint32_t>(value.size()));
-    Raw(value.data(), value.size());
-  }
-  void Count(std::size_t value) {
-    if (value > kMaximumCollectionCount ||
-        value > std::numeric_limits<std::uint32_t>::max()) {
-      ok_ = false;
-      return;
-    }
-    U32(static_cast<std::uint32_t>(value));
-  }
-  bool ok() const { return ok_; }
-  const std::vector<std::uint8_t>& bytes() const { return bytes_; }
-  std::vector<std::uint8_t> Take() { return std::move(bytes_); }
-
- private:
-  bool Room(std::size_t size) {
-    if (!ok_ || size > kMaximumApiResultBytes ||
-        bytes_.size() > kMaximumApiResultBytes - size) {
-      ok_ = false;
-      return false;
-    }
-    return true;
-  }
-
-  bool ok_ = true;
-  std::vector<std::uint8_t> bytes_;
-};
-
-class CanonicalReader {
- public:
-  CanonicalReader(const std::uint8_t* data, std::size_t size)
-      : data_(data), size_(size), ok_(data != nullptr || size == 0) {
-    if (size > kMaximumApiResultBytes) ok_ = false;
-  }
-  bool U8(std::uint8_t* value) {
-    if (value == nullptr || !Take(1)) return false;
-    *value = data_[offset_++];
-    return true;
-  }
-  bool U16(std::uint16_t* value) {
-    if (value == nullptr || !Take(2)) return false;
-    *value = static_cast<std::uint16_t>(data_[offset_]) |
-             static_cast<std::uint16_t>(data_[offset_ + 1]) << 8U;
-    offset_ += 2;
-    return true;
-  }
-  bool U32(std::uint32_t* value) {
-    if (value == nullptr || !Take(4)) return false;
-    *value = static_cast<std::uint32_t>(GetLe(data_ + offset_, 4));
-    offset_ += 4;
-    return true;
-  }
-  bool U64(std::uint64_t* value) {
-    if (value == nullptr || !Take(8)) return false;
-    *value = GetLe(data_ + offset_, 8);
-    offset_ += 8;
-    return true;
-  }
-  bool Raw(std::uint8_t* value, std::size_t size) {
-    if (value == nullptr || !Take(size)) return false;
-    std::copy_n(data_ + offset_, size, value);
-    offset_ += size;
-    return true;
-  }
-  bool Match(std::string_view value) {
-    if (!Take(value.size()) ||
-        !std::equal(value.begin(), value.end(), data_ + offset_)) {
-      ok_ = false;
-      return false;
-    }
-    offset_ += value.size();
-    return true;
-  }
-  bool Text(std::string* value) {
-    std::uint32_t size = 0;
-    if (value == nullptr || !U32(&size) || !Take(size)) return false;
-    value->assign(reinterpret_cast<const char*>(data_ + offset_), size);
-    offset_ += size;
-    return true;
-  }
-  bool Blob(std::vector<std::uint8_t>* value) {
-    std::uint32_t size = 0;
-    if (value == nullptr || !U32(&size) || !Take(size)) return false;
-    value->assign(data_ + offset_, data_ + offset_ + size);
-    offset_ += size;
-    return true;
-  }
-  bool Count(std::size_t* value) {
-    std::uint32_t count = 0;
-    if (value == nullptr || !U32(&count) || count > kMaximumCollectionCount) {
-      ok_ = false;
-      return false;
-    }
-    *value = count;
-    return true;
-  }
-  bool done() const { return ok_ && offset_ == size_; }
-
- private:
-  bool Take(std::size_t size) {
-    if (!ok_ || offset_ > size_ || size > size_ - offset_) {
-      ok_ = false;
-      return false;
-    }
-    return true;
-  }
-
-  const std::uint8_t* data_ = nullptr;
-  std::size_t size_ = 0;
-  std::size_t offset_ = 0;
-  bool ok_ = false;
-};
-
-void WriteBool(CanonicalWriter* writer, bool value) {
-  writer->U8(value ? 1 : 0);
-}
-
-bool ReadBool(CanonicalReader* reader, bool* value) {
-  std::uint8_t encoded = 0;
-  if (value == nullptr || !reader->U8(&encoded) || encoded > 1) return false;
-  *value = encoded != 0;
+bool CanonicalIdentityBytes(const EngineUuid& identity,
+                            SblrPreparedStatementRegistryUuidV1* bytes) {
+  if (!bytes || !scratchbird::core::uuid::IsEngineIdentityUuid(identity)) return false;
+  *bytes = identity.bytes;
   return true;
 }
 
-void WriteDescriptor(CanonicalWriter* writer, const EngineDescriptor& value) {
-  writer->Text(value.descriptor_uuid);
-  writer->Text(value.descriptor_kind);
-  writer->Text(value.canonical_type_name);
-  writer->Text(value.encoded_descriptor);
+bool Identity(const SblrPreparedStatementRegistryUuidV1& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(EngineUuid{value});
 }
 
-bool ReadDescriptor(CanonicalReader* reader, EngineDescriptor* value) {
-  return value != nullptr && reader->Text(&value->descriptor_uuid) &&
-         reader->Text(&value->descriptor_kind) &&
-         reader->Text(&value->canonical_type_name) &&
-         reader->Text(&value->encoded_descriptor);
-}
-
-void WriteTypedValue(CanonicalWriter* writer, const EngineTypedValue& value) {
-  WriteDescriptor(writer, value.descriptor);
-  writer->Text(value.encoded_value);
-  writer->Blob(value.binary_value);
-  WriteBool(writer, value.is_null);
-  writer->U8(static_cast<std::uint8_t>(value.state));
-}
-
-bool ReadTypedValue(CanonicalReader* reader, EngineTypedValue* value) {
-  std::uint8_t state = 0;
-  if (value == nullptr || !ReadDescriptor(reader, &value->descriptor) ||
-      !reader->Text(&value->encoded_value) ||
-      !reader->Blob(&value->binary_value) ||
-      !ReadBool(reader, &value->is_null) || !reader->U8(&state) ||
-      state > static_cast<std::uint8_t>(EngineValueState::protected_value)) {
-    return false;
-  }
-  value->state = static_cast<EngineValueState>(state);
-  return true;
-}
-
-void WriteDiagnostic(CanonicalWriter* writer,
-                     const EngineApiDiagnostic& value) {
-  writer->Text(value.code);
-  writer->Text(value.message_key);
-  writer->Text(value.detail);
-  WriteBool(writer, value.error);
-  writer->Count(value.fields.size());
-  for (const auto& field : value.fields) {
-    writer->Text(field.key);
-    writer->Text(field.value);
-  }
-}
-
-bool ReadDiagnostic(CanonicalReader* reader, EngineApiDiagnostic* value) {
-  std::size_t count = 0;
-  if (value == nullptr || !reader->Text(&value->code) ||
-      !reader->Text(&value->message_key) || !reader->Text(&value->detail) ||
-      !ReadBool(reader, &value->error) || !reader->Count(&count)) {
-    return false;
-  }
-  value->fields.clear();
-  value->fields.reserve(count);
-  for (std::size_t index = 0; index != count; ++index) {
-    EngineApiDiagnosticField field;
-    if (!reader->Text(&field.key) || !reader->Text(&field.value)) return false;
-    value->fields.push_back(std::move(field));
-  }
-  return true;
-}
-
-void WriteResultShape(CanonicalWriter* writer,
-                      const EngineResultShape& value) {
-  writer->Text(value.result_kind);
-  writer->Count(value.columns.size());
-  for (const auto& column : value.columns) WriteDescriptor(writer, column);
-  writer->Count(value.rows.size());
-  for (const auto& row : value.rows) {
-    writer->Text(row.requested_row_uuid);
-    writer->Count(row.fields.size());
-    for (const auto& field : row.fields) {
-      writer->Text(field.first);
-      WriteTypedValue(writer, field.second);
-    }
-  }
-}
-
-bool ReadResultShape(CanonicalReader* reader, EngineResultShape* value) {
-  std::size_t column_count = 0;
-  std::size_t row_count = 0;
-  if (value == nullptr || !reader->Text(&value->result_kind) ||
-      !reader->Count(&column_count)) {
-    return false;
-  }
-  value->columns.clear();
-  value->columns.reserve(column_count);
-  for (std::size_t index = 0; index != column_count; ++index) {
-    EngineDescriptor descriptor;
-    if (!ReadDescriptor(reader, &descriptor)) return false;
-    value->columns.push_back(std::move(descriptor));
-  }
-  if (!reader->Count(&row_count)) return false;
-  value->rows.clear();
-  value->rows.reserve(row_count);
-  for (std::size_t row_index = 0; row_index != row_count; ++row_index) {
-    EngineRowValue row;
-    std::size_t field_count = 0;
-    if (!reader->Text(&row.requested_row_uuid) ||
-        !reader->Count(&field_count)) {
-      return false;
-    }
-    row.fields.reserve(field_count);
-    for (std::size_t field_index = 0; field_index != field_count;
-         ++field_index) {
-      std::string name;
-      EngineTypedValue field;
-      if (!reader->Text(&name) || !ReadTypedValue(reader, &field)) return false;
-      row.fields.emplace_back(std::move(name), std::move(field));
-    }
-    value->rows.push_back(std::move(row));
-  }
-  return true;
+bool OptionalIdentity(const SblrPreparedStatementRegistryUuidV1& value) {
+  return !NonZero(value) || Identity(value);
 }
 
 std::vector<std::uint8_t> EncodeApiResult(const EngineApiResult& value) {
-  CanonicalWriter writer;
-  static constexpr std::array<std::uint8_t, 4> kMagic{'S', 'A', 'P', 'I'};
-  writer.Raw(kMagic.data(), kMagic.size());
-  writer.U16(1);
-  writer.U16(0);
-  WriteBool(&writer, value.ok);
-  writer.Text(value.operation_id);
-  writer.Count(value.diagnostics.size());
-  for (const auto& diagnostic : value.diagnostics) {
-    WriteDiagnostic(&writer, diagnostic);
-  }
-  writer.Count(value.unsupported_features.size());
-  for (const auto& feature : value.unsupported_features) {
-    writer.Text(feature.feature);
-    writer.Text(feature.reason);
-  }
-  writer.Count(value.evidence.size());
-  for (const auto& evidence : value.evidence) {
-    writer.Text(evidence.evidence_kind);
-    writer.Text(evidence.evidence_id);
-  }
-  WriteResultShape(&writer, value.result_shape);
-  writer.Text(value.primary_object.uuid);
-  writer.Text(value.primary_object.object_kind);
-  writer.Text(value.catalog_row_uuid);
-  writer.Text(value.transaction_uuid);
-  writer.U64(value.local_transaction_id);
-  const auto& counters = value.dml_summary;
-  writer.U64(counters.rows_changed);
-  writer.U64(counters.visible_rows_scanned);
-  writer.U64(counters.index_probes);
-  writer.U64(counters.append_calls);
-  writer.U64(counters.file_opens);
-  writer.U64(counters.flushes);
-  writer.U64(counters.page_reservations);
-  writer.U64(counters.row_extent_reservations);
-  writer.U64(counters.version_extent_reservations);
-  writer.U64(counters.page_extent_reservations);
-  writer.U64(counters.index_extent_reservations);
-  writer.U64(counters.preallocation_requests);
-  writer.U64(counters.preallocation_granted_pages);
-  writer.U64(counters.preallocation_capped);
-  writer.U64(counters.preallocation_refused);
-  writer.Count(counters.fallback_reasons.size());
-  for (const auto& reason : counters.fallback_reasons) writer.Text(reason);
-  WriteBool(&writer, counters.benchmark_clean);
-  WriteBool(&writer, value.embedded_trust_mode_observed);
-  WriteBool(&writer, value.cluster_authority_required);
-  return writer.ok() ? writer.Take() : std::vector<std::uint8_t>{};
+  std::vector<std::uint8_t> bytes;
+  if (!EncodeEngineApiResultSnapshot(value, &bytes)) return {};
+  return bytes;
 }
 
-bool DecodeApiResult(const std::vector<std::uint8_t>& bytes,
-                     EngineApiResult* result) {
-  if (result == nullptr || bytes.empty()) return false;
-  CanonicalReader reader(bytes.data(), bytes.size());
-  std::uint16_t version = 0;
-  std::uint16_t reserved = 0;
-  EngineApiResult value;
-  std::size_t count = 0;
-  if (!reader.Match("SAPI") || !reader.U16(&version) || version != 1 ||
-      !reader.U16(&reserved) || reserved != 0 || !ReadBool(&reader, &value.ok) ||
-      !reader.Text(&value.operation_id) || !reader.Count(&count)) {
-    return false;
-  }
-  value.diagnostics.reserve(count);
-  for (std::size_t index = 0; index != count; ++index) {
-    EngineApiDiagnostic diagnostic;
-    if (!ReadDiagnostic(&reader, &diagnostic)) return false;
-    value.diagnostics.push_back(std::move(diagnostic));
-  }
-  if (!reader.Count(&count)) return false;
-  value.unsupported_features.reserve(count);
-  for (std::size_t index = 0; index != count; ++index) {
-    EngineUnsupportedFeature feature;
-    if (!reader.Text(&feature.feature) || !reader.Text(&feature.reason)) {
-      return false;
-    }
-    value.unsupported_features.push_back(std::move(feature));
-  }
-  if (!reader.Count(&count)) return false;
-  value.evidence.reserve(count);
-  for (std::size_t index = 0; index != count; ++index) {
-    EngineEvidenceReference evidence;
-    if (!reader.Text(&evidence.evidence_kind) ||
-        !reader.Text(&evidence.evidence_id)) {
-      return false;
-    }
-    value.evidence.push_back(std::move(evidence));
-  }
-  auto& counters = value.dml_summary;
-  if (!ReadResultShape(&reader, &value.result_shape) ||
-      !reader.Text(&value.primary_object.uuid) ||
-      !reader.Text(&value.primary_object.object_kind) ||
-      !reader.Text(&value.catalog_row_uuid) ||
-      !reader.Text(&value.transaction_uuid) ||
-      !reader.U64(&value.local_transaction_id) ||
-      !reader.U64(&counters.rows_changed) ||
-      !reader.U64(&counters.visible_rows_scanned) ||
-      !reader.U64(&counters.index_probes) ||
-      !reader.U64(&counters.append_calls) ||
-      !reader.U64(&counters.file_opens) ||
-      !reader.U64(&counters.flushes) ||
-      !reader.U64(&counters.page_reservations) ||
-      !reader.U64(&counters.row_extent_reservations) ||
-      !reader.U64(&counters.version_extent_reservations) ||
-      !reader.U64(&counters.page_extent_reservations) ||
-      !reader.U64(&counters.index_extent_reservations) ||
-      !reader.U64(&counters.preallocation_requests) ||
-      !reader.U64(&counters.preallocation_granted_pages) ||
-      !reader.U64(&counters.preallocation_capped) ||
-      !reader.U64(&counters.preallocation_refused) ||
-      !reader.Count(&count)) {
-    return false;
-  }
-  counters.fallback_reasons.reserve(count);
-  for (std::size_t index = 0; index != count; ++index) {
-    std::string reason;
-    if (!reader.Text(&reason)) return false;
-    counters.fallback_reasons.push_back(std::move(reason));
-  }
-  if (!ReadBool(&reader, &counters.benchmark_clean) ||
-      !ReadBool(&reader, &value.embedded_trust_mode_observed) ||
-      !ReadBool(&reader, &value.cluster_authority_required) || !reader.done() ||
-      EncodeApiResult(value) != bytes) {
-    return false;
-  }
-  *result = std::move(value);
-  return true;
+bool DecodeApiResult(const std::vector<std::uint8_t>& bytes, EngineApiResult* result) {
+  return DecodeEngineApiResultSnapshot(bytes, result);
 }
 
 bool ExecutionSemanticValid(
     const SblrPreparedStatementExecutionRecordV1& execution,
     const std::vector<std::uint8_t>& api_bytes) {
-  return NonZero(execution.execution_uuid) &&
-         NonZero(execution.statement_receipt_uuid) &&
+  return Identity(execution.execution_uuid) &&
+         Identity(execution.statement_receipt_uuid) &&
+         OptionalIdentity(execution.owning_transaction_uuid) &&
          execution.execution_generation != 0 &&
          !execution.canonical_execute_descriptor_bytes.empty() &&
          execution.canonical_execute_descriptor_bytes.size() <=
@@ -767,15 +359,17 @@ bool HasAuthority(const EngineRequestContext& context) {
   SblrPreparedStatementRegistryUuidV1 principal{};
   return authorized && context.security_context_present &&
          !context.database_path.empty() &&
-         CanonicalUuidBytes(context.database_uuid, &database) &&
-         CanonicalUuidBytes(context.session_uuid, &session) &&
-         CanonicalUuidBytes(context.principal_uuid, &principal);
+         CanonicalIdentityBytes(context.database_uuid, &database) &&
+         CanonicalIdentityBytes(context.session_uuid, &session) &&
+         CanonicalIdentityBytes(context.principal_uuid, &principal);
 }
 
 std::string RegistryPath(const EngineRequestContext& context) {
-  return context.database_path +
-         ".sb.sblr_prepared_statement_registry.v1." +
-         context.session_uuid;
+  const auto session = scratchbird::core::uuid::EngineIdentityPathComponent(context.session_uuid);
+  if (!session) return {};
+  auto path = std::filesystem::path(context.database_path + ".sb.sblr_prepared_statement_registry.v1.");
+  path += *session;
+  return path.string();
 }
 
 bool ParameterStateValid(
@@ -785,21 +379,17 @@ bool ParameterStateValid(
     return false;
   }
   if (record.source_free_parameterless_query_template) {
-    return record.parameter_set_uuid.empty() &&
-           record.parameter_prepared_statement_uuid.empty() &&
+    return record.parameter_set_uuid.is_nil() &&
+           record.parameter_prepared_statement_uuid.is_nil() &&
            record.parameter_set_generation == 0 &&
-           record.parameter_set_snapshot_uuid.empty() &&
+           record.parameter_set_snapshot_uuid.is_nil() &&
            record.parameter_set_snapshot_generation == 0 &&
            record.ordered_slot_table_sha256.empty();
   }
-  SblrPreparedStatementRegistryUuidV1 parameter_set{};
-  SblrPreparedStatementRegistryUuidV1 prepared_statement{};
-  SblrPreparedStatementRegistryUuidV1 snapshot{};
-  return CanonicalUuidBytes(record.parameter_set_uuid, &parameter_set) &&
-         CanonicalUuidBytes(record.parameter_prepared_statement_uuid,
-                            &prepared_statement) &&
+  return core::uuid::IsEngineIdentityUuid(record.parameter_set_uuid) &&
+         core::uuid::IsEngineIdentityUuid(record.parameter_prepared_statement_uuid) &&
          record.parameter_set_generation != 0 &&
-         CanonicalUuidBytes(record.parameter_set_snapshot_uuid, &snapshot) &&
+         core::uuid::IsEngineIdentityUuid(record.parameter_set_snapshot_uuid) &&
          record.parameter_set_snapshot_generation != 0 &&
          Sha256Text(record.ordered_slot_table_sha256);
 }
@@ -810,9 +400,13 @@ bool RecordSemanticValid(
       !NoNul(record.body_operation_id, 256) ||
       !NoNul(record.body_operation_family, 256) ||
       !NoNul(record.body_result_shape, 256) ||
-      !ParameterStateValid(record) || !NonZero(record.statement_uuid) ||
-      !NonZero(record.statement_name_uuid) ||
-      !NonZero(record.preparing_receipt_uuid) ||
+      !ParameterStateValid(record) ||
+      !OptionalIdentity(record.last_execution_uuid) ||
+      !OptionalIdentity(record.last_execution_receipt_uuid) ||
+      !OptionalIdentity(record.last_execution_transaction_uuid) ||
+      !Identity(record.statement_uuid) ||
+      !Identity(record.statement_name_uuid) ||
+      !Identity(record.preparing_receipt_uuid) ||
       record.prepared_generation == 0 ||
       !NonZero(record.descriptor_sha256) ||
       record.canonical_descriptor_bytes.empty() ||
@@ -875,8 +469,8 @@ bool RecordSemanticValid(
       return false;
     }
   } else if (record.last_execution_terminal) {
-    if (!NonZero(record.last_execution_uuid) ||
-        !NonZero(record.last_execution_receipt_uuid) ||
+    if (!Identity(record.last_execution_uuid) ||
+        !Identity(record.last_execution_receipt_uuid) ||
         record.last_execution_generation == 0) {
       return false;
     }
@@ -891,13 +485,16 @@ std::array<std::vector<std::uint8_t>, kVariableFieldCount> VariableFields(
   auto bytes = [](std::string_view value) {
     return std::vector<std::uint8_t>(value.begin(), value.end());
   };
+  auto identity = [](const EngineUuid& value) {
+    return std::vector<std::uint8_t>(value.bytes.begin(), value.bytes.end());
+  };
   return {bytes(record.canonical_name),
           bytes(record.body_operation_id),
           bytes(record.body_operation_family),
           bytes(record.body_result_shape),
-          bytes(record.parameter_set_uuid),
-          bytes(record.parameter_prepared_statement_uuid),
-          bytes(record.parameter_set_snapshot_uuid),
+          identity(record.parameter_set_uuid),
+          identity(record.parameter_prepared_statement_uuid),
+          identity(record.parameter_set_snapshot_uuid),
           bytes(record.ordered_slot_table_sha256),
           record.canonical_descriptor_bytes,
           record.canonical_container_bytes,
@@ -927,7 +524,7 @@ std::vector<std::uint8_t> EncodeRecord(
 
   std::vector<std::uint8_t> encoded(kRecordHeaderBytes, 0);
   std::copy_n("SPRO", 4, encoded.begin());
-  SetLe(&encoded, 4, 1, 2);
+  SetLe(&encoded, 4, 2, 2);
   SetLe(&encoded, 6, kRecordHeaderBytes, 2);
   SetLe(&encoded, 8, total, 4);
   SetLe(&encoded, 12, static_cast<std::uint32_t>(record.state), 4);
@@ -968,7 +565,7 @@ std::vector<std::uint8_t> EncodeRecord(
 bool DecodeRecord(const std::uint8_t* data, std::size_t size,
                   SblrPreparedStatementRegistryRecordV1* record) {
   if (record == nullptr || size < kRecordHeaderBytes ||
-      !std::equal(data, data + 4, "SPRO") || GetLe(data + 4, 2) != 1 ||
+      !std::equal(data, data + 4, "SPRO") || GetLe(data + 4, 2) != 2 ||
       GetLe(data + 6, 2) != kRecordHeaderBytes ||
       GetLe(data + 8, 4) != size || !Zero(data + 20, data + 24) ||
       !Zero(data + 312, data + 320)) {
@@ -1021,9 +618,11 @@ bool DecodeRecord(const std::uint8_t* data, std::size_t size,
   value.body_operation_id = text(fields[1]);
   value.body_operation_family = text(fields[2]);
   value.body_result_shape = text(fields[3]);
-  value.parameter_set_uuid = text(fields[4]);
-  value.parameter_prepared_statement_uuid = text(fields[5]);
-  value.parameter_set_snapshot_uuid = text(fields[6]);
+  if (fields[4].size() != 16 || fields[5].size() != 16 || fields[6].size() != 16)
+    return false;
+  Get(fields[4].data(), &value.parameter_set_uuid.bytes);
+  Get(fields[5].data(), &value.parameter_prepared_statement_uuid.bytes);
+  Get(fields[6].data(), &value.parameter_set_snapshot_uuid.bytes);
   value.ordered_slot_table_sha256 = text(fields[7]);
   value.canonical_descriptor_bytes = std::move(fields[8]);
   value.canonical_container_bytes = std::move(fields[9]);
@@ -1047,8 +646,8 @@ bool DecodeRecord(const std::uint8_t* data, std::size_t size,
 
 std::vector<std::uint8_t> EncodeSnapshot(
     const SblrPreparedStatementRegistrySnapshotV1& input) {
-  if (!NonZero(input.database_uuid) || !NonZero(input.session_uuid) ||
-      !NonZero(input.principal_uuid) ||
+  if (!Identity(input.database_uuid) || !Identity(input.session_uuid) ||
+      !Identity(input.principal_uuid) ||
       input.registry_generation == 0 ||
       input.records.size() > kMaximumRecordCount) {
     return {};
@@ -1090,9 +689,9 @@ std::vector<std::uint8_t> EncodeSnapshot(
     return {};
   }
   std::vector<std::uint8_t> encoded(kSessionHeaderBytes, 0);
-  const std::array<std::uint8_t, 8> magic{'S', 'B', 'P', 'S', 'R', 'G', '1', 0};
+  const std::array<std::uint8_t, 8> magic{'S', 'B', 'P', 'S', 'R', 'G', '2', 0};
   Set(&encoded, 0, magic);
-  SetLe(&encoded, 8, 1, 2);
+  SetLe(&encoded, 8, 2, 2);
   SetLe(&encoded, 10, kSessionHeaderBytes, 2);
   SetLe(&encoded, 12, kSessionHeaderBytes + payload.size(), 4);
   SetLe(&encoded, 16, input.session_revoked ? 1 : 0, 4);
@@ -1115,11 +714,11 @@ std::vector<std::uint8_t> EncodeSnapshot(
 
 bool DecodeSnapshot(const std::vector<std::uint8_t>& bytes,
                     SblrPreparedStatementRegistrySnapshotV1* snapshot) {
-  const std::array<std::uint8_t, 8> magic{'S', 'B', 'P', 'S', 'R', 'G', '1', 0};
+  const std::array<std::uint8_t, 8> magic{'S', 'B', 'P', 'S', 'R', 'G', '2', 0};
   if (snapshot == nullptr || bytes.size() < kSessionHeaderBytes ||
       bytes.size() > kMaximumRegistryBytes ||
       !std::equal(magic.begin(), magic.end(), bytes.begin()) ||
-      GetLe(bytes.data() + 8, 2) != 1 ||
+      GetLe(bytes.data() + 8, 2) != 2 ||
       GetLe(bytes.data() + 10, 2) != kSessionHeaderBytes ||
       GetLe(bytes.data() + 12, 4) != bytes.size() ||
       (GetLe(bytes.data() + 16, 4) & ~1ULL) != 0 ||
@@ -1143,8 +742,8 @@ bool DecodeSnapshot(const std::vector<std::uint8_t>& bytes,
   auto evidence_material = bytes;
   std::fill(evidence_material.begin() + 104,
             evidence_material.begin() + 136, 0);
-  if (!NonZero(value.database_uuid) || !NonZero(value.session_uuid) ||
-      !NonZero(value.principal_uuid) ||
+  if (!Identity(value.database_uuid) || !Identity(value.session_uuid) ||
+      !Identity(value.principal_uuid) ||
       value.registry_generation == 0 || payload_hash != Hash(payload) ||
       value.record_evidence_sha256 !=
           DomainHash(kSessionDomain, evidence_material)) {
@@ -1202,11 +801,15 @@ ReadStatus ReadFile(const std::string& path,
   const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (fd < 0) return errno == ENOENT ? ReadStatus::absent
                                      : ReadStatus::io_error;
+  struct ReadHandle {
+    int value;
+    ~ReadHandle() { if (value >= 0) ::close(value); }
+  } handle{fd};
   struct stat metadata {};
-  if (::fstat(fd, &metadata) != 0 || !S_ISREG(metadata.st_mode) ||
+  if (::fstat(fd, &metadata) != 0) return ReadStatus::io_error;
+  if (!S_ISREG(metadata.st_mode) ||
       metadata.st_size < 0 ||
       static_cast<std::uint64_t>(metadata.st_size) > kMaximumRegistryBytes) {
-    ::close(fd);
     return ReadStatus::invalid;
   }
   bytes->resize(static_cast<std::size_t>(metadata.st_size));
@@ -1214,13 +817,15 @@ ReadStatus ReadFile(const std::string& path,
   while (offset != bytes->size()) {
     const auto count = ::read(fd, bytes->data() + offset,
                               bytes->size() - offset);
+    if (count < 0 && errno == EINTR) continue;
     if (count <= 0) {
-      ::close(fd);
       return ReadStatus::io_error;
     }
     offset += static_cast<std::size_t>(count);
   }
-  if (::close(fd) != 0) return ReadStatus::io_error;
+  const auto close_status = ::close(fd);
+  handle.value = -1;
+  if (close_status != 0) return ReadStatus::io_error;
   return ReadStatus::ok;
 #endif
 }
@@ -1315,18 +920,23 @@ SblrPreparedStatementRegistryResultV1 LoadExact(
   std::vector<std::uint8_t> bytes;
   const auto status = ReadFile(RegistryPath(context), &bytes);
   if (status == ReadStatus::absent) return Loaded({}, false);
+  if (status == ReadStatus::io_error) {
+    return Refused("SBLR.EXECUTION_FAILED",
+                   "sblr.prepared_statement_registry.read_failed",
+                   "unable to read prepared-statement registry");
+  }
   SblrPreparedStatementRegistrySnapshotV1 snapshot;
   if (status != ReadStatus::ok || !DecodeSnapshot(bytes, &snapshot)) {
-    return Refused("CATALOG.SNAPSHOT_STALE",
+    return Refused("PREPARED.REGISTRY.INVALID",
                    "sblr.prepared_statement_registry.corrupt",
                    "prepared-statement registry is torn or noncanonical");
   }
   SblrPreparedStatementRegistryUuidV1 database{};
   SblrPreparedStatementRegistryUuidV1 session{};
   SblrPreparedStatementRegistryUuidV1 principal{};
-  if (!CanonicalUuidBytes(context.database_uuid, &database) ||
-      !CanonicalUuidBytes(context.session_uuid, &session) ||
-      !CanonicalUuidBytes(context.principal_uuid, &principal) ||
+  if (!CanonicalIdentityBytes(context.database_uuid, &database) ||
+      !CanonicalIdentityBytes(context.session_uuid, &session) ||
+      !CanonicalIdentityBytes(context.principal_uuid, &principal) ||
       snapshot.database_uuid != database || snapshot.session_uuid != session ||
       snapshot.principal_uuid != principal) {
     return Refused("SECURITY.ACCESS_DENIED",
@@ -1382,17 +992,14 @@ bool ExecutionDescriptorMatchesPrepared(
     const scratchbird::engine::sblr::SblrStmtExecuteDescriptorV1& descriptor,
     const SblrPreparedStatementRegistryUuidV1& execution_uuid,
     const SblrPreparedStatementRegistryRecordV1& prepared) {
-  SblrPreparedStatementRegistryUuidV1 parameter_set_uuid{};
-  if (!prepared.parameter_set_uuid.empty() &&
-      !CanonicalUuidBytes(prepared.parameter_set_uuid, &parameter_set_uuid)) {
-    return false;
-  }
+  if (!prepared.parameter_set_uuid.is_nil() &&
+      !core::uuid::IsEngineIdentityUuid(prepared.parameter_set_uuid)) return false;
   return descriptor.execution_uuid == execution_uuid &&
          descriptor.statement_uuid == prepared.statement_uuid &&
          descriptor.statement_name_uuid == prepared.statement_name_uuid &&
          descriptor.prepared_generation == prepared.prepared_generation &&
          descriptor.prepared_descriptor_sha256 == prepared.descriptor_sha256 &&
-         descriptor.parameter_set_uuid == parameter_set_uuid &&
+         descriptor.parameter_set_uuid == prepared.parameter_set_uuid.bytes &&
          descriptor.parameter_set_generation == prepared.parameter_set_generation;
 }
 
@@ -1495,7 +1102,7 @@ SblrPreparedStatementRegistryResultV1 LoadSblrPreparedStatementRegistryV1(
 SblrPreparedStatementRegistryResultV1
 ResolveActiveSblrPreparedStatementCapabilityV1(
     const EngineRequestContext& context,
-    const std::string& prepared_statement_uuid,
+    const EngineUuid& prepared_statement_uuid,
     std::uint64_t prepared_generation) {
   std::lock_guard lock(g_registry_mutex);
   if (!HasAuthority(context)) {
@@ -1503,9 +1110,9 @@ ResolveActiveSblrPreparedStatementCapabilityV1(
                    "sblr.prepared_statement_registry.capability_denied");
   }
   SblrPreparedStatementRegistryUuidV1 prepared_uuid{};
-  if (!CanonicalUuidBytes(prepared_statement_uuid, &prepared_uuid) ||
+  if (!CanonicalIdentityBytes(prepared_statement_uuid, &prepared_uuid) ||
       prepared_generation == 0) {
-    return Refused("SBLR.OPERAND.INVALID",
+    return Refused("SBLR.OPERAND_INVALID",
                    "sblr.prepared_statement_registry.capability_invalid");
   }
   auto loaded = LoadExact(context);
@@ -1521,7 +1128,7 @@ ResolveActiveSblrPreparedStatementCapabilityV1(
         record.parameter_prepared_statement_uuid == prepared_statement_uuid;
     if (!statement_match && !parameter_match) continue;
     if (match != nullptr) {
-      return Refused("CATALOG.SNAPSHOT_STALE",
+      return Refused("PREPARED.REGISTRY.INVALID",
                      "sblr.prepared_statement_registry.capability_ambiguous");
     }
     match = &record;
@@ -1532,7 +1139,7 @@ ResolveActiveSblrPreparedStatementCapabilityV1(
                    "sblr.prepared_statement_registry.capability_hidden");
   }
   if (match->prepared_generation != prepared_generation) {
-    return Refused("MGA.TRANSACTION.STALE",
+    return Refused("PREPARED.REGISTRY.STALE",
                    "sblr.prepared_statement_registry.capability_stale");
   }
   const auto record = *match;
@@ -1552,20 +1159,20 @@ SblrPreparedStatementRegistryResultV1 PublishSblrPreparedStatementV1(
   if (!RecordSemanticValid(input) ||
       input.state != SblrPreparedStatementRegistryStateV1::active ||
       input.record_generation != 0 || NonZero(input.record_evidence_sha256)) {
-    return Refused("SBLR.OPERAND.INVALID",
+    return Refused("SBLR.OPERAND_INVALID",
                    "sblr.prepared_statement_registry.record_invalid");
   }
   auto loaded = LoadExact(context);
   if (!loaded.ok) return loaded;
   auto snapshot = std::move(loaded.snapshot);
   if (!loaded.found) {
-    if (!CanonicalUuidBytes(context.database_uuid,
+    if (!CanonicalIdentityBytes(context.database_uuid,
                             &snapshot.database_uuid) ||
-        !CanonicalUuidBytes(context.session_uuid,
+        !CanonicalIdentityBytes(context.session_uuid,
                             &snapshot.session_uuid) ||
-        !CanonicalUuidBytes(context.principal_uuid,
+        !CanonicalIdentityBytes(context.principal_uuid,
                             &snapshot.principal_uuid)) {
-      return Refused("SBLR.OPERAND.INVALID",
+      return Refused("SBLR.OPERAND_INVALID",
                      "sblr.prepared_statement_registry.context_invalid");
     }
   }
@@ -1586,14 +1193,14 @@ SblrPreparedStatementRegistryResultV1 PublishSblrPreparedStatementV1(
       result.record = replay_record;
       return result;
     }
-    return Refused("MGA.TRANSACTION.STALE",
+    return Refused("PREPARED.REGISTRY.STALE",
                    "sblr.prepared_statement_registry.publication_conflict");
   }
   if (std::any_of(snapshot.records.begin(), snapshot.records.end(),
                   [&](const auto& row) {
                     return row.statement_uuid == input.statement_uuid;
                   })) {
-    return Refused("MGA.TRANSACTION.STALE",
+    return Refused("PREPARED.REGISTRY.STALE",
                    "sblr.prepared_statement_registry.identity_conflict");
   }
   if (snapshot.registry_generation == std::numeric_limits<std::uint64_t>::max()) {
@@ -1639,7 +1246,7 @@ ResolveSblrPreparedStatementExecutionV1(
       prepared_generation == 0 || !NonZero(prepared_descriptor_sha256) ||
       !NonZero(execution_uuid) || canonical_execute_descriptor_bytes.empty() ||
       canonical_execute_descriptor_bytes.size() > kMaximumApiResultBytes) {
-    return Refused("SBLR.OPERAND.INVALID",
+    return Refused("SBLR.OPERAND_INVALID",
                    "sblr.prepared_statement_registry.execution_lookup_invalid");
   }
   auto loaded = LoadExact(context);
@@ -1659,7 +1266,7 @@ ResolveSblrPreparedStatementExecutionV1(
   if (!PreparedIdentityMatches(*found, canonical_name, statement_uuid,
                                prepared_generation,
                                prepared_descriptor_sha256)) {
-    return Refused("MGA.TRANSACTION.STALE",
+    return Refused("PREPARED.REGISTRY.STALE",
                    "sblr.prepared_statement_registry.execution_prepared_stale");
   }
   scratchbird::engine::sblr::SblrStmtExecuteDescriptorV1 decoded_descriptor;
@@ -1669,14 +1276,14 @@ ResolveSblrPreparedStatementExecutionV1(
           canonical_execute_descriptor_bytes.size(), &decoded_descriptor,
           &descriptor_detail)) {
     return Refused(
-        "SBLR.OPERAND.INVALID",
+        "SBLR.OPERAND_INVALID",
         "sblr.prepared_statement_registry.execution_lookup_invalid",
         std::move(descriptor_detail));
   }
   if (!ExecutionDescriptorMatchesPrepared(decoded_descriptor, execution_uuid,
                                           *found)) {
     return Refused(
-        "MGA.TRANSACTION.STALE",
+        "PREPARED.REGISTRY.STALE",
         "sblr.prepared_statement_registry.execution_lookup_authority_stale");
   }
   const auto execution = std::find_if(
@@ -1692,7 +1299,7 @@ ResolveSblrPreparedStatementExecutionV1(
   if (!execution_found) return result;
   if (execution_record.canonical_execute_descriptor_bytes !=
       canonical_execute_descriptor_bytes) {
-    return Refused("MGA.TRANSACTION.STALE",
+    return Refused("PREPARED.REGISTRY.STALE",
                    "sblr.prepared_statement_registry.execution_replay_conflict");
   }
   result.execution_found = true;
@@ -1718,7 +1325,7 @@ PublishSblrPreparedStatementExecutionV1(
       prepared_generation == 0 || !NonZero(prepared_descriptor_sha256) ||
       !NonZero(input.execution_uuid) ||
       !NonZero(input.statement_receipt_uuid)) {
-    return Refused("SBLR.OPERAND.INVALID",
+    return Refused("SBLR.OPERAND_INVALID",
                    "sblr.prepared_statement_registry.execution_invalid");
   }
   auto loaded = LoadExact(context);
@@ -1739,12 +1346,12 @@ PublishSblrPreparedStatementExecutionV1(
   if (!PreparedIdentityMatches(*found, canonical_name, statement_uuid,
                                prepared_generation,
                                prepared_descriptor_sha256)) {
-    return Refused("MGA.TRANSACTION.STALE",
+    return Refused("PREPARED.REGISTRY.STALE",
                    "sblr.prepared_statement_registry.execution_prepared_stale");
   }
   if (input.terminal_api_result.operation_id != found->body_operation_id) {
     return Refused(
-        "MGA.TRANSACTION.STALE",
+        "PREPARED.REGISTRY.STALE",
         "sblr.prepared_statement_registry.execution_result_identity_stale");
   }
   const auto existing = std::find_if(
@@ -1757,13 +1364,13 @@ PublishSblrPreparedStatementExecutionV1(
           : existing->execution_generation;
   SblrPreparedStatementExecutionRecordV1 canonical;
   if (!CanonicalizeExecution(input, generation, *found, &canonical)) {
-    return Refused("SBLR.OPERAND.INVALID",
+    return Refused("SBLR.OPERAND_INVALID",
                    "sblr.prepared_statement_registry.execution_invalid");
   }
   if (existing != found->executions.end()) {
     if (!SameExecution(*existing, canonical)) {
       return Refused(
-          "MGA.TRANSACTION.STALE",
+          "PREPARED.REGISTRY.STALE",
           "sblr.prepared_statement_registry.execution_replay_conflict");
     }
     const auto record = *found;
@@ -1835,7 +1442,7 @@ SblrPreparedStatementRegistryResultV1 FreeSblrPreparedStatementV1(
       prepared_generation == 0 || !NonZero(prepared_descriptor_sha256) ||
       !NonZero(free_descriptor_sha256) ||
       canonical_free_result_bytes.size() != 128) {
-    return Refused("SBLR.OPERAND.INVALID",
+    return Refused("SBLR.OPERAND_INVALID",
                    "sblr.prepared_statement_registry.free_invalid");
   }
   auto loaded = LoadExact(context);
@@ -1856,13 +1463,13 @@ SblrPreparedStatementRegistryResultV1 FreeSblrPreparedStatementV1(
   if (found->statement_uuid != statement_uuid ||
       found->prepared_generation != prepared_generation ||
       found->descriptor_sha256 != prepared_descriptor_sha256) {
-    return Refused("MGA.TRANSACTION.STALE",
+    return Refused("PREPARED.REGISTRY.STALE",
                    "sblr.prepared_statement_registry.free_stale");
   }
   if (found->state == SblrPreparedStatementRegistryStateV1::freed) {
     if (found->free_descriptor_sha256 != free_descriptor_sha256 ||
         found->canonical_free_result_bytes != canonical_free_result_bytes) {
-      return Refused("MGA.TRANSACTION.STALE",
+      return Refused("PREPARED.REGISTRY.STALE",
                      "sblr.prepared_statement_registry.free_replay_conflict");
     }
     const auto replay_record = *found;
@@ -1873,7 +1480,7 @@ SblrPreparedStatementRegistryResultV1 FreeSblrPreparedStatementV1(
   }
   if (found->state != SblrPreparedStatementRegistryStateV1::active ||
       snapshot.registry_generation == std::numeric_limits<std::uint64_t>::max()) {
-    return Refused("MGA.TRANSACTION.STALE",
+    return Refused("PREPARED.REGISTRY.STALE",
                    "sblr.prepared_statement_registry.free_terminal");
   }
   ++snapshot.registry_generation;

@@ -14,7 +14,7 @@ class EngineDmlDeleteEffectAuthorityHandleV1 final {
   struct Authority;
   std::shared_ptr<const Authority> authority_;
   friend EngineDmlDeleteEffectAuthorityResultV1 CaptureDmlDeleteEffectAuthorityV1(
-      const EngineRequestContext&, const std::string&);
+      const EngineRequestContext&, const EngineUuid&);
   friend EngineApiDiagnostic RevalidateDmlDeleteEffectAuthorityV1(
       const EngineRequestContext&, const EngineDmlDeleteEffectAuthorityResultV1&);
 };
@@ -50,7 +50,7 @@ struct EngineDmlDeleteEffectAuthorityResultV1 {
 // This handle does not supply DELETE privilege, resources, execution, replay,
 // or transaction finality, and cannot be reconstructed from a supplied hash.
 EngineDmlDeleteEffectAuthorityResultV1 CaptureDmlDeleteEffectAuthorityV1(
-    const EngineRequestContext&, const std::string& target_relation_uuid);
+    const EngineRequestContext&, const EngineUuid& target_relation_uuid);
 EngineApiDiagnostic RevalidateDmlDeleteEffectAuthorityV1(
     const EngineRequestContext&, const EngineDmlDeleteEffectAuthorityResultV1&);
 // Read-only manager comparison, never a factory for live effect authority.

@@ -14,6 +14,7 @@
 
 #include "sblr_admission.hpp"
 #include "sblr_dispatch_command.hpp"
+#include "query_result_identity.hpp"
 
 #include "backup_archive/backup_archive_api.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -1391,14 +1392,15 @@ struct JobSchedulerContext {
 };
 
 JobSchedulerContext EnsureJobScheduler(ServerSessionRegistry* registry,
-                                       const ServerSessionRecord& session) {
+                                       const ServerSessionRecord& session,
+                                       std::uint64_t now_microseconds) {
   JobSchedulerContext context;
   if (registry == nullptr) {
     context.status = agents::AgentError("BACKGROUND_JOBS.REGISTRY_REQUIRED",
                                         "server_session_registry_required");
     return context;
   }
-  if (session.database_uuid.empty()) {
+  if (session.database_uuid.is_nil()) {
     context.status = agents::AgentError("BACKGROUND_JOBS.DATABASE_SCOPE_REQUIRED",
                                         "database_uuid_required");
     return context;
@@ -1421,7 +1423,7 @@ JobSchedulerContext EnsureJobScheduler(ServerSessionRegistry* registry,
     startup.startup_admitted = true;
     startup.scheduler_catalog_visible = true;
     startup.cluster_authority_available = false;
-    startup.monotonic_now_microseconds = 100;
+    startup.monotonic_now_microseconds = now_microseconds;
     const auto start_status = scheduler.Start(startup);
     if (!start_status.ok) {
       context.status = start_status;
@@ -1435,11 +1437,10 @@ JobSchedulerContext EnsureJobScheduler(ServerSessionRegistry* registry,
   return context;
 }
 
-std::uint64_t JobSchedulerNowMicroseconds(
-    const agents::DatabaseLocalBackgroundJobScheduler& scheduler,
-    const agents::WorkloadResourceQuotaController& quota) {
-  return 100 + static_cast<std::uint64_t>(scheduler.evidence_log().size() +
-                                         quota.evidence_log().size());
+std::uint64_t JobSchedulerNowMicroseconds() {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 std::string JobSchedulerRouteDetail(
@@ -1517,16 +1518,14 @@ engine_api::EngineRequestContext ArchiveReplicationEngineContext(
                            : engine_api::EngineTrustMode::server_isolated;
   context.request_id = UuidBytesToText(request_uuid);
   context.database_path = session.database_path;
-  context.database_uuid =
-      session.database_uuid.empty() ? std::string("database:session")
-                                    : session.database_uuid;
-  context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
-  context.session_uuid = UuidBytesToText(session.session_uuid);
+  context.database_uuid = session.database_uuid;
+  context.principal_uuid.bytes = session.effective_user_uuid;
+  context.session_uuid.bytes = session.session_uuid;
   if (!sbps::IsZeroUuid(session.active_role_uuid)) {
-    context.current_role_uuid = UuidBytesToText(session.active_role_uuid);
+    context.current_role_uuid.bytes = session.active_role_uuid;
   }
   context.transaction_uuid = session.transaction_uuid;
-  context.statement_uuid = UuidBytesToText(request_uuid);
+  context.statement_uuid.bytes = request_uuid;
   context.local_transaction_id = session.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       session.snapshot_visible_through_local_transaction_id;
@@ -1641,18 +1640,18 @@ std::string PreparedInnerEnvelopeFromControl(std::string encoded) {
 
 std::string PreparedAuthorityExpectedDependencyUuid(
     const ServerPreparedStatementRecord& prepared) {
-  if (!prepared.target_object_uuid.empty()) return prepared.target_object_uuid;
-  return prepared.database_uuid.empty() ? UuidBytesToText(prepared.session_uuid)
+  if (!prepared.target_object_uuid.is_nil()) return prepared.target_object_uuid;
+  return prepared.database_uuid.is_nil() ? UuidBytesToText(prepared.session_uuid)
                                         : prepared.database_uuid;
 }
 
 std::string PreparedAuthorityExpectedDependencyKind(
     const ServerPreparedStatementRecord& prepared) {
-  if (!prepared.target_object_uuid.empty()) {
+  if (!prepared.target_object_uuid.is_nil()) {
     return prepared.target_object_kind.empty() ? std::string("object")
                                                : prepared.target_object_kind;
   }
-  return prepared.database_uuid.empty() ? "session" : "database";
+  return prepared.database_uuid.is_nil() ? "session" : "database";
 }
 
 std::string PreparedAuthorityExpectedDependencyOperation(
@@ -1857,7 +1856,7 @@ std::string PreparedStatementAuthorityMismatchReason(
       prepared.search_path_hash != session.search_path_hash) {
     return "prepared_statement_authorization_context_stale";
   }
-  if (prepared.authority_dependency_uuid.empty() ||
+  if (prepared.authority_dependency_uuid.is_nil() ||
       prepared.authority_dependency_kind.empty() ||
       prepared.authority_dependency_operation_id.empty() ||
       prepared.authority_dependency_column_set_hash.empty() ||
@@ -2591,7 +2590,7 @@ ServerLanguageBundleRecord LanguageBundleRecordFromEnvelope(
 }
 
 bool LanguageBundleRecordIsComplete(const ServerLanguageBundleRecord& record) {
-  return !record.bundle_uuid.empty() &&
+  return !record.bundle_uuid.is_nil() &&
          !record.language_profile_id.empty() &&
          !record.language_tag.empty() &&
          !record.common_resource_hash.empty() &&
@@ -3324,7 +3323,7 @@ std::optional<DispatchViewDescriptor> LoadDispatchViewDescriptor(
       BehaviorPayloadField(record->payload, "view_aggregate_value_field").value_or("");
   descriptor.aggregate_function =
       BehaviorPayloadField(record->payload, "view_aggregate_function").value_or("");
-  if (descriptor.source_uuid.empty()) return std::nullopt;
+  if (descriptor.source_uuid.is_nil()) return std::nullopt;
   return descriptor;
 }
 
@@ -4582,7 +4581,7 @@ const HostedDatabaseSnapshot* HostedDatabaseForSession(const HostedEngineState& 
     if (!database.database_open) continue;
     const bool path_matches = !session.database_path.empty() &&
                               database.database_path == session.database_path;
-    const bool uuid_matches = !session.database_uuid.empty() &&
+    const bool uuid_matches = !session.database_uuid.is_nil() &&
                               database.database_uuid == session.database_uuid;
     if (path_matches || uuid_matches) return &database;
   }
@@ -4612,7 +4611,7 @@ void ClearLegacyDefaultTransactionProjection(ServerSessionRecord* session) {
   session->default_local_transaction_id = 0;
   session->local_transaction_id = 0;
   session->snapshot_visible_through_local_transaction_id = 0;
-  session->transaction_uuid.clear();
+  session->transaction_uuid = {};
   session->transaction_timestamp.clear();
 }
 
@@ -4710,16 +4709,16 @@ engine_api::EngineRequestContext ReplacementTransactionContext(
   context.request_id = UuidBytesToText(request_uuid);
   context.database_path = session.database_path.empty() ? database.database_path : session.database_path;
   context.database_uuid =
-      session.database_uuid.empty() ? database.database_uuid : session.database_uuid;
+      session.database_uuid.is_nil() ? database.database_uuid : session.database_uuid;
   context.database_page_size_bytes = database.page_size_bytes;
-  context.statement_uuid = context.request_id;
+  context.statement_uuid.bytes = request_uuid;
   context.statement_timestamp = CurrentUtcTimestampText();
   context.current_timestamp = context.statement_timestamp;
   context.current_monotonic_ns = CurrentMonotonicNsText();
-  context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
-  context.session_uuid = UuidBytesToText(session.session_uuid);
+  context.principal_uuid.bytes = session.effective_user_uuid;
+  context.session_uuid.bytes = session.session_uuid;
   if (!sbps::IsZeroUuid(session.active_role_uuid)) {
-    context.current_role_uuid = UuidBytesToText(session.active_role_uuid);
+    context.current_role_uuid.bytes = session.active_role_uuid;
   }
   context.application_name = session.application_name;
   context.security_context_present = true;
@@ -4776,7 +4775,7 @@ void QuarantineUnpublishedTransaction(
     ServerSessionRecord* session,
     ServerTransactionState transaction) {
   if (session == nullptr || transaction.local_transaction_id == 0 ||
-      transaction.transaction_uuid.empty()) {
+      transaction.transaction_uuid.is_nil()) {
     return;
   }
   const bool already_retained = std::any_of(
@@ -4804,7 +4803,7 @@ bool RollbackUnpublishedTransaction(
     std::string* rollback_detail = nullptr) {
   const auto* database = HostedDatabaseForSession(engine_state, session);
   if (database == nullptr || transaction.local_transaction_id == 0 ||
-      transaction.transaction_uuid.empty()) {
+      transaction.transaction_uuid.is_nil()) {
     if (rollback_detail != nullptr) {
       *rollback_detail = "unpublished_transaction_cleanup_context_unavailable";
     }
@@ -5035,7 +5034,7 @@ void ProjectDefaultTransactionToLegacyFields(ServerSessionRecord* session) {
   if (found == session->transactions_by_local_id.end()) {
     session->local_transaction_id = 0;
     session->snapshot_visible_through_local_transaction_id = 0;
-    session->transaction_uuid.clear();
+    session->transaction_uuid = {};
     session->transaction_timestamp.clear();
     return;
   }
@@ -5158,7 +5157,7 @@ AutocommitBoundaryResult FinalizeAutocommitBoundaryForSession(
                      std::to_string(session->local_transaction_id) + "\n";
   result.evidence += "replacement_snapshot_visible_through_local_transaction_id=" +
                      std::to_string(session->snapshot_visible_through_local_transaction_id) + "\n";
-  if (!session->transaction_uuid.empty()) {
+  if (!session->transaction_uuid.is_nil()) {
     result.evidence += "replacement_transaction_uuid=" + session->transaction_uuid + "\n";
   }
   result.evidence += "evidence=always_active_transaction_replacement:" +
@@ -5188,7 +5187,7 @@ std::string SessionTransactionStatePayload(std::string_view operation_id,
       << "local_transaction_id=" << session.local_transaction_id << "\n"
       << "snapshot_visible_through_local_transaction_id="
       << session.snapshot_visible_through_local_transaction_id << "\n";
-  if (!session.transaction_uuid.empty()) {
+  if (!session.transaction_uuid.is_nil()) {
     out << "transaction_uuid=" << session.transaction_uuid << "\n";
   }
   if (!session.transaction_timestamp.empty()) {
@@ -5248,7 +5247,7 @@ void AppendReplacementTransactionState(std::string* payload,
   *payload += "replacement_local_transaction_id=" + std::to_string(session.local_transaction_id) + "\n";
   *payload += "replacement_snapshot_visible_through_local_transaction_id=" +
               std::to_string(session.snapshot_visible_through_local_transaction_id) + "\n";
-  if (!session.transaction_uuid.empty()) {
+  if (!session.transaction_uuid.is_nil()) {
     *payload += "replacement_transaction_uuid=" + session.transaction_uuid + "\n";
   }
   if (!session.transaction_timestamp.empty()) {
@@ -5269,7 +5268,7 @@ void AppendReplacementTransactionState(
               std::to_string(
                   transaction.snapshot_visible_through_local_transaction_id) +
               "\n";
-  if (!transaction.transaction_uuid.empty()) {
+  if (!transaction.transaction_uuid.is_nil()) {
     *payload += "replacement_transaction_uuid=" +
                 transaction.transaction_uuid + "\n";
   }
@@ -5360,7 +5359,7 @@ std::optional<SessionOperationResult> ValidateTransactionAdmission(
   if (sbps::IsZeroUuid(session.effective_user_uuid) ||
       sbps::IsZeroUuid(session.session_uuid) ||
       session.database_path.empty() ||
-      session.database_uuid.empty()) {
+      session.database_uuid.is_nil()) {
     return TransactionAdmissionFailure(
         session.session_uuid,
         "ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED",
@@ -6894,10 +6893,10 @@ std::string PublicAbiEnvelopeForDispatch(const ServerSessionRecord& session,
       if (!schema_parent_path.empty()) {
         resolved_schema_uuid = ResolveSchemaParentPathForDispatch(session, schema_parent_path);
       }
-      if (resolved_schema_uuid.empty()) {
+      if (resolved_schema_uuid.is_nil()) {
         resolved_schema_uuid = ResolveDefaultSchemaForDispatch(session);
       }
-      if (!resolved_schema_uuid.empty()) {
+      if (!resolved_schema_uuid.is_nil()) {
         AppendOperationOperand(&operation_envelope, "target_schema_uuid", resolved_schema_uuid);
         AppendOperationOperand(&operation_envelope, "schema_uuid", resolved_schema_uuid);
       }
@@ -8666,30 +8665,16 @@ bool ReadQueryExecuteHandleFromEngineResult(
     ServerCursorRecord* cursor) {
   if (result == nullptr || cursor == nullptr) return false;
   engine_bridge::StatementQueryExecuteResultHandleView handle;
-  const auto read = [&](std::string_view text,
-                        std::array<std::uint8_t, 16>* output) {
-    const auto parsed = ParseUuidTextForDispatch(text);
-    if (!parsed || sbps::IsZeroUuid(*parsed)) return false;
-    *output = *parsed;
-    return true;
-  };
   if (engine_bridge::ReadStatementQueryExecuteResultHandle(result, &handle) ==
       SB_ENGINE_STATUS_OK) {
-    return read(handle.execution_uuid, &cursor->execution_uuid) &&
-           read(handle.result_set_uuid, &cursor->result_set_uuid) &&
-           read(handle.row_descriptor_uuid, &cursor->row_descriptor_uuid) &&
-           read(handle.snapshot_uuid, &cursor->snapshot_uuid);
+    return AdoptQueryResultIdentities(handle, cursor);
   }
   engine_bridge::StatementCatalogIntrospectResultHandleView catalog_handle;
   if (engine_bridge::ReadStatementCatalogIntrospectResultHandle(
           result, &catalog_handle) != SB_ENGINE_STATUS_OK) {
     return false;
   }
-  return read(catalog_handle.request_uuid, &cursor->execution_uuid) &&
-         read(catalog_handle.result_set_uuid, &cursor->result_set_uuid) &&
-         read(catalog_handle.row_descriptor_uuid,
-              &cursor->row_descriptor_uuid) &&
-         read(catalog_handle.snapshot_uuid, &cursor->snapshot_uuid);
+  return AdoptQueryResultIdentities(catalog_handle, cursor);
 }
 
 bool IssueCursorStreamDescriptor(
@@ -8731,7 +8716,7 @@ bool RevalidateCursorStreamDescriptorReceipt(
     ServerSessionRegistry* registry,
     const ServerCursorRecord& cursor) {
   if (registry == nullptr || registry->statement_context_mutex == nullptr ||
-      cursor.statement_context_statement_uuid.empty()) {
+      cursor.statement_context_statement_uuid.is_nil()) {
     return false;
   }
   ServerStatementContextRecord receipt_record;
@@ -8871,24 +8856,24 @@ class StatementContextReleaseGuard final {
   StatementContextReleaseGuard& operator=(const StatementContextReleaseGuard&) =
       delete;
   ~StatementContextReleaseGuard() {
-    if (!statement_uuid_.empty()) {
+    if (!statement_uuid_.is_nil()) {
       (void)ReleaseServerStatementContext(registry_, statement_uuid_);
     }
   }
 
-  void Arm(std::string statement_uuid) {
-    statement_uuid_ = std::move(statement_uuid);
+  void Arm(const scratchbird::core::platform::Uuid& statement_uuid) {
+    statement_uuid_ = statement_uuid;
   }
 
   void TransferToCursor(ServerCursorRecord* cursor) {
-    if (cursor == nullptr || statement_uuid_.empty()) return;
-    cursor->statement_context_statement_uuid = std::move(statement_uuid_);
-    statement_uuid_.clear();
+    if (cursor == nullptr || statement_uuid_.is_nil()) return;
+    cursor->statement_context_statement_uuid = statement_uuid_;
+    statement_uuid_ = {};
   }
 
  private:
   ServerSessionRegistry* registry_ = nullptr;
-  std::string statement_uuid_;
+  scratchbird::core::platform::Uuid statement_uuid_;
 };
 
 SessionOperationResult AcceptedFetchFinality(const std::array<std::uint8_t, 16>& session_uuid,
@@ -9208,7 +9193,7 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
       }
     }
     admission_request.admitted_parser_package_uuid =
-        admission_request.admitted_parser_package_uuid.empty()
+        admission_request.admitted_parser_package_uuid.is_nil()
             ? UuidBytesToText(session->admitted_parser_package_uuid)
             : admission_request.admitted_parser_package_uuid;
     admission_request.admitted_parser_package_version_major =
@@ -9218,17 +9203,17 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
     admission_request.admitted_parser_package_version_patch =
         session->admitted_parser_package_version_patch;
     admission_request.admitted_registry_snapshot_uuid =
-        admission_request.admitted_registry_snapshot_uuid.empty()
-            ? (session->database_uuid.empty()
+        admission_request.admitted_registry_snapshot_uuid.is_nil()
+            ? (session->database_uuid.is_nil()
                    ? UuidBytesToText(session->session_uuid)
                    : session->database_uuid)
             : admission_request.admitted_registry_snapshot_uuid;
     admission_request.authenticated_principal_uuid =
-        admission_request.authenticated_principal_uuid.empty()
+        admission_request.authenticated_principal_uuid.is_nil()
             ? UuidBytesToText(session->effective_user_uuid)
             : admission_request.authenticated_principal_uuid;
     admission_request.catalog_snapshot_uuid =
-        session->database_uuid.empty()
+        session->database_uuid.is_nil()
             ? UuidBytesToText(session->session_uuid)
             : session->database_uuid;
     admission_request.engine_mga_statement_uuid =
@@ -9570,7 +9555,7 @@ SessionOperationResult HandleExecuteSblrImpl(
              ExecuteTransactionRoute::kBeginAdditional) {
     dispatch_session.local_transaction_id = 0;
     dispatch_session.snapshot_visible_through_local_transaction_id = 0;
-    dispatch_session.transaction_uuid.clear();
+    dispatch_session.transaction_uuid = {};
     dispatch_session.transaction_timestamp.clear();
   }
   auto request_record = RegisterServerRequestLifecycle(registry,
@@ -9828,7 +9813,7 @@ SessionOperationResult HandleExecuteSblrImpl(
       operation_hint == prepared_statement->operation_id;
   const bool prepared_target_matches =
       prepared_statement == nullptr ||
-      prepared_statement->target_object_uuid.empty() ||
+      prepared_statement->target_object_uuid.is_nil() ||
       target_object_hint.empty() ||
       target_object_hint == prepared_statement->target_object_uuid;
   const auto prepared_reuse_dml_operation = [](std::string_view operation_id) {
@@ -9922,8 +9907,8 @@ SessionOperationResult HandleExecuteSblrImpl(
         decoded->encoded_sblr_container;
     canonical_request.encoded_execution_envelope =
         decoded->encoded_execution_envelope;
-    canonical_request.admitted_parser_package_uuid =
-        UuidBytesToText(session->admitted_parser_package_uuid);
+    canonical_request.admitted_parser_package_uuid.bytes =
+        session->admitted_parser_package_uuid;
     canonical_request.admitted_parser_package_version_major =
         session->admitted_parser_package_version_major;
     canonical_request.admitted_parser_package_version_minor =
@@ -9932,8 +9917,8 @@ SessionOperationResult HandleExecuteSblrImpl(
         session->admitted_parser_package_version_patch;
     canonical_request.admitted_registry_snapshot_uuid =
         live_statement_context->view.catalog_epoch_uuid;
-    canonical_request.authenticated_principal_uuid =
-        UuidBytesToText(session->effective_user_uuid);
+    canonical_request.authenticated_principal_uuid.bytes =
+        session->effective_user_uuid;
     canonical_request.catalog_snapshot_uuid =
         live_statement_context->view.statement_metadata_snapshot_uuid;
     canonical_request.engine_mga_statement_uuid =
@@ -10839,7 +10824,8 @@ SessionOperationResult HandleExecuteSblrImpl(
                             "Schedule routes require a structured database-local schedule name.",
                             "schedule_name_or_uuid_required");
     }
-    auto job_context = EnsureJobScheduler(registry, *session);
+    const std::uint64_t now = JobSchedulerNowMicroseconds();
+    auto job_context = EnsureJobScheduler(registry, *session, now);
     if (!job_context.status.ok || job_context.scheduler == nullptr ||
         job_context.quota == nullptr) {
       return fail_job_route(job_context.status.diagnostic_code,
@@ -10848,7 +10834,6 @@ SessionOperationResult HandleExecuteSblrImpl(
     }
     auto& scheduler = *job_context.scheduler;
     auto& quota = *job_context.quota;
-    const std::uint64_t now = JobSchedulerNowMicroseconds(scheduler, quota);
     agents::AgentRuntimeStatus status = agents::AgentOk();
     if (admission.operation_id == "jobs.scheduler.create_job") {
       if (scheduler.FindJob(job_uuid)) {
@@ -12495,7 +12480,7 @@ SessionOperationResult HandleExecuteSblrImpl(
         }
         ServerTransactionState published;
         published.local_transaction_id = handle.local_transaction_id;
-        published.transaction_uuid = UuidBytesToText(handle.transaction_uuid);
+        published.transaction_uuid.bytes = handle.transaction_uuid;
         published.snapshot_visible_through_local_transaction_id =
             selected_transaction.has_value()
                 ? selected_transaction->snapshot_visible_through_local_transaction_id
@@ -13313,7 +13298,7 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
       cursor.stream_descriptor_version != decoded->stream_descriptor_version ||
       cursor.stream_descriptor_generation !=
           decoded->stream_descriptor_generation ||
-      cursor.statement_context_statement_uuid.empty() ||
+      cursor.statement_context_statement_uuid.is_nil() ||
       std::all_of(cursor.stream_descriptor_receipt_binding_sha256.begin(),
                   cursor.stream_descriptor_receipt_binding_sha256.end(),
                   [](std::uint8_t value) { return value == 0; }) ||
@@ -13450,7 +13435,7 @@ SessionOperationResult HandleFetch(ServerSessionRegistry* registry,
                                                        : "fetch_completed");
     if (batch.end_of_stream) {
       const bool owns_canonical_statement_context =
-          !cursor.statement_context_statement_uuid.empty();
+          !cursor.statement_context_statement_uuid.is_nil();
       MarkServerRequestClosedByCursor(registry,
                                       decoded->cursor_uuid,
                                       ServerRequestLifecycleState::kCompleted,
@@ -13582,7 +13567,7 @@ SessionOperationResult HandleClosePreparedSblr(
   ServerSessionRecord resource_session = *session;
   resource_session.local_transaction_id = 0;
   resource_session.snapshot_visible_through_local_transaction_id = 0;
-  resource_session.transaction_uuid.clear();
+  resource_session.transaction_uuid = {};
   resource_session.transaction_timestamp.clear();
   resource_session.default_local_transaction_id = 0;
   const auto request_record = RegisterServerRequestLifecycle(

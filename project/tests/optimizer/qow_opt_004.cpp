@@ -22,109 +22,6 @@ namespace api = scratchbird::engine::internal_api;
 namespace exec = scratchbird::engine::executor;
 namespace plan = scratchbird::engine::planner;
 
-namespace scratchbird::engine::internal_api {
-
-struct CanonicalAccessIndexMetadataV1 {
-  std::string index_uuid;
-  std::string relation_uuid;
-  std::string alternative_uuid;
-  std::string capability_uuid;
-  std::string implementation_id;
-  std::vector<std::uint32_t> key_expression_ids;
-  std::uint64_t catalog_generation{0};
-  std::uint64_t relation_descriptor_generation{0};
-  std::uint64_t index_generation{0};
-  std::uint64_t statistics_generation{0};
-  std::uint64_t statistics_index_generation{0};
-  std::uint64_t statistics_catalog_generation{0};
-  std::uint64_t visible_generation{0};
-  bool catalog_record_current{false};
-  bool lifecycle_ready{false};
-  bool build_validation_complete{false};
-  bool profile_authoritative{false};
-  bool profile_supports_mga_visibility{false};
-  bool profile_supports_generation_visibility{false};
-  bool supports_exact_lookup{false};
-  bool supports_range_scan{false};
-  bool statistics_present{false};
-  bool statistics_current{false};
-  bool statistics_stale{false};
-  bool statistics_profile_coupled{false};
-  bool statistics_mga_visible{false};
-  bool visibility_evidence_engine_owned{false};
-  bool visible_to_statement_snapshot{false};
-  bool approximate{false};
-  bool exact_fallback{false};
-  bool residual_recheck_required{false};
-  bool data_access_observed{false};
-};
-
-struct CanonicalAccessCandidateReceiptV1 {
-  std::string alternative_uuid;
-  std::string index_uuid;
-  std::string implementation_id;
-  std::string capability_uuid;
-  std::uint32_t logical_node_id{0};
-  std::uint64_t catalog_generation{0};
-  std::uint64_t relation_descriptor_generation{0};
-  std::uint64_t index_generation{0};
-  std::uint64_t statistics_generation{0};
-  std::uint64_t visible_generation{0};
-  bool available{false};
-  bool heap_fallback{false};
-  bool capability_validated{false};
-  bool generation_validated{false};
-  bool statistics_validated{false};
-  bool visibility_validated{false};
-  bool residual_recheck_required{false};
-  std::string refusal_diagnostic_id;
-};
-
-struct CanonicalAccessCandidatePlanningRequestV1 {
-  scratchbird::engine::planner::CanonicalLogicalRelationalGraph logical_graph;
-  std::uint32_t logical_node_id{0};
-  std::string relation_uuid;
-  std::vector<std::uint32_t> predicate_expression_ids;
-  std::string predicate_kind;
-  std::string heap_alternative_uuid;
-  std::string heap_capability_uuid;
-  std::string statistics_snapshot_uuid;
-  std::uint64_t current_catalog_generation{0};
-  std::uint64_t current_relation_descriptor_generation{0};
-  std::uint64_t current_statistics_generation{0};
-  std::size_t maximum_candidate_count{0};
-  bool metadata_snapshot_engine_owned{false};
-  bool storage_descriptor_engine_owned{false};
-  bool statistics_snapshot_engine_owned{false};
-  bool data_access_observed{false};
-  bool parser_planning_authority_claimed{false};
-  bool transaction_finality_authority_claimed{false};
-  std::vector<CanonicalAccessIndexMetadataV1> indexes;
-};
-
-struct CanonicalAccessCandidatePlanningResultV1 {
-  bool accepted{false};
-  bool planning_complete_before_access{false};
-  bool data_access_allowed{false};
-  scratchbird::engine::planner::CanonicalPhysicalAlternativeCatalog catalog;
-  std::vector<CanonicalAccessCandidateReceiptV1> receipts;
-  std::string diagnostic_id;
-  std::string field_id;
-};
-
-CanonicalAccessCandidatePlanningResultV1
-QowGenerateCanonicalAccessCandidatesV1(
-    const CanonicalAccessCandidatePlanningRequestV1& request);
-
-bool QowValidateCanonicalSelectedAccessExecutionV1(
-    const CanonicalAccessCandidatePlanningResultV1& planning,
-    const std::string& selected_alternative_uuid,
-    const scratchbird::engine::executor::TypedPhysicalNodeDag& physical_dag,
-    const CanonicalOptimizerSelectedExecutionResult& execution,
-    std::string* diagnostic_id,
-    std::string* field_id);
-
-}  // namespace scratchbird::engine::internal_api
 
 namespace {
 
@@ -142,11 +39,11 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
-std::string Uuid(const std::uint64_t suffix) {
-  auto text = std::string("019f0000-0000-7400-8000-000000000000");
-  const auto digits = std::to_string(suffix);
-  text.replace(text.size() - digits.size(), digits.size(), digits);
-  return text;
+api::EngineUuid Uuid(const std::uint64_t suffix) {
+  api::EngineUuid value{{0x01, 0x9f, 0, 0, 0, 0, 0x74, 0, 0x80, 0, 0, 0, 0, 0, 0, 0}};
+  for (unsigned index = 0; index < 6; ++index)
+    value.bytes[15 - index] = static_cast<std::uint8_t>(suffix >> (index * 8));
+  return value;
 }
 
 plan::CanonicalMgaStatementContext MgaContext() {
@@ -480,11 +377,12 @@ exec::CanonicalExecutionMgaAuthority MgaAuthority(
 
 api::EngineDescriptor ResultDescriptor() {
   api::EngineDescriptor descriptor;
-  descriptor.descriptor_uuid.canonical = Uuid(820);
+  descriptor.descriptor_uuid = Uuid(820);
+  descriptor.type_uuid = Uuid(821);
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = "int64";
   descriptor.encoded_descriptor =
-      "type_uuid=" + Uuid(821) + ";nullability=non_null";
+      "type_uuid=019f0000-0000-7400-8000-000000000335;nullability=non_null";
   return descriptor;
 }
 

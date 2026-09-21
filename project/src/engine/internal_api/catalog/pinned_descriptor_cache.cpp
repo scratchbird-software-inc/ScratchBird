@@ -7,48 +7,33 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/pinned_descriptor_cache.hpp"
+#include "../../descriptor_content_encoding.hpp"
+#include "../../../core/uuid/uuid.hpp"
 
 #include <algorithm>
-#include <iomanip>
-#include <sstream>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
 namespace {
 
-std::vector<std::string> SortedUnique(std::vector<std::string> values) {
+std::vector<EngineUuid> SortedUnique(std::vector<EngineUuid> values) {
   std::sort(values.begin(), values.end());
   values.erase(std::unique(values.begin(), values.end()), values.end());
   return values;
 }
 
-void AppendSorted(std::ostringstream& out, const char* label, std::vector<std::string> values) {
-  out << '|' << label << '=';
-  for (const auto& value : SortedUnique(std::move(values))) out << value << ';';
+CatalogPinnedDescriptorCacheKey CanonicalKey(CatalogPinnedDescriptorCacheKey key) {
+  key.object_uuids = SortedUnique(std::move(key.object_uuids));
+  key.index_uuids = SortedUnique(std::move(key.index_uuids));
+  return key;
 }
 
-std::string UInt64Hex(std::uint64_t value) {
-  std::ostringstream out;
-  out << std::hex << std::setw(16) << std::setfill('0') << value;
-  return out.str();
-}
-
-std::string StableDigest(const std::vector<std::string>& parts) {
-  std::uint64_t hash = 1469598103934665603ull;
-  for (const auto& part : parts) {
-    for (const unsigned char ch : part) {
-      hash ^= static_cast<std::uint64_t>(ch);
-      hash *= 1099511628211ull;
-    }
-    hash ^= 0xffu;
-    hash *= 1099511628211ull;
-  }
-  return "fnv1a64:" + UInt64Hex(hash);
-}
-
-std::string DescriptorText(const EngineDescriptor& descriptor) {
-  return descriptor.descriptor_uuid + ":" + descriptor.descriptor_kind + ":" +
-         descriptor.canonical_type_name + ":" + descriptor.encoded_descriptor;
+std::string DependencyDigest(const std::vector<EngineUuid>& identities) {
+  const auto canonical = SortedUnique(identities);
+  metadata::ContentEncoder encoded(4);
+  encoded.Number(canonical.size());
+  for (const auto& identity : canonical) encoded.Uuid(identity);
+  return encoded.Digest();
 }
 
 CatalogPinnedDescriptorLookupResult Refusal(std::string code,
@@ -63,8 +48,8 @@ CatalogPinnedDescriptorLookupResult Refusal(std::string code,
   return result;
 }
 
-bool Contains(const std::vector<std::string>& values, const std::string& value) {
-  return !value.empty() &&
+bool Contains(const std::vector<EngineUuid>& values, const EngineUuid& value) {
+  return !value.is_nil() &&
          std::find(values.begin(), values.end(), value) != values.end();
 }
 
@@ -104,8 +89,8 @@ bool EventInvalidatesSnapshot(const CatalogPinnedDescriptorSnapshot& snapshot,
                               const CatalogPinnedDescriptorInvalidationEvent& event) {
   if (!CatalogPinnedDescriptorInvalidationEventKindRecognized(event.event_kind)) return true;
   if (InvalidatesAll(event)) return true;
-  if (!event.index_uuid.empty() && Contains(snapshot.key.index_uuids, event.index_uuid)) return true;
-  if (!event.dependency_uuid.empty() && Contains(snapshot.key.object_uuids, event.dependency_uuid)) return true;
+  if (!event.index_uuid.is_nil() && Contains(snapshot.key.index_uuids, event.index_uuid)) return true;
+  if (!event.dependency_uuid.is_nil() && Contains(snapshot.key.object_uuids, event.dependency_uuid)) return true;
   if (!event.security_policy_identity.empty() &&
       event.security_policy_identity == snapshot.key.security_policy_identity) {
     return true;
@@ -115,8 +100,8 @@ bool EventInvalidatesSnapshot(const CatalogPinnedDescriptorSnapshot& snapshot,
     return true;
   }
   return InvalidatesByDependency(event) &&
-         event.dependency_uuid.empty() &&
-         event.index_uuid.empty() &&
+         event.dependency_uuid.is_nil() &&
+         event.index_uuid.is_nil() &&
          event.security_policy_identity.empty() &&
          event.redaction_policy_identity.empty();
 }
@@ -124,37 +109,24 @@ bool EventInvalidatesSnapshot(const CatalogPinnedDescriptorSnapshot& snapshot,
 }  // namespace
 
 std::string CatalogPinnedDescriptorCacheKeyText(const CatalogPinnedDescriptorCacheKey& key) {
-  std::ostringstream out;
-  out << "family=" << key.descriptor_family
-      << "|catalog_epoch=" << key.catalog_epoch
-      << "|security_epoch=" << key.security_epoch
-      << "|resource_policy_epoch=" << key.resource_policy_epoch
-      << "|name_resolution_epoch=" << key.name_resolution_epoch
-      << "|stats_epoch_relevant=" << (key.stats_epoch_relevant ? "true" : "false")
-      << "|stats_epoch=" << key.stats_epoch
-      << "|descriptor_set_digest=" << key.descriptor_set_digest
-      << "|security_policy_identity=" << key.security_policy_identity
-      << "|redaction_policy_identity=" << key.redaction_policy_identity
-      << "|resource_policy_identity=" << key.resource_policy_identity;
-  AppendSorted(out, "object_uuids", key.object_uuids);
-  AppendSorted(out, "index_uuids", key.index_uuids);
-  return out.str();
+  // Diagnostic token only. Exact typed keys, not this hash, index the cache.
+  const std::vector<std::string> parts{
+      "catalog-pinned-descriptor-key-v1", key.descriptor_family,
+      std::to_string(key.catalog_epoch), std::to_string(key.security_epoch),
+      std::to_string(key.resource_policy_epoch), std::to_string(key.name_resolution_epoch),
+      std::to_string(key.stats_epoch), key.stats_epoch_relevant ? "1" : "0",
+      key.descriptor_set_digest, key.security_policy_identity,
+      key.redaction_policy_identity, key.resource_policy_identity,
+      DependencyDigest(key.object_uuids), DependencyDigest(key.index_uuids)};
+  metadata::ContentEncoder encoded(1);
+  encoded.Number(parts.size());
+  for (const auto& part : parts) encoded.Text(part);
+  return encoded.Digest();
 }
 
 std::string CatalogPinnedDescriptorSetDigest(const std::vector<EngineDescriptor>& descriptors,
                                              const std::vector<EngineColumnDefinition>& columns) {
-  std::vector<std::string> parts;
-  parts.reserve(descriptors.size() + columns.size());
-  for (const auto& descriptor : descriptors) {
-    parts.push_back("descriptor:" + DescriptorText(descriptor));
-  }
-  for (const auto& column : columns) {
-    parts.push_back("column:" + column.requested_column_uuid + ":" +
-                    std::to_string(column.ordinal) + ":" +
-                    (column.nullable ? "nullable" : "required") + ":" +
-                    DescriptorText(column.descriptor));
-  }
-  return StableDigest(parts);
+  return metadata::DescriptorSetDigest(descriptors, columns);
 }
 
 CatalogPinnedDescriptorLookupResult ValidateCatalogPinnedDescriptorKey(
@@ -200,6 +172,15 @@ CatalogPinnedDescriptorLookupResult ValidateCatalogPinnedDescriptorKey(
                    "at least one object UUID is required",
                    cache_key);
   }
+  const auto valid_identity = [](const EngineUuid& value) {
+    return core::uuid::IsEngineIdentityUuid(value);
+  };
+  if (!std::all_of(key.object_uuids.begin(), key.object_uuids.end(), valid_identity) ||
+      !std::all_of(key.index_uuids.begin(), key.index_uuids.end(), valid_identity)) {
+    return Refusal("SB_CATALOG_PINNED_DESCRIPTOR_OBJECT_UUID_REQUIRED",
+                   "cache dependencies require binary system UUIDv7 identities",
+                   cache_key);
+  }
   if (key.security_policy_identity.empty()) {
     return Refusal("SB_CATALOG_PINNED_DESCRIPTOR_SECURITY_POLICY_REQUIRED",
                    "security policy identity is required",
@@ -240,7 +221,7 @@ CatalogPinnedDescriptorLookupResult CatalogPinnedDescriptorCache::Put(
   auto stored = std::make_shared<const CatalogPinnedDescriptorSnapshot>(std::move(snapshot));
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    snapshots_[validation.cache_key] = stored;
+    snapshots_.insert_or_assign(CanonicalKey(stored->key), stored);
     ++stats_.puts;
   }
 
@@ -260,7 +241,7 @@ CatalogPinnedDescriptorLookupResult CatalogPinnedDescriptorCache::Lookup(
   }
 
   std::lock_guard<std::mutex> lock(mutex_);
-  auto found = snapshots_.find(validation.cache_key);
+  auto found = snapshots_.find(CanonicalKey(key));
   if (found == snapshots_.end()) {
     ++stats_.misses;
     return Refusal("SB_CATALOG_PINNED_DESCRIPTOR_CACHE_MISS",
@@ -280,20 +261,23 @@ CatalogPinnedDescriptorInvalidationResult CatalogPinnedDescriptorCache::Invalida
   const std::string reason = event.reason.empty() ? event.event_kind : event.reason;
 
   std::lock_guard<std::mutex> lock(mutex_);
-  for (auto it = snapshots_.begin(); it != snapshots_.end();) {
+  std::vector<decltype(snapshots_)::iterator> pending;
+  for (auto it = snapshots_.begin(); it != snapshots_.end(); ++it) {
     if (!EventInvalidatesSnapshot(*it->second, event)) {
-      ++it;
       continue;
     }
     CatalogPinnedDescriptorInvalidatedEntry entry;
-    entry.cache_key = it->first;
+    entry.cache_key = CatalogPinnedDescriptorCacheKeyText(it->first);
     entry.descriptor_family = it->second->key.descriptor_family;
     entry.reason = reason;
     entry.object_uuids = it->second->key.object_uuids;
     entry.index_uuids = it->second->key.index_uuids;
     result.invalidated_entries.push_back(std::move(entry));
-    it = snapshots_.erase(it);
+    pending.push_back(it);
   }
+  // Hashing and evidence allocation may fail. Stage the complete removal
+  // list before touching discoverability or counters.
+  for (const auto it : pending) snapshots_.erase(it);
   stats_.invalidations += result.invalidated_entries.size();
   return result;
 }
@@ -340,7 +324,7 @@ bool CatalogPinnedDescriptorInvalidationEventKindRecognized(const std::string& e
 
 CatalogPinnedDescriptorInvalidationEvent CatalogPinnedDescriptorInvalidationEventForMutation(
     std::string mutation_source,
-    std::string dependency_uuid,
+    EngineUuid dependency_uuid,
     std::uint64_t event_epoch) {
   CatalogPinnedDescriptorInvalidationEvent event;
   event.dependency_uuid = std::move(dependency_uuid);

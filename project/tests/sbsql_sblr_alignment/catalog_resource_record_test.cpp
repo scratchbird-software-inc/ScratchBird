@@ -36,9 +36,9 @@ std::string List(const std::vector<std::string>& values) {
 }
 struct Oracle {
   std::string bytes=std::string(24,'\0'); unsigned count=0;
-  explicit Oracle(unsigned schema) {
+  explicit Oracle(unsigned schema, unsigned version=1) {
     bytes.replace(0,4,"SBCV");Put(bytes,4,1,2);Put(bytes,6,24,2);
-    Put(bytes,16,schema,4);Put(bytes,20,1,2);
+    Put(bytes,16,schema,4);Put(bytes,20,version,2);
   }
   void Field(unsigned id,unsigned tag,const std::string& value) {
     bytes+=Number(id,2)+Number(tag,1)+Number(0,1)+Number(value.size(),4)+value;++count;
@@ -69,7 +69,7 @@ std::string Golden(const c::CatalogResourceAliasRecord& r) {
   o.Field(13,1,Number(r.creator_transaction_number));return o.Finish();
 }
 std::string Golden(const c::CatalogCollationRecord& r) {
-  Oracle o(65558);
+  Oracle o(65558,2);
   o.Field(1,1,Number(2));o.Field(2,3,r.canonical_name);o.Field(3,5,Identity(r.resource_uuid));
   o.Field(4,3,r.charset_name);o.Field(5,5,Identity(r.charset_uuid));
   o.Field(6,2,Number(r.default_for_charset,1));o.Field(7,3,r.default_authority);
@@ -78,7 +78,8 @@ std::string Golden(const c::CatalogCollationRecord& r) {
   o.Field(13,3,r.source_path);o.Field(14,1,Number(r.resource_epoch));o.Field(15,1,Number(r.family_epoch));
   o.Field(16,3,r.family_version);o.Field(17,3,r.resource_seed_pack);o.Field(18,3,r.resource_seed_version);
   o.Field(19,2,Number(r.loaded_at_database_create,1));o.Field(20,2,Number(r.engine_owned,1));
-  o.Field(21,1,Number(r.creator_transaction_number));return o.Finish();
+  o.Field(21,1,Number(r.creator_transaction_number));
+  o.Field(22,1,Number(static_cast<std::uint64_t>(r.comparison_profile)));return o.Finish();
 }
 c::CatalogCharsetRecord Charset() {
   c::CatalogCharsetRecord r;
@@ -92,6 +93,7 @@ c::CatalogCharsetRecord Charset() {
 }
 c::CatalogCollationRecord Collation() {
   c::CatalogCollationRecord r;
+  r.comparison_profile=scratchbird::core::resources::CollationProfile::utf8_binary;
   r.canonical_name="UTF8_BIN";r.resource_uuid=Id(2);r.charset_name="UTF8";r.charset_uuid=Id(1);
   r.default_for_charset=true;r.default_authority="seed_pack.default_collations.v1";
   r.language="und";r.description=std::string("binary\0tail",11);r.supported_by={"native","a|b"};
@@ -140,6 +142,27 @@ int main() {
   const auto charset=Charset();const auto collation=Collation();
   Codec(charset,c::EncodeCatalogCharsetRecord,c::DecodeCatalogCharsetRecord);
   Codec(collation,c::EncodeCatalogCollationRecord,c::DecodeCatalogCollationRecord);
+  using Profile=scratchbird::core::resources::CollationProfile;
+  // Every numeric recipe, independent flag truth table; invalid payloads are
+  // formed with the oracle so decoder negatives do not depend on the encoder.
+  for(unsigned profile=0;profile<=6;++profile)for(unsigned flags=0;flags<4;++flags) {
+    auto candidate=collation;
+    candidate.comparison_profile=static_cast<Profile>(profile);
+    candidate.case_insensitive=(flags&1)!=0;candidate.accent_insensitive=(flags&2)!=0;
+    const bool valid=profile==0 || ((profile==1||profile==4||profile==5)&&flags==0) ||
+        (profile==2&&flags==3) || (profile==3&&flags==1);
+    const auto encoded=c::EncodeCatalogCollationRecord(candidate);
+    const auto decoded=c::DecodeCatalogCollationRecord(Golden(candidate));
+    Check(encoded.ok()==valid,"profile/flag encode admission mismatch");
+    Check(decoded.ok()==valid,"profile/flag decode admission mismatch");
+    if(valid)Check(decoded.record->comparison_profile==candidate.comparison_profile,
+        "numeric recipe lost on decode");
+    else Check(!decoded.record,"invalid recipe published descriptor");
+  }
+  auto overflow=collation;overflow.comparison_profile=static_cast<Profile>(UINT64_MAX);
+  Check(!c::DecodeCatalogCollationRecord(Golden(overflow)).ok(),"overflow profile admitted");
+  auto legacy=Golden(collation);Put(legacy,20,1,2);
+  Check(!c::DecodeCatalogCollationRecord(legacy).ok(),"legacy version inferred comparison recipe");
   auto no_default=charset;no_default.default_collation_name.clear();no_default.default_collation_uuid.reset();
   Codec(no_default,c::EncodeCatalogCharsetRecord,c::DecodeCatalogCharsetRecord);
   auto bad_charset=charset;bad_charset.default_collation_uuid.reset();

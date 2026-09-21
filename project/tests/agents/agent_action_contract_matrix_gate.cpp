@@ -66,6 +66,11 @@ agents::AgentRuntimeContext ValidContext() {
       "OBS_AGENT_CONTROL",
       "OBS_AGENT_POLICY_CONTROL",
       "OBS_AGENT_EVIDENCE_READ",
+      "OBS_AGENT_ACTION_APPROVE",
+      "OBS_AGENT_ACTION_CANCEL",
+      "OBS_AGENT_RECOMMENDATION_READ",
+      "OBS_AGENT_INTERNAL",
+      "FILESPACE_LIFECYCLE_CONTROL",
       "OBS_AGENT_OVERRIDE"};
   context.wall_now_microseconds = 1700000000000000ull;
   context.monotonic_now_microseconds = 1000;

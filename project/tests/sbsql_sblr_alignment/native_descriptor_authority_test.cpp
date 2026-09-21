@@ -14,18 +14,25 @@ void Check(bool pass, const char* why) {
   ++checks;
   if (!pass) { std::cerr << "FAIL checks=" << checks << ' ' << why << '\n'; std::exit(1); }
 }
-struct Expected { const char* descriptor; const char* type; const char* codec; };
+using Uuid = scratchbird::core::platform::Uuid;
+constexpr Uuid Fixed(unsigned suffix) {
+  return {{{0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0,
+      static_cast<unsigned char>(suffix>>8),static_cast<unsigned char>(suffix)}}};
+}
+constexpr Uuid boolean_identity{{{0x01,0,0,0,0x62,0x6f,0x7f,0x6c,0xa5,0x61,0x6e,0,0,0,0,0}}};
+constexpr Uuid decimal_descriptor{{{0xa0,0,0,0,0x64,0x65,0x73,0x69,0xad,0x61,0x6c,0,0,0,0,0}}};
+struct Expected { Uuid descriptor; Uuid type; const char* codec; };
 constexpr std::array<Expected, 6> expected{{
-  {"01000000-626f-7f6c-a561-6e0000000000", "01000000-626f-7f6c-a561-6e0000000000", "datatype.boolean.u8.v1"},
-  {"019d0000-0000-7000-8000-00000000d716", "019d0000-0000-7000-8000-00000000d717", "datatype.int32.le.v1"},
-  {"019d0000-0000-7000-8000-00000000d711", "019d0000-0000-7000-8000-00000000d712", "datatype.int64.le.v1"},
-  {"a0000000-6465-7369-ad61-6c0000000000", "019d0000-0000-7000-8000-00000000d713", "datatype.decimal.base1e9.le.v1"},
-  {"019d0000-0000-7000-8000-00000000d714", "019d0000-0000-7000-8000-00000000d715", "datatype.int128.le.v1"},
-  {"019d0000-0000-7000-8000-00000000d718", "019d0000-0000-7000-8000-00000000d719", "datatype.text.utf8.v1"},
+  {boolean_identity, boolean_identity, "datatype.boolean.u8.v1"},
+  {Fixed(0xd716), Fixed(0xd717), "datatype.int32.le.v1"},
+  {Fixed(0xd711), Fixed(0xd712), "datatype.int64.le.v1"},
+  {decimal_descriptor, Fixed(0xd713), "datatype.decimal.base1e9.le.v1"},
+  {Fixed(0xd714), Fixed(0xd715), "datatype.int128.le.v1"},
+  {Fixed(0xd718), Fixed(0xd719), "datatype.text.utf8.v1"},
 }};
-constexpr const char* receipt = "019d0000-0000-7000-8000-000000004901";
-constexpr const char* snapshot = "019d0000-0000-7000-8000-00000000d701";
-constexpr const char* binding = "019d0000-0000-7000-8000-000000004902";
+constexpr Uuid receipt = Fixed(0x4901);
+constexpr Uuid snapshot = Fixed(0xd701);
+constexpr Uuid binding = Fixed(0x4902);
 ipc::ParserStatementContext Context() {
   ipc::ParserStatementContext c;
   c.literal_preliminary_receipt_uuid = receipt;
@@ -86,7 +93,7 @@ int main() {
             case 6: invalid.datatype_catalog_snapshot_uuid = binding; break;
             case 7: invalid.datatype_catalog_generation = 2; break;
             case 8: invalid.datatype_registry_generation = 2; break;
-            case 9: invalid.statement_receipt_uuid.clear(); break;
+            case 9: invalid.statement_receipt_uuid = {}; break;
           }
           Check(!sb::PreserveNativeDescriptorAuthority(&invalid, c), "partial/stale authority cannot be defaulted");
         }
@@ -162,13 +169,13 @@ int main() {
     auto invalid = d;
     auto altered = c;
     switch (mutation) {
-      case 0: invalid.descriptor_uuid[14] = '4'; break;
-      case 1: invalid.type_uuid[19] = '0'; break;
+      case 0: invalid.descriptor_uuid.bytes[6] = 0x40; break;
+      case 1: invalid.type_uuid.bytes[8] = 0; break;
       case 2: invalid.nullability = sb::BoundNullability::kUnknown; break;
       case 3: invalid.nullability = static_cast<sb::BoundNullability>(200); break;
       case 4: altered.literal_catalog_snapshot_uuid = binding; break;
       case 5: altered.literal_catalog_generation = 2; break;
-      case 6: altered.literal_preliminary_receipt_uuid.clear(); break;
+      case 6: altered.literal_preliminary_receipt_uuid = {}; break;
     }
     Check(!sb::PreserveNativeDescriptorAuthority(&invalid, altered), "invalid cohort/system identity");
   }
@@ -183,20 +190,44 @@ int main() {
       numeric.width_precision_scale.precision = 7;
       numeric.width_precision_scale.scale = 2;
     }
-    std::array<std::string_view, 17> fields{{
-        binding, "1", expected[index].type, "1", expected[index].codec, "1", "1",
-        "0", "-", "-", "-", index == 3 ? "7" : "-", index == 3 ? "2" : "-",
-        receipt, snapshot, "1", "1"}};
-    Check(sb::MatchesNativeNumericDescriptorRecord(fields, numeric), "exact numeric SBXN descriptor tuple");
-    for (std::size_t field = 0; field < fields.size(); ++field) {
-      auto mutated = fields;
-      mutated[field] = "substitution";
-      Check(!sb::MatchesNativeNumericDescriptorRecord(mutated, numeric), "every SBXN descriptor field checked");
+    namespace api = scratchbird::engine::internal_api;
+    api::RelationalTypeDescriptor lowered;
+    lowered.descriptor_uuid=binding;lowered.descriptor_generation=1;
+    lowered.type_uuid=expected[index].type;lowered.type_generation=1;
+    lowered.codec_id=expected[index].codec;lowered.codec_version=1;lowered.codec_generation=1;
+    lowered.nullability=api::RelationalNullability::kNonNull;
+    lowered.precision=numeric.width_precision_scale.precision;lowered.scale=numeric.width_precision_scale.scale;
+    lowered.statement_receipt_uuid=receipt;lowered.datatype_catalog_snapshot_uuid=snapshot;
+    lowered.datatype_catalog_generation=1;lowered.datatype_registry_generation=1;lowered.datatype_identity_authoritative=true;
+    Check(sb::MatchesNativeNumericDescriptorRecord(lowered,numeric),"exact binary numeric descriptor tuple");
+    for(unsigned field=0;field<18;++field){auto altered=lowered;
+      switch(field){
+        case 0: altered.descriptor_uuid=receipt;break;case 1: ++altered.descriptor_generation;break;
+        case 2: altered.type_uuid=receipt;break;case 3: ++altered.type_generation;break;
+        case 4: altered.codec_id="substitution";break;case 5: ++altered.codec_version;break;
+        case 6: ++altered.codec_generation;break;case 7: altered.nullability=api::RelationalNullability::kNullable;break;
+        case 8: altered.collation_uuid=receipt;break;case 9: altered.timezone_profile_id="substitution";break;
+        case 10: altered.width=12;break;case 11: altered.precision=12;break;case 12: altered.scale=3;break;
+        case 13: altered.statement_receipt_uuid=binding;break;case 14: altered.datatype_catalog_snapshot_uuid=binding;break;
+        case 15: ++altered.datatype_catalog_generation;break;case 16: ++altered.datatype_registry_generation;break;
+        case 17: altered.datatype_identity_authoritative=false;break;
+      }
+      Check(!sb::MatchesNativeNumericDescriptorRecord(altered,numeric),"every binary numeric descriptor field checked");
     }
-    for (std::size_t size = 0; size < fields.size(); ++size)
-      Check(!sb::MatchesNativeNumericDescriptorRecord(std::span(fields).first(size), numeric),
-            "every numeric descriptor truncation");
+    // Typed records have no text-field truncation. Exercise every missing
+    // mandatory authority value instead of restoring a removed text interface.
+    for(unsigned field=0;field<12;++field){auto altered=lowered;
+      switch(field){
+        case 0: altered.descriptor_uuid={};break;case 1: altered.descriptor_generation=0;break;
+        case 2: altered.type_uuid={};break;case 3: altered.type_generation=0;break;
+        case 4: altered.codec_id.clear();break;case 5: altered.codec_version=0;break;
+        case 6: altered.codec_generation=0;break;case 7: altered.statement_receipt_uuid={};break;
+        case 8: altered.datatype_catalog_snapshot_uuid={};break;case 9: altered.datatype_catalog_generation=0;break;
+        case 10: altered.datatype_registry_generation=0;break;case 11: altered.datatype_identity_authoritative=false;break;
+      }
+      Check(!sb::MatchesNativeNumericDescriptorRecord(altered,numeric),"missing binary numeric authority value refuses");
+    }
   }
-  Check(checks == 6449, "fixed assertion population");
+  Check(checks == 6441, "fixed assertion population");
   std::cout << "PASS checks=" << checks << "; component projection only; not runtime admission\n";
 }

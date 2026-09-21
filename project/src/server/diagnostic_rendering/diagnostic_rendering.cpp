@@ -10,7 +10,7 @@
 
 #include "api_diagnostics.hpp"
 
-#include <cctype>
+#include "uuid.hpp"
 #include <utility>
 
 namespace scratchbird::server::legacy_rendering {
@@ -20,66 +20,30 @@ using engine::internal_api::EngineRowValue;
 using engine::internal_api::MakeInvalidRequestDiagnostic;
 namespace {
 
-std::string SeverityForDiagnostic(const EngineApiDiagnostic& diagnostic) {
-  if (!diagnostic.error) {
-    if (diagnostic.code.find("WARNING") != std::string::npos) { return "warning"; }
-    return "info";
+bool SourceMetadataValid(const EngineRenderedDiagnostic& diagnostic) {
+  if (diagnostic.code.empty() || diagnostic.message_key.empty() ||
+      !diagnostic.source_metadata || diagnostic.source_metadata->code != diagnostic.code ||
+      diagnostic.source_metadata->is_failure != diagnostic.error ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(
+          scratchbird::core::platform::Uuid{diagnostic.occurrence_uuid})) return false;
+  using Severity = scratchbird::core::diagnostics::CanonicalSeverity;
+  switch (diagnostic.source_metadata->severity) {
+    case Severity::informational: case Severity::warning: case Severity::error:
+    case Severity::fatal: case Severity::security: case Severity::critical:
+    case Severity::corruption: case Severity::panic: case Severity::debug:
+    case Severity::notice: case Severity::audit: case Severity::support:
+    case Severity::internal: return true;
   }
-  if (diagnostic.code.find("FATAL") != std::string::npos) { return "fatal"; }
-  return "error";
-}
-
-std::string Lower(std::string value) {
-  for (char& ch : value) {
-    ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-  }
-  return value;
-}
-
-bool RetryableDiagnostic(const EngineApiDiagnostic& diagnostic) {
-  const auto code = Lower(diagnostic.code);
-  const auto detail = Lower(diagnostic.detail);
-  return code.find("timeout") != std::string::npos ||
-         code.find("retry") != std::string::npos ||
-         code.find("stale") != std::string::npos ||
-         code.find("busy") != std::string::npos ||
-         code.find("unavailable") != std::string::npos ||
-         code.find("serialization") != std::string::npos ||
-         detail.find("retry") != std::string::npos ||
-         detail.find("timeout") != std::string::npos;
-}
-
-std::string ShapeForDiagnostic(const EngineApiDiagnostic& diagnostic) {
-  const auto code = Lower(diagnostic.code);
-  if (code.find("parser") != std::string::npos || code.find("ipc") != std::string::npos) {
-    return "diag.parser_server_ipc.v1";
-  }
-  if (code.find("security") != std::string::npos ||
-      code.find("auth") != std::string::npos ||
-      code.find("access") != std::string::npos) {
-    return "diag.rights.failure.v1";
-  }
-  if (code.find("lifecycle") != std::string::npos ||
-      code.find("dblc") != std::string::npos ||
-      code.find("shutdown") != std::string::npos ||
-      code.find("maintenance") != std::string::npos) {
-    return "diag.server.lifecycle.v1";
-  }
-  return "diag.message_vector.v1";
+  return false;
 }
 
 EngineRenderedDiagnostic RenderDiagnostic(const EngineApiDiagnostic& diagnostic, bool redact_internal_detail) {
   EngineRenderedDiagnostic rendered;
   rendered.code = diagnostic.code;
   rendered.message_key = diagnostic.message_key;
-  rendered.severity = SeverityForDiagnostic(diagnostic);
+  rendered.occurrence_uuid = diagnostic.occurrence_uuid;
+  rendered.source_metadata = diagnostic.canonical_metadata;
   rendered.error = diagnostic.error;
-  rendered.retryable = RetryableDiagnostic(diagnostic);
-  rendered.public_shape_id = ShapeForDiagnostic(diagnostic);
-  rendered.private_shape_id = rendered.public_shape_id + ".private";
-  rendered.redaction_class = redact_internal_detail ? "security_redacted" : "diagnostic_safe";
-  rendered.recommended_action = rendered.retryable ? "retry_after_backoff_or_operator_recheck"
-                                                   : "inspect_canonical_diagnostic";
   rendered.internal_detail_redacted = redact_internal_detail && !diagnostic.detail.empty();
   rendered.detail = rendered.internal_detail_redacted ? "redacted" : diagnostic.detail;
   return rendered;
@@ -91,13 +55,15 @@ EngineRenderedField RenderField(const std::pair<std::string, EngineTypedValue>& 
   rendered.descriptor_kind = field.second.descriptor.descriptor_kind;
   rendered.canonical_type_name = field.second.descriptor.canonical_type_name;
   rendered.encoded_value = field.second.encoded_value;
+  rendered.binary_value = field.second.binary_value;
   rendered.is_null = field.second.is_null;
   return rendered;
 }
 
 EngineRenderedRow RenderRow(const EngineRowValue& row) {
   EngineRenderedRow rendered;
-  rendered.row_uuid = row.requested_row_uuid;
+  if (!row.requested_row_uuid.is_nil())
+    rendered.row_uuid = scratchbird::core::uuid::UuidToString(row.requested_row_uuid);
   for (const auto& field : row.fields) { rendered.fields.push_back(RenderField(field)); }
   return rendered;
 }
@@ -122,10 +88,12 @@ EngineRenderedResultEnvelope RenderEngineApiResultForParserPackage(const EngineA
   envelope.redaction_applied = options.redact_internal_detail;
   envelope.columns = result.result_shape.columns;
   if (envelope.transaction_uuid.empty()) {
-    envelope.transaction_uuid = result.transaction_uuid;
+    if (!result.transaction_uuid.is_nil())
+      envelope.transaction_uuid = scratchbird::core::uuid::UuidToString(result.transaction_uuid);
   }
   if (envelope.database_uuid.empty() && result.primary_object.object_kind == "database") {
-    envelope.database_uuid = result.primary_object.uuid;
+    if (!result.primary_object.uuid.is_nil())
+      envelope.database_uuid = scratchbird::core::uuid::UuidToString(result.primary_object.uuid);
   }
 
   if (envelope.parser_package_uuid.empty()) {
@@ -145,6 +113,11 @@ EngineRenderedResultEnvelope RenderEngineApiResultForParserPackage(const EngineA
 
   for (const auto& diagnostic : result.diagnostics) {
     envelope.diagnostics.push_back(RenderDiagnostic(diagnostic, options.redact_internal_detail));
+    if (!SourceMetadataValid(envelope.diagnostics.back()) ||
+        (result.ok && envelope.diagnostics.back().source_metadata->is_failure)) {
+      envelope.ok = false;
+      envelope.render_context_valid = false;
+    }
   }
   for (const auto& row : result.result_shape.rows) { envelope.rows.push_back(RenderRow(row)); }
   if (options.include_evidence) {
@@ -165,6 +138,7 @@ bool ValidateLegacyRenderedProjectionStructure(const EngineRenderedResultEnvelop
   };
 
   if (!envelope.parser_package_rendering_required) { fail("parser_package_rendering_required_must_be_true"); }
+  if (!envelope.render_context_valid) { fail("render_context_invalid"); }
   if (envelope.parser_finality_authority) { fail("parser_finality_authority_must_be_false"); }
   if (envelope.reference_finality_authority) { fail("reference_finality_authority_must_be_false"); }
   if (envelope.parser_package_uuid.empty()) { fail("parser_package_uuid_required"); }
@@ -172,16 +146,15 @@ bool ValidateLegacyRenderedProjectionStructure(const EngineRenderedResultEnvelop
   if (envelope.operation_id.empty()) { fail("operation_id_required"); }
   if (envelope.ok) {
     for (const auto& diagnostic : envelope.diagnostics) {
-      if (diagnostic.error) { fail("successful_envelope_contains_error_diagnostic"); }
+      if (diagnostic.error || (diagnostic.source_metadata && diagnostic.source_metadata->is_failure)) {
+        fail("successful_envelope_contains_error_diagnostic");
+      }
     }
   }
   for (const auto& diagnostic : envelope.diagnostics) {
     if (diagnostic.code.empty()) { fail("diagnostic_code_required"); }
     if (diagnostic.message_key.empty()) { fail("diagnostic_message_key_required"); }
-    if (diagnostic.severity.empty()) { fail("diagnostic_severity_required"); }
-    if (diagnostic.public_shape_id.empty()) { fail("diagnostic_public_shape_required"); }
-    if (diagnostic.private_shape_id.empty()) { fail("diagnostic_private_shape_required"); }
-    if (diagnostic.redaction_class.empty()) { fail("diagnostic_redaction_class_required"); }
+    if (!SourceMetadataValid(diagnostic)) { fail("diagnostic_source_metadata_invalid"); }
   }
   for (const auto& row : envelope.rows) {
     if (row.row_uuid.empty()) { fail("row_uuid_required"); }

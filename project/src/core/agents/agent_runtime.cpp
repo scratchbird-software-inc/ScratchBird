@@ -2028,89 +2028,26 @@ AgentSecurityGrantRequirement NamedReq(std::string right, int alternative_group 
 }
 
 bool HasInternalTraceGrant(const AgentRuntimeContext& context) {
-  return (context.fixture_authorization_authority &&
-          (Contains(context.trace_tags, "engine.internal") ||
-           Contains(context.trace_tags, "agent.internal") ||
-           Contains(context.trace_tags, "internal"))) ||
-         Contains(context.rights, "OBS_AGENT_INTERNAL") ||
+  return Contains(context.rights, "OBS_AGENT_INTERNAL") ||
          Contains(context.rights, "SB_AGENT_INTERNAL_TRACE");
 }
 
-bool GroupGrantsRight(const AgentRuntimeContext& context, AgentSecurityRight right) {
-  if (!context.fixture_authorization_authority) { return false; }
-  if (Contains(context.groups, "ROOT")) { return true; }
-  const bool ops = Contains(context.groups, "OPS");
-  const bool sup = Contains(context.groups, "SUP");
-  const bool aud = Contains(context.groups, "AUD");
-  const bool dba = Contains(context.groups, "DBA");
-  const bool sec = Contains(context.groups, "SEC");
-  const bool etl = Contains(context.groups, "ETL");
-  const bool sch = Contains(context.groups, "SCH");
-
-  switch (right) {
-    case AgentSecurityRight::obs_agent_state_read:
-      return ops || sup || aud || dba;
-    case AgentSecurityRight::obs_agent_evidence_read:
-      return ops || sup || aud || dba || sec;
-    case AgentSecurityRight::obs_agent_recommendation_read:
-      return ops || sup || dba || etl || sch;
-    case AgentSecurityRight::obs_agent_control:
-      return ops || sch;
-    case AgentSecurityRight::obs_agent_action_approve:
-    case AgentSecurityRight::obs_agent_action_cancel:
-      return ops || dba;
-    case AgentSecurityRight::obs_agent_override:
-      return ops;
-    case AgentSecurityRight::obs_support_bundle_read:
-      return ops || sup || aud;
-    case AgentSecurityRight::obs_policy_read:
-      return ops || sup || aud || dba || sec;
-    case AgentSecurityRight::obs_policy_simulate:
-      return ops || dba;
-    case AgentSecurityRight::obs_policy_edit_draft:
-    case AgentSecurityRight::obs_policy_validate:
-    case AgentSecurityRight::obs_policy_approve:
-    case AgentSecurityRight::obs_policy_apply:
-    case AgentSecurityRight::obs_policy_rollback:
-    case AgentSecurityRight::obs_policy_delete:
-      return ops;
-    case AgentSecurityRight::obs_cluster_health_inspect:
-    case AgentSecurityRight::obs_cluster_topology_inspect:
-      return ops || sup;
-    case AgentSecurityRight::obs_cluster_control:
-      return ops;
-    case AgentSecurityRight::sec_auth_metrics_read:
-    case AgentSecurityRight::sec_redaction_policy_edit:
-    case AgentSecurityRight::sec_export_policy_approve:
-    case AgentSecurityRight::sec_identity_admin:
-      return sec;
-    case AgentSecurityRight::internal_agent_trace:
-      return HasInternalTraceGrant(context);
-    case AgentSecurityRight::external_named_right:
-      return false;
-  }
-  return false;
-}
 
 bool HasRequirement(const AgentRuntimeContext& context,
                     const AgentSecurityGrantRequirement& req) {
   if (!context.security_context_present) { return false; }
-  if (context.fixture_authorization_authority &&
-      Contains(context.groups, "ROOT")) { return true; }
   if (req.internal_trace_allowed && HasInternalTraceGrant(context)) { return true; }
   if (req.right == AgentSecurityRight::internal_agent_trace) {
     return HasInternalTraceGrant(context);
   }
-  if (Contains(context.rights, req.right_name) ||
-      (context.fixture_authorization_authority &&
-       Contains(context.trace_tags, "right:" + req.right_name))) {
+  if (Contains(context.rights, req.right_name)) {
     return true;
   }
   if (req.right != AgentSecurityRight::external_named_right &&
       Contains(context.rights, AgentSecurityRightName(req.right))) {
     return true;
   }
-  return GroupGrantsRight(context, req.right);
+  return false;
 }
 
 std::vector<std::string> ExtractRightTokens(const std::string& text) {

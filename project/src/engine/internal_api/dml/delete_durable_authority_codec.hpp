@@ -22,7 +22,7 @@ struct DmlDeleteDurableAuthorityBundleV1 {
   wire::TypedUpdateResourceBudgetCarrier resource_budget;
   wire::TypedUpdateRecoveryTokenCarrier recovery;
   EngineSecurityPolicySnapshotAuthorityV1 security;
-  std::vector<std::string> matched_grant_uuids;
+  std::vector<EngineUuid> matched_grant_uuids;
   EngineDmlDeleteEffectSnapshotV1 effects;
   SblrExecutorAvailabilitySnapshot executor;
   std::vector<std::uint8_t> exact_bytes;
@@ -40,5 +40,5 @@ bool ComputeDmlDeleteOwnerContextHashV1(const EngineRequestContext&, wire::Typed
 bool MatchesDmlDeleteDurableAuthorityOwnerV1(const EngineRequestContext&,
     const DmlDeleteDurableAuthorityBundleV1&);
 bool ComputeDmlDeleteSecuritySnapshotHashV1(const EngineSecurityPolicySnapshotAuthorityV1&,
-    const std::vector<std::string>& matched_grants, wire::TypedUpdateHash*);
+    const std::vector<EngineUuid>& matched_grants, wire::TypedUpdateHash*);
 }  // namespace scratchbird::engine::internal_api

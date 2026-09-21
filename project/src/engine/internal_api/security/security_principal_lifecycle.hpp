@@ -269,22 +269,22 @@ struct EngineLoadSecurityPrincipalLifecycleStateResult {
 // rows against the authenticated materialized authorization context.  Callers
 // may not supply or derive snapshot identity from a security-context UUID.
 struct EngineSecurityPolicyCatalogRowIdentityV1 {
-  std::string policy_uuid;
+  EngineUuid policy_uuid;
   std::uint64_t policy_generation = 0;
-  std::string policy_version_uuid;
+  EngineUuid policy_version_uuid;
   std::uint64_t effective_transaction_number = 0;
-  std::string target_relation_uuid;
+  EngineUuid target_relation_uuid;
   std::uint64_t target_relation_generation = 0;
   std::uint8_t phase = 0;
-  std::string effective_policy_uuid;
+  EngineUuid effective_policy_uuid;
   std::uint64_t effective_policy_generation = 0;
-  std::string effective_expression_uuid;
+  EngineUuid effective_expression_uuid;
   std::uint64_t effective_expression_generation = 0;
   std::array<std::uint8_t, 32> effective_expression_evidence_sha256{};
-  std::string source_expression_uuid;
+  EngineUuid source_expression_uuid;
   std::uint64_t source_expression_generation = 0;
   std::array<std::uint8_t, 32> source_expression_evidence_sha256{};
-  std::string catalog_snapshot_uuid;
+  EngineUuid catalog_snapshot_uuid;
   std::uint64_t catalog_generation = 0;
   std::uint64_t security_generation = 0;
 
@@ -293,14 +293,14 @@ struct EngineSecurityPolicyCatalogRowIdentityV1 {
 };
 
 struct EngineSecurityPolicySnapshotAuthorityV1 {
-  std::string snapshot_uuid;
+  EngineUuid snapshot_uuid;
   std::uint64_t snapshot_generation = 0;
-  std::string authenticated_statement_receipt_uuid;
-  std::string security_context_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
+  EngineUuid security_context_uuid;
   std::uint64_t security_context_generation = 0;
   std::uint64_t security_generation = 0;
   std::uint64_t policy_generation = 0;
-  std::string target_relation_uuid;
+  EngineUuid target_relation_uuid;
   std::vector<EngineSecurityPolicyCatalogRowIdentityV1> admitted_policy_rows;
 
   bool operator==(const EngineSecurityPolicySnapshotAuthorityV1&) const =
@@ -324,7 +324,7 @@ struct EngineSecurityPolicySnapshotRecoveryResultV1 {
 EngineSecurityPolicySnapshotAuthorityResultV1
 IssueEngineSecurityPolicySnapshotAuthorityV1(
     const EngineRequestContext& context,
-    const std::string& target_relation_uuid);
+    const EngineUuid& target_relation_uuid);
 EngineApiDiagnostic RevalidateEngineSecurityPolicySnapshotAuthorityV1(
     const EngineRequestContext& context,
     const EngineSecurityPolicySnapshotAuthorityV1& admitted);
@@ -429,9 +429,9 @@ EngineSecurityDropGroupResult EngineSecurityDropGroup(
     const EngineSecurityDropGroupRequest& request);
 
 struct EngineSecurityGrantMembershipRequest : EngineApiRequest {
-  std::string membership_uuid;
-  std::string member_principal_uuid;
-  std::string container_uuid;
+  EngineUuid membership_uuid;
+  EngineUuid member_principal_uuid;
+  EngineUuid container_uuid;
   std::string container_kind;
 };
 struct EngineSecurityGrantMembershipResult : EngineApiResult {
@@ -443,8 +443,8 @@ EngineSecurityGrantMembershipResult EngineSecurityGrantMembership(
     const EngineSecurityGrantMembershipRequest& request);
 
 struct EngineSecurityRevokeMembershipRequest : EngineApiRequest {
-  std::string member_principal_uuid;
-  std::string container_uuid;
+  EngineUuid member_principal_uuid;
+  EngineUuid container_uuid;
   std::string container_kind;
 };
 struct EngineSecurityRevokeMembershipResult : EngineApiResult {
@@ -456,10 +456,10 @@ EngineSecurityRevokeMembershipResult EngineSecurityRevokeMembership(
     const EngineSecurityRevokeMembershipRequest& request);
 
 struct EngineSecurityGrantPrivilegeRequest : EngineApiRequest {
-  std::string grant_uuid;
-  std::string grantee_uuid;
+  EngineUuid grant_uuid;
+  EngineUuid grantee_uuid;
   std::string grantee_kind = "principal";
-  std::string target_object_uuid;
+  EngineUuid target_object_uuid;
   std::string target_object_kind;
   std::string privilege;
   std::string grant_effect = "allow";
@@ -473,8 +473,8 @@ EngineSecurityGrantPrivilegeResult EngineSecurityGrantPrivilege(
     const EngineSecurityGrantPrivilegeRequest& request);
 
 struct EngineSecurityRevokePrivilegeRequest : EngineApiRequest {
-  std::string grantee_uuid;
-  std::string target_object_uuid;
+  EngineUuid grantee_uuid;
+  EngineUuid target_object_uuid;
   std::string privilege;
 };
 struct EngineSecurityRevokePrivilegeResult : EngineApiResult {

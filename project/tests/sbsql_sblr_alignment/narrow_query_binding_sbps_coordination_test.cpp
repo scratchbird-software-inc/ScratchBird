@@ -571,7 +571,7 @@ void TestCoordination() {
   auto stale_transaction = RequestFrame(live, canonical);
   RequireRefusal(server::HandleQueryNarrowBindingIssue(
                      &registry, engine_state, stale_transaction),
-                 "MGA.TRANSACTION.STALE",
+                 "SBLR.QUERY_BINDING.STALE",
                  "live transaction drift was not refused before issue");
   stored_session.transaction_uuid = live_transaction_uuid;
 
@@ -653,7 +653,7 @@ void TestCoordination() {
   auto second_request = RequestFrame(live, canonical);
   RequireRefusal(server::HandleQueryNarrowBindingIssue(
                      &registry, engine_state, second_request),
-                 "MGA.TRANSACTION.STALE",
+                 "SBLR.QUERY_BINDING.STALE",
                  "second issue did not refuse stale without binding bytes");
 
   Require(!api::ReleaseNarrowQueryBindingAuthorityV1(&consumed.authority).error,

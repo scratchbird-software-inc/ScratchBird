@@ -865,19 +865,14 @@ ValidateCanonicalLogicalPhysicalBoundary(
     nodes_by_id.emplace(node.logical_node_id, &node);
   }
   std::set<CanonicalPlannerUuid> alternative_uuids;
-  std::unordered_set<std::string> node_implementations;
   std::unordered_map<std::uint32_t, std::size_t> available_by_node;
   for (const auto& alternative : catalog.alternatives) {
     const auto logical_node = nodes_by_id.find(alternative.logical_node_id);
-    const auto implementation_key =
-        std::to_string(alternative.logical_node_id) + ":" +
-        alternative.implementation_id;
     if (!canonical_uuid(alternative.alternative_uuid) ||
         !alternative_uuids.insert(alternative.alternative_uuid).second ||
         logical_node == nodes_by_id.end() ||
         !stable_id(alternative.implementation_id) ||
-        !canonical_uuid(alternative.capability_uuid) ||
-        !node_implementations.insert(implementation_key).second) {
+        !canonical_uuid(alternative.capability_uuid)) {
       return refuse("QOW-DIAG-PHYSICAL-ALTERNATIVE-IDENTITY-V1",
                     alternative.logical_node_id,
                     "physical_alternative_record");

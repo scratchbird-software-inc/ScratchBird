@@ -52,10 +52,10 @@ struct SblrPreparedStatementRegistryRecordV1 {
   std::string body_result_shape;
   bool source_free_parameterless_query_template = false;
   bool source_free_parameterized_query_template = false;
-  std::string parameter_set_uuid;
-  std::string parameter_prepared_statement_uuid;
+  EngineUuid parameter_set_uuid;
+  EngineUuid parameter_prepared_statement_uuid;
   std::uint64_t parameter_set_generation = 0;
-  std::string parameter_set_snapshot_uuid;
+  EngineUuid parameter_set_snapshot_uuid;
   std::uint64_t parameter_set_snapshot_generation = 0;
   std::string ordered_slot_table_sha256;
   SblrPreparedStatementRegistryUuidV1 statement_uuid{};
@@ -114,7 +114,7 @@ SblrPreparedStatementRegistryResultV1 LoadSblrPreparedStatementRegistryV1(
 SblrPreparedStatementRegistryResultV1
 ResolveActiveSblrPreparedStatementCapabilityV1(
     const EngineRequestContext& context,
-    const std::string& prepared_statement_uuid,
+    const EngineUuid& prepared_statement_uuid,
     std::uint64_t prepared_generation);
 
 // Durably publishes a prepared object before its public result is returned.

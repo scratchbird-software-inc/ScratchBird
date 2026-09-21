@@ -11,6 +11,8 @@
 // SB-DATATYPE-OPERATIONS-ANCHOR
 #include "datatype_binary.hpp"
 #include "datatype_descriptor.hpp"
+#include "../resources/collation_profile.hpp"
+#include "../resources/unicode_collation.hpp"
 
 #include <string>
 #include <vector>
@@ -69,6 +71,10 @@ struct DatatypeOperationValue {
 
 struct DatatypeTextSeedAuthority {
   bool active = false;
+  platform::Uuid database_uuid, charset_uuid, collation_uuid;
+  std::uint64_t resource_epoch = 0, collation_epoch = 0;
+  resources::CollationProfile comparison_profile = resources::CollationProfile::unbound;
+  std::shared_ptr<const resources::UnicodeCollationData> unicode_collation;
   std::string seed_pack_name;
   std::string seed_pack_version;
   std::string charset_name;
@@ -77,11 +83,30 @@ struct DatatypeTextSeedAuthority {
   bool collation_accent_insensitive = false;
 };
 
+struct DatatypeNumericContext {
+  u32 precision = 38;
+  u32 scale = 0;
+  DatatypeRoundingMode rounding = DatatypeRoundingMode::half_even;
+  bool allow_special_values = false;
+};
+
+struct DatatypeNumericFacts {
+  bool inexact = false;
+  bool underflow = false;
+  bool overflow = false;
+  bool invalid = false;
+  bool divide_by_zero = false;
+  bool subnormal = false;
+  bool unordered = false;
+};
+
 struct DatatypeCastRequest {
   DatatypeOperationValue value;
   CanonicalTypeId target_type_id = CanonicalTypeId::unknown;
   bool explicit_cast = false;
   bool reference_compatibility_profile = false;
+  // Execution context supplied by the bound owner, not descriptor authority.
+  DatatypeNumericContext numeric_context;
 };
 
 struct DatatypeCastResult {
@@ -89,6 +114,7 @@ struct DatatypeCastResult {
   DatatypeCastCategory category = DatatypeCastCategory::forbidden;
   DatatypeOperationValue value;
   DiagnosticRecord diagnostic;
+  DatatypeNumericFacts numeric_facts;
 
   bool ok() const {
     return status.ok();
@@ -135,29 +161,12 @@ struct DatatypeSetOperationResult {
   }
 };
 
-struct DatatypeNumericContext {
-  u32 precision = 38;
-  u32 scale = 0;
-  DatatypeRoundingMode rounding = DatatypeRoundingMode::half_even;
-  bool allow_special_values = false;
-};
-
 struct DatatypeNumericOperationRequest {
   DatatypeNumericOperationKind operation = DatatypeNumericOperationKind::canonicalize;
   CanonicalTypeId type_id = CanonicalTypeId::decimal;
   DatatypeOperationValue left;
   DatatypeOperationValue right;
   DatatypeNumericContext context;
-};
-
-struct DatatypeNumericFacts {
-  bool inexact = false;
-  bool underflow = false;
-  bool overflow = false;
-  bool invalid = false;
-  bool divide_by_zero = false;
-  bool subnormal = false;
-  bool unordered = false;
 };
 
 struct DatatypeNumericOperationResult {
@@ -212,6 +221,7 @@ struct DatatypeSortKeyResult {
 
 struct DatatypeHashRequest {
   DatatypeOperationValue value;
+  DatatypeTextSeedAuthority text_seed;
 };
 
 struct DatatypeHashResult {

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -107,10 +108,10 @@ void DumpDiagnostics(const sbsql::MessageVectorSet& messages) {
 sbsql::SessionContext Session() {
   sbsql::SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000000101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000000102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000000103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuid(1105, 1);
+  session.connection_uuid = scratchbird::tests::FixtureUuid(1105, 2);
+  session.database_uuid = scratchbird::tests::FixtureUuid(1105, 3);
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1105, 5);
   session.catalog_epoch = 21;
   session.security_policy_epoch = 22;
   session.descriptor_epoch = 23;
@@ -118,7 +119,7 @@ sbsql::SessionContext Session() {
 }
 
 sbsql::SblrEnvelope Lower(std::string sql,
-                          std::vector<std::string> resolved,
+                          std::vector<scratchbird::core::platform::Uuid> resolved,
                           std::string_view expected_surface_id,
                           std::string_view expected_surface_name) {
   const auto cst = sbsql::BuildCst(sql);
@@ -179,7 +180,7 @@ void RequireSynonymEnvelope(const sbsql::SblrEnvelope& envelope) {
 
 int main() {
   const auto create = Lower("CREATE OR REPLACE PUBLIC SYNONYM orders_syn FOR app.orders_table;",
-                            {"019f0000-0000-7000-8000-000000000201"},
+                            {scratchbird::tests::FixtureUuid(1105, 201)},
                             "SBSQL-A8E627E27375",
                             "create_object");
   Require(create.operation_id == "ddl.create_synonym", "CREATE SYNONYM operation id mismatch");
@@ -192,7 +193,7 @@ int main() {
   RequireSynonymEnvelope(create);
 
   const auto drop = Lower("DROP PUBLIC SYNONYM orders_syn;",
-                          {"019f0000-0000-7000-8000-000000000301"},
+                          {scratchbird::tests::FixtureUuid(1105, 301)},
                           "SBSQL-40CAFAB37942",
                           "drop_object");
   Require(drop.operation_id == "ddl.drop_object", "DROP SYNONYM operation id mismatch");

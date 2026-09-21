@@ -10,6 +10,9 @@
 
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_heap_runtime_support.hpp"
+#include "mga_relation_store/mga_heap_memory.hpp"
+#include "mga_relation_store/mga_binary_identity_codec.hpp"
+#include "mga_relation_store/mga_binary_fields.hpp"
 #include "secondary_index_delta_merge.hpp"
 
 #include <chrono>
@@ -72,30 +75,9 @@ void AppendBinaryU16(std::string* out, std::uint16_t value);
 void AppendBinaryU32(std::string* out, std::uint32_t value);
 void AppendBinaryU64(std::string* out, std::uint64_t value);
 bool AppendBinaryString(std::string* out, std::string_view value);
-bool AppendBinaryUuidText(std::string* out, const std::string& text);
 std::string ScopedRowBinaryMaterializeValue(std::string_view type_name,
                                             std::string_view payload);
 std::string_view ScopedRowNativePacketTypeName(std::uint8_t tag);
-bool ReadBinaryU8(const std::vector<scratchbird::core::index::byte>& bytes,
-                  std::size_t* offset,
-                  std::uint8_t* out);
-bool ReadBinaryU16(const std::vector<scratchbird::core::index::byte>& bytes,
-                   std::size_t* offset,
-                   std::uint16_t* out);
-bool ReadBinaryU32(const std::vector<scratchbird::core::index::byte>& bytes,
-                   std::size_t* offset,
-                   std::uint32_t* out);
-bool ReadBinaryU64(const std::vector<scratchbird::core::index::byte>& bytes,
-                   std::size_t* offset,
-                   std::uint64_t* out);
-bool ReadBinaryString(
-    const std::vector<scratchbird::core::index::byte>& bytes,
-    std::size_t* offset,
-    std::string* out);
-bool ReadBinaryUuidText(
-    const std::vector<scratchbird::core::index::byte>& bytes,
-    std::size_t* offset,
-    std::string* out);
 bool AppendScopedRowBinaryBatch(
     std::string* out,
     const std::vector<CrudRowVersionRecord>& rows,
@@ -119,23 +101,6 @@ bool AppendScopedRowIdentityNativePacketBatch(
     const EngineNativeRowPacketFrame& frame,
     std::uint64_t creator_tx,
     std::uint64_t first_event_sequence);
-bool CheckedHeapReadMemoryAdd(std::uint64_t value, std::uint64_t* total);
-bool CheckedHeapReadMemoryMultiply(std::uint64_t left,
-                                   std::uint64_t right,
-                                   std::uint64_t* product);
-bool AccountHeapReadOwnedString(const std::string& value,
-                                std::uint64_t* total);
-std::optional<std::uint64_t> HeapReadRowVectorMemoryBytes(
-    const std::vector<CrudRowVersionRecord>& rows);
-bool AccountHeapReadRowDynamicMemoryBytes(
-    const CrudRowVersionRecord& row,
-    std::uint64_t* total);
-std::optional<std::uint64_t> HeapReadVersionIndexProjectionMemoryBytes(
-    const std::vector<CrudRowVersionRecord>& rows);
-std::optional<std::uint64_t> HeapReadVisibilityMapProjectionMemoryBytes(
-    const std::vector<CrudRowVersionRecord>& rows);
-std::optional<std::uint64_t> HeapReadStringCacheMemoryBytes(
-    const std::unordered_map<std::string, std::string>& cache);
 bool ObserveBoundedHeapReadMemory(BoundedScopedRowReadControl* control,
                                   std::uint64_t live_bytes);
 bool AccountHeapReadWait(

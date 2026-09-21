@@ -168,6 +168,76 @@ void AdapterFacts() {
   }
 }
 
+void CastContext() {
+  dt::DatatypeCastRequest request;
+  request.value = {dt::CanonicalTypeId::character, "9007199254740993", false};
+  request.target_type_id = dt::CanonicalTypeId::real128; request.explicit_cast = true;
+  auto cast = dt::CastDatatypeValue(request);
+  Check(cast.ok() && cast.value.encoded_value == "9007199254740993" && !cast.numeric_facts.inexact,
+        "cast must not narrow through real64");
+  const auto category = cast.category;
+  for (unsigned mode = 0; mode < 3; ++mode) {
+    request.numeric_context.rounding = static_cast<dt::DatatypeRoundingMode>(mode);
+    for (const char* input : {"0.1", "0x1p-16494", "0x1p-16495", "-0x1p-16495", "0x1p16384",
+                             "Infinity", "-Infinity", "NaN", "sNaN", "not_a_number"}) {
+      for (bool special : {false, true}) {
+        request.value.encoded_value = input; request.numeric_context.allow_special_values = special;
+        cast = dt::CastDatatypeValue(request);
+        numeric::NumericRequest reference;
+        reference.type = numeric::NumericType::real128;
+        reference.left = {numeric::NumericType::real128, input, false};
+        reference.context.rounding = static_cast<numeric::RoundingMode>(mode);
+        reference.context.allow_special_values = special;
+        const auto expected = numeric::ApplyNumericOperation(reference);
+        Check(cast.ok() == (expected.status == numeric::NumericStatusCode::ok) &&
+              cast.category == category && SameFacts(cast.numeric_facts, expected), "cast reference status/category/facts");
+        if (cast.ok()) Check(cast.value.type_id == dt::CanonicalTypeId::real128 &&
+            cast.value.encoded_value == expected.value.encoded, "cast exact reference value");
+        else Check(cast.value.encoded_value.empty() && cast.diagnostic.diagnostic_code == expected.diagnostic_code,
+                   "failed cast retains reference diagnostic and publishes no value");
+      }
+    }
+    request.numeric_context.allow_special_values = false;
+    request.value.encoded_value = "0x1.00000000000000000000000000008p0";
+    cast = dt::CastDatatypeValue(request);
+    const auto bytes = numeric::EncodeReal128LittleEndian(cast.value.encoded_value);
+    numeric::Real128Bytes oracle{}; oracle[14] = 0xff; oracle[15] = 0x3f;
+    if (mode == 1) oracle[0] = 1;
+    Check(cast.ok() && cast.numeric_facts.inexact && bytes.bytes && *bytes.bytes == oracle,
+          "cast rounding differs from independent midpoint binary128 oracle");
+    request.value.encoded_value = "0x1p-16495";
+    cast = dt::CastDatatypeValue(request);
+    Check(cast.ok() && cast.numeric_facts.underflow && cast.numeric_facts.inexact &&
+          cast.numeric_facts.subnormal == (mode == 1), "cast tiny result exception facts");
+    request.value.encoded_value = "0x1p16384";
+    cast = dt::CastDatatypeValue(request);
+    Check(!cast.ok() && cast.numeric_facts.overflow && cast.diagnostic.diagnostic_code == "NUMERIC.REAL128.OVERFLOW",
+          "cast overflow is not a success or generic cast diagnostic");
+  }
+  for (bool null : {false, true}) {
+    request.value.is_null = null; request.value.encoded_value = "not_parsed_when_null";
+    request.numeric_context.rounding = static_cast<dt::DatatypeRoundingMode>(99);
+    cast = dt::CastDatatypeValue(request);
+    Check(!cast.ok() && cast.numeric_facts.invalid && cast.diagnostic.diagnostic_code == "NUMERIC.REAL128.INVALID",
+          "invalid cast rounding was hidden by NULL");
+  }
+  request.numeric_context.rounding = dt::DatatypeRoundingMode::half_even;
+  cast = dt::CastDatatypeValue(request);
+  Check(cast.ok() && cast.value.type_id == dt::CanonicalTypeId::real128 && cast.value.is_null &&
+        cast.value.encoded_value.empty() && !cast.numeric_facts.invalid, "NULL cast must suppress parsing and retain target family");
+  request.value.is_null = false; request.value.encoded_value = "1"; request.explicit_cast = false;
+  cast = dt::CastDatatypeValue(request);
+  Check(!cast.ok(), "numeric context bypassed explicit cast admission");
+  request.explicit_cast = true; request.value.type_id = dt::CanonicalTypeId::real128;
+  request.value.encoded_value = "NaN"; request.numeric_context.allow_special_values = false;
+  cast = dt::CastDatatypeValue(request);
+  Check(!cast.ok() && cast.category == dt::DatatypeCastCategory::identity && cast.numeric_facts.invalid,
+        "identity cast bypassed special-value policy");
+  request.numeric_context.allow_special_values = true;
+  cast = dt::CastDatatypeValue(request);
+  Check(cast.ok() && cast.value.encoded_value == "NaN", "explicitly admitted identity cast");
+}
+
 void StructuralValidation() {
   for (bool null : {false, true}) {
     auto request = Request(dt::DatatypeNumericOperationKind::add, "1", "2");
@@ -241,6 +311,7 @@ int main() {
   PublicOwners();
   PrecisionAndContext();
   AdapterFacts();
+  CastContext();
   StructuralValidation();
   AllocationFailure();
   numeric::ReleaseReal128ThreadCache();

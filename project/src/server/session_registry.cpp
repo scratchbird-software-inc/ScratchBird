@@ -9,6 +9,7 @@
 // SEARCH_KEY: SB_SERVER_AUTH_SESSION_ATTACH
 
 #include "session_registry.hpp"
+#include "statement_receipt_release.hpp"
 
 #include "config_policy_security_lifecycle.hpp"
 #include "engine_host.hpp"
@@ -2760,17 +2761,6 @@ std::string UuidBytesToText(const std::array<std::uint8_t, 16>& uuid) {
   return out;
 }
 
-bool IsCompleteEngineTransactionIdentity(
-    std::uint64_t local_transaction_id,
-    std::string_view transaction_uuid) {
-  if (local_transaction_id == 0 || transaction_uuid.size() != 36) {
-    return false;
-  }
-  const auto parsed = TextToUuid(transaction_uuid);
-  if (IsZeroUuidBytes(parsed)) return false;
-  return UuidBytesToText(parsed) == LowerAscii(std::string(transaction_uuid));
-}
-
 std::vector<std::uint8_t> EncodeAuthHandoffPayloadForTest(const std::string& principal,
                                                           bool credential_valid,
                                                           bool mfa_required,
@@ -3103,10 +3093,11 @@ bool ReleaseServerCursorExecutionAuthority(
   }
 
   if (registry != nullptr &&
-      !cursor->statement_context_statement_uuid.empty()) {
-    (void)ReleaseServerStatementContext(
-        registry, cursor->statement_context_statement_uuid);
-    cursor->statement_context_statement_uuid.clear();
+      !cursor->statement_context_statement_uuid.is_nil()) {
+    if (ReleaseServerStatementContext(
+            registry, cursor->statement_context_statement_uuid)) {
+      cursor->statement_context_statement_uuid = {};
+    }
   }
 
   if (registry != nullptr && !sbps::IsZeroUuid(cursor->cursor_uuid)) {
@@ -3219,65 +3210,23 @@ ServerPreparedStatementCloseSummary CloseServerPreparedStatement(
 std::uint64_t ReleaseServerStatementContextsForSession(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid) {
-  if (registry == nullptr || registry->statement_context_mutex == nullptr) {
-    return 0;
-  }
-  std::vector<std::pair<engine_bridge::StatementContextReceiptHandle,
-                        std::string>> receipts;
-  {
-    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
-    for (auto it = registry->statement_contexts_by_statement_uuid.begin();
-         it != registry->statement_contexts_by_statement_uuid.end();) {
-      if (it->second.session_uuid != session_uuid) {
-        ++it;
-        continue;
-      }
-      if (!it->second.released && it->second.receipt) {
-        receipts.emplace_back(it->second.receipt,
-                              it->second.view.receipt_uuid);
-      }
-      it = registry->statement_contexts_by_statement_uuid.erase(it);
-    }
-  }
-  std::uint64_t released = 0;
-  for (const auto& [receipt, receipt_uuid] : receipts) {
-    engine_api::RevokeNarrowQueryBindingAuthorityForReceiptV1(receipt_uuid);
-    const auto status = engine_bridge::ReleaseStatementContextReceipt(receipt);
-    if (status == SB_ENGINE_STATUS_OK ||
-        status == SB_ENGINE_STATUS_ALREADY_RELEASED) {
-      ++released;
-    }
-  }
-  return released;
+  return ReleaseOwnedStatementReceiptsForSession(registry, session_uuid,
+      [](engine_bridge::StatementContextReceiptHandle receipt,
+         const scratchbird::core::platform::Uuid& receipt_uuid) {
+        engine_api::RevokeNarrowQueryBindingAuthorityForReceiptV1(receipt_uuid);
+        return engine_bridge::ReleaseStatementContextReceipt(receipt);
+      });
 }
 
 bool ReleaseServerStatementContext(
     ServerSessionRegistry* registry,
-    std::string_view statement_uuid) {
-  if (registry == nullptr || registry->statement_context_mutex == nullptr ||
-      statement_uuid.empty()) {
-    return false;
-  }
-  engine_bridge::StatementContextReceiptHandle receipt;
-  std::string receipt_uuid;
-  {
-    std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
-    const auto found = registry->statement_contexts_by_statement_uuid.find(
-        std::string(statement_uuid));
-    if (found == registry->statement_contexts_by_statement_uuid.end()) {
-      return false;
-    }
-    if (!found->second.released && found->second.receipt) {
-      receipt = found->second.receipt;
-      receipt_uuid = found->second.view.receipt_uuid;
-    }
-    registry->statement_contexts_by_statement_uuid.erase(found);
-  }
-  if (!receipt) return false;
-  engine_api::RevokeNarrowQueryBindingAuthorityForReceiptV1(receipt_uuid);
-  const auto status = engine_bridge::ReleaseStatementContextReceipt(receipt);
-  return status == SB_ENGINE_STATUS_OK ||
-         status == SB_ENGINE_STATUS_ALREADY_RELEASED;
+    const scratchbird::core::platform::Uuid& statement_uuid) {
+  return ReleaseOwnedStatementReceipt(registry, statement_uuid,
+      [](engine_bridge::StatementContextReceiptHandle receipt,
+         const scratchbird::core::platform::Uuid& receipt_uuid) {
+        engine_api::RevokeNarrowQueryBindingAuthorityForReceiptV1(receipt_uuid);
+        return engine_bridge::ReleaseStatementContextReceipt(receipt);
+      });
 }
 
 void CloseServerPublicAbiSessionForSession(
@@ -4232,7 +4181,7 @@ SessionOperationResult HandleQueryNarrowBindingIssue(
       live_session.catalog_generation != view.catalog_generation_id ||
       live_session.security_epoch != view.security_epoch ||
       live_session.resource_epoch != view.resource_epoch) {
-    return refuse("MGA.TRANSACTION.STALE",
+    return refuse("SBLR.QUERY_BINDING.STALE",
                   "query_narrow_binding_live_receipt_drift");
   }
 
@@ -4250,7 +4199,7 @@ SessionOperationResult HandleQueryNarrowBindingIssue(
   const auto copied = engine_bridge::CopyStatementContextEngineContextV1(
       record.receipt, &context, nullptr);
   if (copied != SB_ENGINE_STATUS_OK) {
-    return refuse("MGA.TRANSACTION.STALE",
+    return refuse("SBLR.QUERY_BINDING.STALE",
                   "query_narrow_binding_receipt_context_stale");
   }
   const auto principal_uuid = UuidBytesToText(live_session.effective_user_uuid);
@@ -4291,7 +4240,7 @@ SessionOperationResult HandleQueryNarrowBindingIssue(
       view.txn_begin_policy_snapshot_uuid.empty() ||
       view.txn_begin_policy_generation == 0 ||
       view.optimizer_memory_budget_bytes == 0) {
-    return refuse("MGA.TRANSACTION.STALE",
+    return refuse("SBLR.QUERY_BINDING.STALE",
                   "query_narrow_binding_engine_context_drift");
   }
   if (context.query_cancellation_requested &&

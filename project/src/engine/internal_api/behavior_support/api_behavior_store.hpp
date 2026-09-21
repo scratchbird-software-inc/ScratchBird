@@ -14,8 +14,11 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -57,9 +60,41 @@ std::string ApiBehaviorPayloadFromRequest(const EngineApiRequest& request);
 // must never be adopted implicitly as the primary object's identity.
 EngineUuid ApiBehaviorObjectUuid(const EngineApiRequest& request, const std::string& kind);
 EngineTypedValue ApiBehaviorValue(std::string value);
-EngineRowValue ApiBehaviorRow(std::vector<std::pair<std::string, std::string>> fields);
-void AddApiBehaviorRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields);
-void AddApiBehaviorEvidence(EngineApiResult* result, std::string kind, std::string id);
+EngineTypedValue ApiBehaviorValue(const EngineUuid& value);
+// Legacy result carriers preserve the source value category. UUID values are
+// raw16, never converted to strings or inferred from a field name/text spelling.
+// The string/UUID convenience values have no bound datatype descriptor and do
+// not authorize canonical result publication. Already-bound typed values retain
+// their exact descriptor; the publication owner must independently validate it.
+using ApiBehaviorValueInput = std::variant<std::string, EngineUuid, EngineTypedValue>;
+using ApiBehaviorFields = std::vector<std::pair<std::string, ApiBehaviorValueInput>>;
+EngineRowValue ApiBehaviorRow(ApiBehaviorFields fields);
+void AddApiBehaviorRow(EngineApiResult* result, ApiBehaviorFields fields);
+// Explicit text vectors remain text. This template cannot steal a mixed braced
+// field list from the typed overload, nor reinterpret UUID-looking user TEXT.
+template<class Allocator>
+EngineRowValue ApiBehaviorRow(std::vector<std::pair<std::string, std::string>, Allocator> fields) {
+  ApiBehaviorFields values;
+  values.reserve(fields.size());
+  for (auto& [name, value] : fields) values.emplace_back(std::move(name), std::move(value));
+  return ApiBehaviorRow(std::move(values));
+}
+template<class Allocator>
+void AddApiBehaviorRow(EngineApiResult* result,
+    std::vector<std::pair<std::string, std::string>, Allocator> fields) {
+  ApiBehaviorFields values;
+  values.reserve(fields.size());
+  for (auto& [name, value] : fields) values.emplace_back(std::move(name), std::move(value));
+  AddApiBehaviorRow(result, std::move(values));
+}
+void AddApiBehaviorEvidence(EngineApiResult* result, std::string kind, EngineEvidenceValue id);
+// Append one complete private evidence group. A namespace qualifies kinds only;
+// values retain their exact TEXT/UUID alternatives and bytes. Source may alias
+// destination. Allocation failure leaves destination's contents unchanged.
+// This transports observations, not identity admission or execution authority.
+void AppendApiEvidenceGroup(std::vector<EngineEvidenceReference>& destination,
+                            std::span<const EngineEvidenceReference> source,
+                            std::string_view evidence_namespace = {});
 // Legacy helper name: binds response identity only. It cannot certify executed
 // DDL stages or create a catalog row. Invalid bindings refuse the result while
 // preserving existing diagnostics; allocation failure leaves it unchanged.

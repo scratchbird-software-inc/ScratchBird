@@ -24,9 +24,9 @@ namespace update_wire = scratchbird::wire;
 namespace datatype_catalog = scratchbird::core::datatypes;
 
 struct EngineDmlUpdateDatatypeSnapshotHandleV1::Authority {
-  std::string database_uuid;
-  std::string authenticated_statement_receipt_uuid;
-  std::string datatype_snapshot_uuid;
+  EngineUuid database_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
+  EngineUuid datatype_snapshot_uuid;
   std::uint64_t datatype_catalog_generation = 0;
   std::uint64_t datatype_registry_generation = 0;
   std::vector<std::uint8_t> exact_descriptor_dudc;
@@ -36,9 +36,9 @@ struct EngineDmlUpdateDatatypeSnapshotHandleV1::Authority {
 };
 
 struct EngineDmlUpdateBuiltinOperatorSnapshotHandleV1::Authority {
-  std::string database_uuid;
-  std::string authenticated_statement_receipt_uuid;
-  std::string operator_snapshot_uuid;
+  EngineUuid database_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
+  EngineUuid operator_snapshot_uuid;
   std::uint64_t operator_registry_generation = 0;
   std::vector<std::uint8_t> exact_builtin_operator_authority_duov;
 };
@@ -61,26 +61,12 @@ bool HasTraceTag(const EngineRequestContext& context, std::string_view tag) {
          context.trace_tags.end();
 }
 
-bool ExactUuid(std::string_view text) {
-  if (text.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == text;
+bool ExactUuid(const EngineUuid& uuid) noexcept {
+  return core::uuid::IsEngineIdentityUuid(uuid);
 }
 
-bool TypedUuid(std::string_view text, update_wire::TypedUpdateUuid* out) {
-  if (out == nullptr || !ExactUuid(text)) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), out->begin());
-  return true;
-}
-
-std::string UuidText(const update_wire::TypedUpdateUuid& uuid) {
-  scratchbird::core::platform::Uuid value;
-  std::copy(uuid.begin(), uuid.end(), value.bytes.begin());
-  if (scratchbird::core::uuid::IsNilUuid(value)) return {};
-  return scratchbird::core::uuid::UuidToString(value);
-}
+using datatype_operator_projection::TypedUuid;
+using datatype_operator_projection::UuidValue;
 
 EngineApiDiagnostic CarrierDiagnostic(
     const update_wire::TypedUpdateCarrierError& error,
@@ -309,7 +295,7 @@ CaptureDmlUpdateDatatypeOperatorAuthorityV1(
       predicate.identity.owner_descriptor_uuid != descriptor.descriptor_uuid ||
       predicate.identity.owner_descriptor_generation !=
           descriptor.descriptor_generation ||
-      UuidText(descriptor.builtin_operator_snapshot_uuid) !=
+      UuidValue(descriptor.builtin_operator_snapshot_uuid) !=
           operator_snapshot.snapshot_uuid ||
       descriptor.builtin_operator_registry_generation !=
           operator_snapshot.registry_generation) {
@@ -431,7 +417,7 @@ CaptureDmlUpdateDatatypeOperatorAuthorityV1(
   operator_handle->authenticated_statement_receipt_uuid =
       request.authenticated_statement_receipt_uuid;
   operator_handle->operator_snapshot_uuid =
-      UuidText(descriptor.builtin_operator_snapshot_uuid);
+      UuidValue(descriptor.builtin_operator_snapshot_uuid);
   operator_handle->operator_registry_generation =
       descriptor.builtin_operator_registry_generation;
   operator_handle->exact_builtin_operator_authority_duov = exact_duov;

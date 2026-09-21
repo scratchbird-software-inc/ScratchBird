@@ -36,7 +36,8 @@ if(SB_BUILD_QOW_CLOSURE_TESTS)
       ${CMAKE_CURRENT_BINARY_DIR}/qow_engine_executor
     )
   endif()
-  add_library(sb_qow_relational_dag_contract STATIC query/plan_api.cpp)
+  add_library(sb_qow_relational_dag_contract STATIC
+    query/plan_api.cpp query/canonical_access_candidates.cpp)
   target_compile_features(sb_qow_relational_dag_contract PUBLIC cxx_std_20)
   target_compile_definitions(sb_qow_relational_dag_contract PRIVATE
     SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY=1
@@ -364,6 +365,8 @@ endif()
 add_library(sb_engine_internal_api
   artifacts/artifact_api.cpp
   behavior_support/api_behavior_store.cpp
+  behavior_support/api_behavior_rows.cpp
+  api_result_snapshot_codec.cpp
   behavior_support/api_behavior_read.cpp
   behavior_support/api_behavior_identity.cpp
   behavior_support/ddl_result_identity.cpp
@@ -398,6 +401,7 @@ add_library(sb_engine_internal_api
   catalog/ipar_fast_path_support.cpp
   catalog/name_registry.cpp
   catalog/name_resolution_api.cpp
+  catalog/temporary_name_visibility.cpp
   catalog/resource_descriptor_lookup.cpp
   catalog/relation_descriptor_projection.cpp
   catalog/relation_projection_view.cpp
@@ -453,6 +457,7 @@ add_library(sb_engine_internal_api
   dml/select_api.cpp
   dml/serializable_mutation_guard.cpp
   dml/transactional_index_provider.cpp
+  dml/transactional_index_mutation_identity.cpp
   dml/temporal_bitemporal_api.cpp
   dml/transactional_relation_store.cpp
   dml/update_batch.cpp
@@ -492,12 +497,14 @@ add_library(sb_engine_internal_api
   management/migration_management_api.cpp
   management/support_bundle_api.cpp
   mga_relation_store/mga_bulk_import_publication.cpp
+  mga_relation_store/mga_bulk_import_lineage.cpp
   mga_relation_store/mga_contextual_text_descriptor.cpp
   mga_relation_store/mga_event_sequence_allocator.cpp
   mga_relation_store/mga_index_append_facade.cpp
   mga_relation_store/mga_large_value_store.cpp
   mga_relation_store/mga_large_value_bounded_reader.cpp
   mga_relation_store/mga_relation_descriptor.cpp
+  mga_relation_store/mga_relation_descriptor_codec.cpp
   mga_relation_store/mga_heap_executor.cpp
   mga_relation_store/mga_physical_cleanup_coordinator.cpp
   mga_relation_store/mga_relation_state_sweep.cpp
@@ -505,6 +512,7 @@ add_library(sb_engine_internal_api
   mga_relation_store/mga_relation_metadata_writer.cpp
   mga_relation_store/mga_relation_statistics.cpp
   mga_relation_store/mga_row_codec.cpp
+  mga_relation_store/mga_heap_memory.cpp
   mga_relation_store/mga_row_version_reader.cpp
   mga_relation_store/mga_row_version_writer.cpp
   mga_relation_store/mga_savepoint_store.cpp
@@ -553,6 +561,7 @@ add_library(sb_engine_internal_api
   query/expression_api.cpp
   query/optimizer_plan_lifecycle.cpp
   query/plan_api.cpp
+  query/canonical_access_candidates.cpp
   query/predicate_api.cpp
   query/projection_api.cpp
   lifecycle/engine_lifecycle_api.cpp

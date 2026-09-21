@@ -120,39 +120,46 @@ struct ResultFixture {
   std::vector<byte> bytes;
   std::size_t extension = 0;
   std::size_t trailer = 0;
+  std::vector<std::size_t> required_uuid_offsets;
+  std::vector<std::size_t> nil_uuid_offsets;
 };
 
 ResultFixture Schema7032V71Fixture() {
   ResultFixture fixture;
   auto& out = fixture.bytes;
+  auto AppendUuid = [&](std::vector<byte>* bytes, const ipc::PsStatementContextUuidV1& uuid) {
+    (uuid == ipc::PsStatementContextUuidV1{} ? fixture.nil_uuid_offsets
+                                          : fixture.required_uuid_offsets).push_back(bytes->size());
+    PutUuid(bytes, uuid);
+  };
   U16(&out, 11);
   out.push_back(1);
-  PutUuid(&out, Uuid(1));
+  AppendUuid(&out, Uuid(1));
   U64(&out, 42);
-  PutUuid(&out, Uuid(2));
-  PutUuid(&out, Uuid(3));
-  PutUuid(&out, Uuid(4));
-  PutUuid(&out, Uuid(5));
-  PutUuid(&out, Uuid(6));
+  AppendUuid(&out, Uuid(2));
+  AppendUuid(&out, Uuid(3));
+  AppendUuid(&out, Uuid(4));
+  AppendUuid(&out, Uuid(5));
+  AppendUuid(&out, Uuid(6));
   U64(&out, 7);
   Require(out.size() == 115, "schema7032 base prefix fixture drifted");
   PutString(&out, "2026-08-27T12:34:56Z");
   for (std::uint16_t index = 0; index < 6; ++index) {
-    PutUuid(&out, Uuid(static_cast<std::uint16_t>(10 + index)));
+    AppendUuid(&out, Uuid(static_cast<std::uint16_t>(10 + index)));
   }
 
   U16(&out, 43);
   for (std::uint16_t index = 0; index < 43; ++index) {
     U16(&out, 1);
     PutString(&out, "sb.aggregate.fn" + std::to_string(index));
-    PutUuid(&out, Uuid(static_cast<std::uint16_t>(1000 + index)));
+    AppendUuid(&out, Uuid(static_cast<std::uint16_t>(1000 + index)));
     out.push_back(1);
   }
   U16(&out, 11);
   for (std::uint16_t index = 0; index < 11; ++index) {
     U16(&out, 1);
     PutString(&out, "sb.window.fn" + std::to_string(index));
-    PutUuid(&out, Uuid(static_cast<std::uint16_t>(1100 + index)));
+    AppendUuid(&out, Uuid(static_cast<std::uint16_t>(1100 + index)));
     out.push_back(1);
   }
 
@@ -178,9 +185,9 @@ ResultFixture Schema7032V71Fixture() {
     }
     out.push_back(kind);
     U16(&out, slot);
-    PutUuid(&out, Uuid(static_cast<std::uint16_t>(2000 + index)));
-    PutUuid(&out, TypeForKind(kind));
-    PutUuid(&out, {});
+    AppendUuid(&out, Uuid(static_cast<std::uint16_t>(2000 + index)));
+    AppendUuid(&out, TypeForKind(kind));
+    AppendUuid(&out, {});
     const bool nullable =
         (kind <= 10 && kind % 2 == 0) || (kind >= 14 && kind % 2 == 1);
     out.push_back(nullable ? 1 : 0);
@@ -192,32 +199,32 @@ ResultFixture Schema7032V71Fixture() {
   fixture.extension = out.size();
   U16(&out, 71);
   U16(&out, 0);
-  PutUuid(&out, Uuid(20));
-  PutUuid(&out, Uuid(21));
+  AppendUuid(&out, Uuid(20));
+  AppendUuid(&out, Uuid(21));
   U64(&out, 1);
   U64(&out, 2);
   U64(&out, 3);
-  PutUuid(&out, Uuid(3));
-  PutUuid(&out, {});
+  AppendUuid(&out, Uuid(3));
+  AppendUuid(&out, {});
   U64(&out, 0);
-  PutUuid(&out, {});
+  AppendUuid(&out, {});
   U64(&out, 0);
-  PutUuid(&out, {});
+  AppendUuid(&out, {});
   U64(&out, 0);
   U64(&out, 4);
-  PutUuid(&out, {});
+  AppendUuid(&out, {});
   U64(&out, 0);
-  PutUuid(&out, {});
+  AppendUuid(&out, {});
   U64(&out, 0);
-  PutUuid(&out, {});
+  AppendUuid(&out, {});
   U64(&out, 0);
-  PutUuid(&out, Uuid(22));
+  AppendUuid(&out, Uuid(22));
   U64(&out, 5);
   U32(&out, 1);
   U32(&out, 72);
   Require(out.size() == fixture.extension + 260,
           "schema7032 v71 extension prefix fixture drifted");
-  PutUuid(&out, Uuid(23));
+  AppendUuid(&out, Uuid(23));
   U64(&out, 6);
   U32(&out, 4);
   out.push_back(1);
@@ -229,9 +236,9 @@ ResultFixture Schema7032V71Fixture() {
   HashDiagnosticRow(&out,fixture.extension+260);
   fixture.trailer = out.size();
 
-  PutUuid(&out, Uuid(24));
+  AppendUuid(&out, Uuid(24));
   U64(&out, 7);
-  PutUuid(&out, Uuid(25));
+  AppendUuid(&out, Uuid(25));
   U64(&out, 8);
   U64(&out, 9);
   U64(&out, 0);
@@ -262,12 +269,12 @@ ResultFixture Schema7032V71Fixture() {
   U16(&out, 152);
   U32(&out, 152);
   U32(&out, 0);
-  PutUuid(&out, Uuid(2));
+  AppendUuid(&out, Uuid(2));
   U64(&out, 42);
-  PutUuid(&out, Uuid(26));
-  PutUuid(&out, Uuid(24));
+  AppendUuid(&out, Uuid(26));
+  AppendUuid(&out, Uuid(24));
   U64(&out, 7);
-  PutUuid(&out, Uuid(25));
+  AppendUuid(&out, Uuid(25));
   U64(&out, 8);
   out.push_back(1);
   out.push_back(1);
@@ -281,6 +288,104 @@ ResultFixture Schema7032V71Fixture() {
   Require(out.size() == fixture.trailer + 776,
           "schema7032 v71 trailer fixture drifted");
   return fixture;
+}
+
+std::vector<ipc::PsStatementContextUuidV1> InvalidSystemUuids() {
+  std::vector<ipc::PsStatementContextUuidV1> values(1);  // Nil is invalid when required.
+  for (unsigned version = 0; version != 16; ++version) {
+    if (version == 7) continue;
+    auto uuid = Uuid(213);
+    uuid[6] = static_cast<byte>((uuid[6] & 0x0fu) | (version << 4u));
+    values.push_back(uuid);
+  }
+  for (const unsigned variant : {0u, 0x40u, 0xc0u}) {
+    auto uuid = Uuid(213);
+    uuid[8] = static_cast<byte>((uuid[8] & 0x3fu) | variant);
+    values.push_back(uuid);
+  }
+  return values;
+}
+
+void SystemIdentityVersions() {
+  auto fixture = Schema7032V71Fixture();
+  const auto required_count = fixture.required_uuid_offsets.size();
+  for (const auto& invalid : InvalidSystemUuids()) {
+    for (const bool transaction : {false, true}) {
+      ipc::PsNarrowStatementContextRequestValidationContextV1 context;
+      context.expected_session_uuid = Uuid(1);
+      context.expected_owning_local_transaction_id = 42;
+      context.expected_owning_transaction_uuid = Uuid(2);
+      ipc::PsNarrowStatementContextRequestV1 request;
+      request.session_uuid = Uuid(1);
+      request.owning_local_transaction_id = 42;
+      request.owning_transaction_uuid = Uuid(2);
+      auto wire_request =
+          ipc::EncodeAndValidatePsNarrowStatementContextRequestV1(request, context).canonical_payload;
+      std::copy(invalid.begin(), invalid.end(), wire_request.begin() + (transaction ? 26 : 2));
+      const auto decoded_request =
+          ipc::DecodeAndValidatePsNarrowStatementContextRequestV1(wire_request, context);
+      Require(!decoded_request.ok() && decoded_request.canonical_payload.empty() &&
+                  decoded_request.outcome.diagnostic_code ==
+                      (transaction ? "MGA.TRANSACTION_INVALID" : "PARSER_SERVER_IPC.SESSION_MISMATCH"),
+              "non-v7 wire request selector admitted");
+      auto& id = transaction ? request.owning_transaction_uuid : request.session_uuid;
+      id = invalid;
+      auto refused = ipc::EncodeAndValidatePsNarrowStatementContextRequestV1(request, context);
+      Require(!refused.ok() && refused.canonical_payload.empty() &&
+                  refused.outcome.diagnostic_code ==
+                      (transaction ? "MGA.TRANSACTION_INVALID" : "PARSER_SERVER_IPC.SESSION_MISMATCH"),
+              "non-v7 request selector accepted or wrong canonical failure");
+      auto& expected = transaction ? context.expected_owning_transaction_uuid
+                                  : context.expected_session_uuid;
+      expected = invalid; // Matching bad bytes are not authenticated UUID authority.
+      refused = ipc::EncodeAndValidatePsNarrowStatementContextRequestV1(request, context);
+      Require(!refused.ok() && refused.canonical_payload.empty(),
+              "matching non-v7 request/context accepted");
+    }
+    for (const auto offset : fixture.required_uuid_offsets) {
+      auto bytes = fixture.bytes;
+      std::copy(invalid.begin(), invalid.end(), bytes.begin() + offset);
+      // Do not let the diagnostic row checksum mask its UUID validation.
+      if (offset == fixture.extension + 260) HashDiagnosticRow(&bytes, offset);
+      const auto refused = ipc::ValidateAndAdoptPsNarrowStatementContextResultAliasV1(bytes, bytes);
+      Require(!refused.ok() && refused.canonical_payload.empty(),
+              "non-v7 result identity adopted at offset " + std::to_string(offset));
+    }
+    for (const unsigned offset : {76u, 100u, 124u, 156u, 180u, 204u}) {
+      auto bytes = fixture.bytes;
+      std::copy(invalid.begin(), invalid.end(), bytes.begin() + fixture.extension + offset);
+      StoreU64(&bytes, fixture.extension + offset + 16, 1);
+      const auto refused = ipc::ValidateAndAdoptPsNarrowStatementContextResultAliasV1(bytes, bytes);
+      Require(!refused.ok() && refused.canonical_payload.empty(),
+              "non-v7 optional identity with nonzero generation adopted");
+    }
+    if (invalid == ipc::PsStatementContextUuidV1{}) continue;
+    for (const auto offset : fixture.nil_uuid_offsets) {
+      auto bytes = fixture.bytes;
+      std::copy(invalid.begin(), invalid.end(), bytes.begin() + offset);
+      const auto refused = ipc::ValidateAndAdoptPsNarrowStatementContextResultAliasV1(bytes, bytes);
+      Require(!refused.ok() && refused.canonical_payload.empty(),
+              "malformed nonzero optional UUID became absent at " + std::to_string(offset));
+    }
+  }
+  for (const unsigned offset : {76u, 100u, 124u, 156u, 180u, 204u}) {
+    auto bytes = fixture.bytes;
+    const auto id = Uuid(900);
+    std::copy(id.begin(), id.end(), bytes.begin() + fixture.extension + offset);
+    StoreU64(&bytes, fixture.extension + offset + 16, 1);
+    const auto accepted = ipc::ValidateAndAdoptPsNarrowStatementContextResultAliasV1(bytes, bytes);
+    Require(accepted.ok(), "valid optional UUID/generation pair rejected");
+  }
+  auto valid_collation = fixture.bytes;
+  const auto collation = Uuid(901);
+  std::copy(collation.begin(), collation.end(),
+            valid_collation.begin() + fixture.nil_uuid_offsets.front());
+  Require(ipc::ValidateAndAdoptPsNarrowStatementContextResultAliasV1(
+              valid_collation, valid_collation).ok(),
+          "valid optional descriptor collation rejected");
+  std::cout << "statement alias UUID required_fields=" << required_count
+            << " optional_fields=" << fixture.nil_uuid_offsets.size()
+            << " invalid_shapes=" << InvalidSystemUuids().size() << '\n';
 }
 
 void RequestAliasContract() {
@@ -301,6 +406,21 @@ void RequestAliasContract() {
           encoded.canonical_payload, encoded.canonical_payload, context);
   Require(alias.ok() && alias.canonical_payload == encoded.canonical_payload,
           "7709 byte identity failed");
+
+  auto bad_transaction = request;
+  bad_transaction.owning_transaction_uuid = Uuid(3);
+  const auto transaction_refused =
+      ipc::EncodeAndValidatePsNarrowStatementContextRequestV1(bad_transaction, context);
+  Require(!transaction_refused.ok() && transaction_refused.canonical_payload.empty() &&
+              transaction_refused.outcome.diagnostic_code == "MGA.TRANSACTION_INVALID",
+          "7709 transaction mismatch lost its exact registered diagnostic");
+  bad_transaction = request;
+  bad_transaction.owning_local_transaction_id = 0;
+  const auto zero_transaction =
+      ipc::EncodeAndValidatePsNarrowStatementContextRequestV1(bad_transaction, context);
+  Require(!zero_transaction.ok() && zero_transaction.canonical_payload.empty() &&
+              zero_transaction.outcome.diagnostic_code == "MGA.TRANSACTION_INVALID",
+          "7709 absent transaction lost its exact registered diagnostic");
 
   auto drifted = encoded.canonical_payload;
   drifted.back() ^= 1;
@@ -398,6 +518,7 @@ int main() {
   try {
     RequestAliasContract();
     ResultAliasContract();
+    SystemIdentityVersions();
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
     return EXIT_FAILURE;

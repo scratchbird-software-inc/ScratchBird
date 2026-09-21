@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "../../src/engine/executor/prepared_execution_template.hpp"
+#include "../../src/engine/internal_api/catalog/pinned_descriptor_cache.hpp"
 #include "uuid.hpp"
 #include <atomic>
 #include <barrier>
@@ -253,9 +254,109 @@ void ConcurrentAdmission() {
   }
   Check(created == 1, "concurrent identical admissions created multiple owners");
 }
+api::CatalogPinnedDescriptorSnapshot CatalogSnapshot(unsigned char n = 4) {
+  api::CatalogPinnedDescriptorSnapshot snapshot;
+  snapshot.descriptor = Descriptor();
+  snapshot.descriptors = {snapshot.descriptor};
+  snapshot.key.catalog_epoch = 1; snapshot.key.security_epoch = 2;
+  snapshot.key.resource_policy_epoch = 3; snapshot.key.name_resolution_epoch = 4;
+  snapshot.key.descriptor_set_digest =
+      api::CatalogPinnedDescriptorSetDigest(snapshot.descriptors, {});
+  snapshot.key.object_uuids = {Id(n), Id(9), Id(n)};
+  snapshot.key.index_uuids = {Id(8)};
+  snapshot.key.security_policy_identity = "policy|redaction_policy_identity=x";
+  snapshot.key.redaction_policy_identity = "redaction";
+  snapshot.key.resource_policy_identity = "resource";
+  return snapshot;
+}
+
+void BinaryCatalogKeysAndContent() {
+  auto snapshot = CatalogSnapshot();
+  Check(snapshot.key.descriptor_set_digest ==
+            ex::PreparedDescriptorSetDigest(snapshot.descriptors, {}),
+        "catalog descriptor digest differs from shared canonical content");
+  auto descriptor = snapshot.descriptor;
+  descriptor.type_uuid = Id(11);
+  Check(api::CatalogPinnedDescriptorSetDigest({descriptor}, {}) != snapshot.key.descriptor_set_digest,
+        "datatype identity missing from catalog descriptor digest");
+  descriptor = snapshot.descriptor; descriptor.collation_uuid = Id(12);
+  Check(api::CatalogPinnedDescriptorSetDigest({descriptor}, {}) != snapshot.key.descriptor_set_digest,
+        "collation identity missing from catalog descriptor digest");
+  auto left = snapshot.descriptor, right = snapshot.descriptor;
+  left.descriptor_kind = "a:b"; left.canonical_type_name = "c";
+  right.descriptor_kind = "a"; right.canonical_type_name = "b:c";
+  Check(api::CatalogPinnedDescriptorSetDigest({left}, {}) !=
+            api::CatalogPinnedDescriptorSetDigest({right}, {}),
+        "delimiter-aliased descriptor content");
+  left.encoded_descriptor = std::string("x\0y", 3);
+  right = left; right.encoded_descriptor = "x";
+  Check(api::CatalogPinnedDescriptorSetDigest({left}, {}) !=
+            api::CatalogPinnedDescriptorSetDigest({right}, {}),
+        "embedded NUL lost from descriptor content");
+  api::CatalogPinnedDescriptorCache cache;
+  const auto stored = cache.Put(snapshot);
+  Check(stored.ok, "binary catalog snapshot not stored");
+  auto key = snapshot.key;
+  key.object_uuids = {Id(9), Id(4)};
+  Check(cache.Lookup(key).snapshot == stored.snapshot,
+        "binary dependency sets did not normalize exact duplicates/order");
+  for (unsigned version = 0; version != 16; ++version) {
+    auto invalid = key;
+    invalid.object_uuids[0].bytes[6] = static_cast<std::uint8_t>(version << 4);
+    Check(api::ValidateCatalogPinnedDescriptorKey(invalid).ok == (version == 7),
+          "catalog key admitted non-system dependency");
+    invalid = key; invalid.index_uuids[0].bytes[6] = static_cast<std::uint8_t>(version << 4);
+    Check(api::ValidateCatalogPinnedDescriptorKey(invalid).ok == (version == 7),
+          "catalog key admitted non-system index dependency");
+  }
+  auto different = snapshot;
+  different.key.security_policy_identity = "policy";
+  different.key.redaction_policy_identity = "x|redaction_policy_identity=redaction";
+  Check(api::CatalogPinnedDescriptorCacheKeyText(different.key) != stored.cache_key,
+        "cache diagnostic digest has delimiter collision");
+  Check(!cache.Lookup(different.key).ok, "different policy bindings hit cached metadata");
+  different.key = key; different.key.object_uuids = {Id(5), Id(9)};
+  const auto second = cache.Put(different);
+  Check(second.ok && second.snapshot != stored.snapshot, "different UUID dependencies merged");
+  api::CatalogPinnedDescriptorInvalidationEvent event;
+  event.event_kind = "catalog_alter"; event.dependency_uuid = Id(4); event.event_epoch = 2;
+  const auto invalidated = cache.Invalidate(event);
+  Check(invalidated.invalidated_entries.size() == 1 &&
+            invalidated.invalidated_entries[0].object_uuids == snapshot.key.object_uuids,
+        "dependency invalidation lost binary identities");
+  Check(!cache.Lookup(key).ok && cache.Lookup(different.key).snapshot == second.snapshot &&
+            stored.snapshot->descriptor == snapshot.descriptor,
+        "invalidation changed unrelated cache state or returned immutable owner");
+}
+
+void CatalogInvalidationAllocationSweep() {
+  bool completed = false;
+  for (long n = 0; n != 256 && !completed; ++n) {
+    api::CatalogPinnedDescriptorCache cache;
+    const auto first = CatalogSnapshot(4), second = CatalogSnapshot(5);
+    Check(cache.Put(first).ok && cache.Put(second).ok, "catalog fault baseline");
+    api::CatalogPinnedDescriptorInvalidationEvent event;
+    event.event_kind = "catalog_epoch"; event.event_epoch = 2;
+    fault::remaining = n; fault::hit = false;
+    try {
+      const auto invalidated = cache.Invalidate(event);
+      fault::remaining = -1;
+      Check(invalidated.invalidated_entries.size() == 2, "incomplete catalog invalidation");
+      completed = true;
+    } catch (const std::bad_alloc&) {
+      fault::remaining = -1;
+      ++faults;
+      Check(cache.Stats().invalidations == 0 && cache.Lookup(first.key).ok &&
+                cache.Lookup(second.key).ok,
+            "allocation failure partially invalidated catalog cache");
+    } catch (...) { fault::remaining = -1; throw; }
+  }
+  Check(completed, "catalog invalidation allocation sweep did not complete");
+}
 }
 int main() try {
   AdmissionAndBinding(); GovernedLifetime(); AllocationSweeps(); BindAllocationSweeps(); ConcurrentAdmission();
+  BinaryCatalogKeysAndContent(); CatalogInvalidationAllocationSweep();
   std::cout << "PASS " << checks << " prepared cache checks, " << faults << " allocation faults; component, not SQL/IPC acceptance\n";
 } catch (const std::exception& e) {
   fault::remaining = -1;

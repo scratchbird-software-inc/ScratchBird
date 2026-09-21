@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "dml/insert_physical_integration.hpp"
+#include "dml/direct_bulk_append_api.hpp"
 
 #include <cstddef>
 #include <string>
@@ -21,9 +21,9 @@ namespace scratchbird::engine::internal_api::dml::detail {
 // These identifiers are stable identity only and never transaction ordering or
 // MGA finality authority.
 struct DirectBulkUuidBatch {
-  std::vector<std::string> row_uuids;
-  std::vector<std::string> version_uuids;
-  std::vector<std::string> row_image_uuids;
+  std::vector<EngineUuid> row_uuids;
+  std::vector<EngineUuid> version_uuids;
+  std::vector<EngineUuid> row_image_uuids;
   std::size_t generated_row_uuids = 0;
   std::size_t caller_row_uuids = 0;
   std::size_t reservoir_served_uuids = 0;

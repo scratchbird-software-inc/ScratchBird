@@ -55,7 +55,9 @@ struct ServerDiagnostic {
       engine_source_snapshot;
 };
 
-// Adopt only the matching source with a valid binary occurrence identity.
+// Adopt only the matching source with a valid binary occurrence identity and
+// exact registration/public-severity consistency. Unregistered private sources
+// remain explicitly unregistered; this does not authorize canonical rendering.
 // Failure leaves the complete target unchanged, including allocation failure.
 bool AdoptEngineDiagnosticSource(
     const scratchbird::server_engine_bridge::EngineDiagnosticSnapshot& source,

@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "../core/platform/runtime_platform.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -34,10 +36,10 @@ struct LocalSblrGatewayRequest {
   std::uint16_t root_opcode_code = 0;
   std::string root_opcode;
   std::string root_operation_id;
-  std::string route_snapshot_uuid;
+  scratchbird::core::platform::Uuid route_snapshot_uuid;
   std::uint64_t route_epoch = 0;
   std::uint64_t route_generation = 0;
-  std::string security_snapshot_uuid;
+  scratchbird::core::platform::Uuid security_snapshot_uuid;
   std::uint64_t security_epoch = 0;
   std::uint64_t security_observation_generation = 0;
   bool route_snapshot_engine_owned = false;
@@ -53,10 +55,10 @@ struct LocalSblrGatewayDecision {
       LocalSblrGatewayDisposition::kRefused;
   std::string diagnostic_id;
   std::array<std::uint8_t, 32> canonical_payload_sha256{};
-  std::string route_snapshot_uuid;
+  scratchbird::core::platform::Uuid route_snapshot_uuid;
   std::uint64_t route_epoch = 0;
   std::uint64_t route_generation = 0;
-  std::string security_snapshot_uuid;
+  scratchbird::core::platform::Uuid security_snapshot_uuid;
   std::uint64_t security_epoch = 0;
   std::uint64_t security_observation_generation = 0;
   std::uint64_t gateway_observation_generation = 0;

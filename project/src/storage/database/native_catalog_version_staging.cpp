@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "physical_mga_cow_store.hpp"
 #include "catalog_schema_definition.hpp"
+#include "catalog_metric_retention_policy.hpp"
+#include "catalog_metric_descriptor.hpp"
+#include "catalog_metric_label_schema.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <algorithm>
@@ -76,7 +79,11 @@ NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
           previous->metadata.definition_version==std::numeric_limits<u64>::max()||desired.definition_version!=previous->metadata.definition_version+1||
           desired.schema_epoch<previous->metadata.schema_epoch||desired.security_epoch<previous->metadata.security_epoch||desired.resource_epoch<previous->metadata.resource_epoch||
           desired.catalog_generation<previous->metadata.catalog_generation||desired.dependency_generation<previous->metadata.dependency_generation||desired.invalidation_generation<previous->metadata.invalidation_generation||
-          !catalog::CatalogSchemaDefinitionPreservesOrigin(previous->metadata,desired)||(name&&(!previous->name_payload||!catalog::CatalogNamePayloadPreservesIdentity(*previous->name_payload,*request.name_payload))))return Fail(E::stale_version);
+          !catalog::CatalogSchemaDefinitionPreservesOrigin(previous->metadata,desired)||
+          !catalog::CatalogMetricRetentionPolicyPreservesOrigin(previous->metadata,desired)||
+          !catalog::CatalogMetricDescriptorPreservesOrigin(previous->metadata,desired)||
+          !catalog::CatalogMetricLabelSchemaPreservesOrigin(previous->metadata,desired)||
+          (name&&(!previous->name_payload||!catalog::CatalogNamePayloadPreservesIdentity(*previous->name_payload,*request.name_payload))))return Fail(E::stale_version);
     }
     if(maximum==std::numeric_limits<u64>::max())return Fail(E::version_overflow);
     mga::RowIdentity identity;identity.row_uuid=desired.record.header.row_uuid;

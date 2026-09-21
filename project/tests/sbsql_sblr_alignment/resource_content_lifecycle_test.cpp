@@ -3,6 +3,8 @@
 // Real database file create/reopen in separate processes. Not SQL/IPC evidence.
 #include "database_lifecycle.hpp"
 #include "resource_seed_pack.hpp"
+#include "unicode_normalization.hpp"
+#include "unicode_collation.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
 #include "catalog_page.hpp"
@@ -214,6 +216,12 @@ void ResourceAdmission(const fs::path& path) {
           resource.diagnostic.canonical_metadata.has_value() &&
           !resource.resource_descriptor.present && resource.resource_descriptor.resource_uuid.is_nil(),
           "resource lookup published authority for invalid context");
+    const auto named=engine::LookupEngineResourceDescriptorByName(
+        candidate,image.charsets.front().canonical_name,"charset");
+    check(!named.ok && named.diagnostic.error && named.diagnostic.code=="CATALOG.INVALID_INPUT" &&
+          named.diagnostic.message_key==key && named.diagnostic.canonical_metadata.has_value() &&
+          !named.resource_descriptor.present && named.resource_descriptor.resource_uuid.is_nil(),
+          "name lookup bypassed node transaction or resource cohort admission");
     const auto timezone=engine::LookupEngineTimezoneSeedAuthority(candidate);
     check(!timezone.ok && timezone.diagnostic.error && timezone.diagnostic.code=="CATALOG.INVALID_INPUT" && timezone.diagnostic.message_key==key &&
           timezone.diagnostic.canonical_metadata.has_value() &&
@@ -229,9 +237,104 @@ void ResourceAdmission(const fs::path& path) {
   const auto collation=engine::LookupEngineResourceDescriptorByUuid(
       context,image.collations.front().resource_uuid,"COLLATION");
   check(collation.ok && collation.resource_descriptor.resource_uuid==image.collations.front().resource_uuid &&
+        collation.resource_descriptor.database_uuid==context.database_uuid &&
+        collation.resource_descriptor.comparison_profile==image.collations.front().comparison_profile &&
         collation.resource_descriptor.parent_resource_uuid==image.collations.front().charset_uuid &&
         collation.resource_descriptor.family_version==image.collations.front().family_version,
         "actual collation lookup changed binary identity or parent");
+  unsigned executable_profiles=0;
+  for(const auto& row:image.collations) {
+    if(row.comparison_profile==r::CollationProfile::unbound)continue;
+    ++executable_profiles;
+    const auto found=engine::LookupEngineResourceDescriptorByUuid(context,row.resource_uuid,"collation");
+    check(found.ok && found.resource_descriptor.database_uuid==context.database_uuid &&
+        found.resource_descriptor.resource_uuid==row.resource_uuid &&
+        found.resource_descriptor.parent_resource_uuid==row.charset_uuid &&
+        found.resource_descriptor.resource_epoch==image.resource_epoch &&
+        found.resource_descriptor.family_epoch==row.family_epoch &&
+        found.resource_descriptor.comparison_profile==row.comparison_profile,
+        "live binary lookup lost comparison profile or owning cohort");
+    std::string folded_name=row.canonical_name;
+    for(auto& ch:folded_name)if(ch>='A'&&ch<='Z')ch+=('a'-'A');
+    const auto named=engine::LookupEngineResourceDescriptorByName(context,folded_name,"COLLATION");
+    const auto& n=named.resource_descriptor;
+    const auto& d=found.resource_descriptor;
+    check(named.ok && n.present && n.database_uuid==d.database_uuid &&
+          n.resource_uuid==d.resource_uuid && n.parent_resource_uuid==d.parent_resource_uuid &&
+          n.default_collation_uuid==d.default_collation_uuid && n.canonical_name==d.canonical_name &&
+          n.resource_family==d.resource_family && n.parent_canonical_name==d.parent_canonical_name &&
+          n.default_collation_name==d.default_collation_name && n.seed_pack_name==d.seed_pack_name &&
+          n.seed_pack_version==d.seed_pack_version && n.resource_epoch==d.resource_epoch &&
+          n.family_epoch==d.family_epoch && n.family_version==d.family_version &&
+          n.min_bytes==d.min_bytes && n.max_bytes==d.max_bytes && n.variable_width==d.variable_width &&
+          n.default_for_parent==d.default_for_parent && n.case_insensitive==d.case_insensitive &&
+          n.accent_insensitive==d.accent_insensitive && n.comparison_profile==d.comparison_profile &&
+          bool(n.unicode_collation)==bool(d.unicode_collation),
+          "name resolution and binary lookup published different resource cohorts");
+    const bool root=r::UsesUnicodeRoot(row.comparison_profile);
+    namespace dt=scratchbird::core::datatypes;
+    const auto seed=engine::TextSeedFromResource(named.resource_descriptor);
+    dt::DatatypeComparisonRequest compare;
+    compare.left={dt::CanonicalTypeId::character,"\xc3\xa9",false};
+    compare.right={dt::CanonicalTypeId::character,"e\xcc\x81",false};compare.text_seed=seed;
+    const auto compared=dt::CompareDatatypeValues(compare);
+    check(compared.ok() && (compared.comparison==0)==root,
+        "actual resource lookup to datatype comparison lost profile semantics");
+    dt::DatatypeSortKeyRequest sort;sort.text_seed=seed;sort.value=compare.left;
+    const auto first=dt::MakeDatatypeSortKey(sort);sort.value=compare.right;
+    const auto second=dt::MakeDatatypeSortKey(sort);
+    check(first.ok()&&second.ok()&&(first.sort_key==second.sort_key)==root,
+        "actual resource lookup to sort key lost canonical equivalence");
+    dt::DatatypeHashRequest hash;hash.text_seed=seed;hash.value=compare.left;
+    const auto first_hash=dt::HashDatatypeValue(hash);hash.value=compare.right;
+    const auto second_hash=dt::HashDatatypeValue(hash);
+    check(first_hash.ok()&&second_hash.ok()&&(!root||first_hash.stable_hash_hex==second_hash.stable_hash_hex),
+        "actual resource lookup produced inconsistent text hash");
+    check(bool(found.resource_descriptor.unicode_collation)==root,
+        "resolved profile has missing or extraneous root authority");
+    if(root) {
+      int order=99;
+      const auto strength=static_cast<r::UnicodeCollationStrength>(
+          static_cast<std::uint64_t>(row.comparison_profile)-1);
+      check(found.resource_descriptor.unicode_collation->Compare("\xc3\xa9","e\xcc\x81",strength,
+          {64,64},&order)==r::UnicodeNormalizationStatus::ok && order==0,
+          "resolved database-owned recipe failed canonical equivalence");
+    }
+  }
+  check(executable_profiles==5,"native comparison recipes missing from live catalog");
+  const auto charset_name=engine::LookupEngineResourceDescriptorByName(
+      context,image.charsets.front().canonical_name,"charset");
+  check(charset_name.ok && charset_name.resource_descriptor.database_uuid==context.database_uuid &&
+        charset_name.resource_descriptor.resource_uuid==charset.resource_descriptor.resource_uuid &&
+        charset_name.resource_descriptor.default_collation_uuid==charset.resource_descriptor.default_collation_uuid &&
+        charset_name.resource_descriptor.min_bytes==charset.resource_descriptor.min_bytes &&
+        charset_name.resource_descriptor.max_bytes==charset.resource_descriptor.max_bytes &&
+        charset_name.resource_descriptor.variable_width==charset.resource_descriptor.variable_width &&
+        !charset_name.resource_descriptor.unicode_collation,
+        "charset name lookup lost its exact descriptor");
+  const auto alias_name=engine::LookupEngineResourceDescriptorByName(context,"cp936","charset");
+  const auto* gbk=r::FindResourceSeedCharset(image,"GBK");
+  check(gbk && alias_name.ok && alias_name.resource_descriptor.resource_uuid==gbk->resource_uuid &&
+        alias_name.resource_descriptor.database_uuid==context.database_uuid,
+        "charset alias did not resolve the database-owned binary identity");
+  const auto ambiguous_name=engine::LookupEngineResourceDescriptorByName(context,"GB2312","charset");
+  check(!ambiguous_name.ok && ambiguous_name.diagnostic.code=="SB_RESOURCE_ALIAS_AMBIGUOUS" &&
+        ambiguous_name.diagnostic.canonical_metadata.has_value() && !ambiguous_name.resource_descriptor.present,
+        "ambiguous resource alias published a descriptor");
+  for(const auto& invalid:std::vector<std::string>{"",std::string("UTF\0-8",6),"\xc0\xaf","\xed\xa0\x80"}) {
+    const auto bad_name=engine::LookupEngineResourceDescriptorByName(context,invalid,"charset");
+    check(!bad_name.ok && bad_name.diagnostic.code=="CATALOG.INVALID_INPUT" &&
+          bad_name.diagnostic.message_key=="catalog.resource.name_invalid" &&
+          !bad_name.resource_descriptor.present,"invalid UTF8 resource name was admitted");
+  }
+  for(const auto& family:std::vector<std::string>{"charset","collation"}) {
+    const auto absent_name=engine::LookupEngineResourceDescriptorByName(context,"__missing_resource__",family);
+    check(!absent_name.ok && absent_name.diagnostic.code=="CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE" &&
+          !absent_name.resource_descriptor.present,"unknown name fell back to a default resource");
+  }
+  const auto bad_family=engine::LookupEngineResourceDescriptorByName(context,"UTF-8","not_a_family");
+  check(!bad_family.ok && bad_family.diagnostic.message_key=="catalog.resource.family_invalid" &&
+        !bad_family.resource_descriptor.present,"unknown name family was admitted");
   const auto zone=engine::LookupEngineTimezoneSeedAuthority(context);
   check(zone.ok && zone.authority.active && zone.authority.timezone_epoch==image.timezone_epoch &&
         zone.authority.timezone_records==image.timezone_records,
@@ -432,6 +535,27 @@ int main(int argc,char** argv) {
       Require(!ambiguous.ok() && ambiguous.diagnostic.diagnostic_code=="SB_RESOURCE_ALIAS_AMBIGUOUS" &&
               ambiguous.alias.canonical_resource_uuid.is_nil(),"persisted alias ambiguity changed");
       Require(actual.artifacts.size()==oracle.image.artifacts.size(),"reopen artifact count changed");
+      Require(actual.unicode_normalization != nullptr, "reopen lost database-owned normalization table");
+      Require(actual.unicode_collation != nullptr, "reopen lost database-owned UCA table");
+      const std::array<const char*,5> profile_names{{"SB_UTF8_BINARY","SB_UCA_17_PRIMARY",
+          "SB_UCA_17_SECONDARY","SB_UCA_17_TERTIARY","SB_UCA_17_IDENTICAL"}};
+      for(std::size_t profile=0;profile<profile_names.size();++profile) {
+        const auto* row=r::FindResourceSeedCollation(actual,profile_names[profile]);
+        Require(row && static_cast<std::uint64_t>(row->comparison_profile)==profile+1,
+                "reopen changed exact native numeric recipe");
+      }
+      const auto* donor=r::FindResourceSeedCollation(actual,"UNICODE_CI_AI");
+      Require(donor && donor->comparison_profile==r::CollationProfile::unbound,
+              "reopen silently mapped donor collation to root UCA");
+      int unicode_comparison = 99;
+      Require(actual.unicode_collation->Compare("\xce\x91", "\xce\xb1", r::UnicodeCollationStrength::primary,
+                  {64,64}, &unicode_comparison) == r::UnicodeNormalizationStatus::ok && unicode_comparison == 0,
+              "database-contained UCA Greek comparison after seed removal failed");
+      std::string normalized;
+      Require(actual.unicode_normalization->NormalizeNfd("\xe1\xb9\xa9\xea\xb0\x81", 14, &normalized) ==
+                  r::UnicodeNormalizationStatus::ok &&
+              normalized == "s\xcc\xa3\xcc\x87\xe1\x84\x80\xe1\x85\xa1\xe1\x86\xa8",
+              "database-contained canonical decomposition after seed removal failed");
       std::size_t bytes=0;
       for (std::size_t i=0;i<actual.artifacts.size();++i) {
         const auto& a=actual.artifacts[i]; const auto& e=oracle.image.artifacts[i];

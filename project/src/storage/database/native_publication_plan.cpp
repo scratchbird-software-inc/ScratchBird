@@ -28,6 +28,9 @@ auto ImageHash(const std::vector<byte>& b){const std::array<byte,32> zero{};cons
 E Validate(const NativePublicationPlan& p){
   const auto& h=p.header;if(!disk::EncodeNativeCommonPageHeader(h).ok()||h.page_type!=0x500||h.flags)return E::invalid_header;
   if(p.control_bundle&&!p.management_extent)return E::invalid_family;
+  // These wire profiles have no directory/payload commitment fields. Never
+  // silently serialize a general bundle as a legacy primary-only root.
+  if(p.control_bundle&&(p.control_bundle->directory_count||p.control_bundle->payload_bytes))return E::invalid_family;
   const bool inventory=p.intent.recovery_profile==2;
   if(inventory!=bool(p.control_bundle&&p.control_bundle->inventory_count))return E::invalid_family;
   if(p.base_selection_generation&&(!p.control_bundle||!*p.base_selection_generation||*p.base_selection_generation==std::numeric_limits<u64>::max()))return E::invalid_family;

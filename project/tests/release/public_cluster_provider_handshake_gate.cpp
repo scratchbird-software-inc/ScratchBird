@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -39,11 +40,28 @@ bool HasEvidence(const api::EngineApiResult& result,
                  std::string_view kind,
                  std::string_view id) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == kind && evidence.evidence_id == id) {
+    const auto* text = std::get_if<std::string>(&evidence.evidence_id);
+    if (evidence.evidence_kind == kind && text != nullptr && *text == id) {
       return true;
     }
   }
   return false;
+}
+
+void TestEvidenceRetainsItsType() {
+  api::EngineApiResult result;
+  result.evidence.push_back({"cluster_provider", api::EngineUuid{}});
+  Require(!HasEvidence(result, "cluster_provider", ""),
+          "nil binary identity was treated as empty text evidence");
+  result.evidence.push_back(
+      {"cluster_provider", scratchbird::tests::FixtureUuid(102, 4)});
+  Require(!HasEvidence(result, "cluster_provider", "no_cluster"),
+          "binary identity was treated as provider text evidence");
+  result.evidence.push_back({"cluster_provider", std::string("no_cluster")});
+  Require(HasEvidence(result, "cluster_provider", "no_cluster"),
+          "provider text evidence was not retained");
+  Require(!HasEvidence(result, "cluster_operation", "no_cluster"),
+          "text evidence matched the wrong evidence kind");
 }
 
 bool HasHandshakeIssue(const cluster_provider::ClusterProviderHandshakeResult& result,
@@ -598,6 +616,7 @@ void TestInTreeProviderFailsClosedBeforeRouteAdmission() {
 }  // namespace
 
 int main() {
+  TestEvidenceRetainsItsType();
   TestRequiredStaticContractCoverage();
   TestValidExternalProviderAdmitsRoute();
   TestHandshakeRefusesIncompleteOrIncompatibleProviders();

@@ -9,6 +9,7 @@
 #include "dml/insert_api.hpp"
 
 #include "crud_support/crud_store.hpp"
+#include "behavior_support/api_behavior_store.hpp"
 #include "dml/constraint_enforcement.hpp"
 #include "dml/mutation_savepoint_capability.hpp"
 #include "dml/dml_executable_trigger_runtime.hpp"
@@ -227,17 +228,17 @@ void AppendRowLocatorStreamEvidence(
     std::string_view prefix,
     const DmlRowLocatorStreamResult& stream,
     std::vector<EngineEvidenceReference>* evidence) {
-  evidence->push_back({std::string(prefix) + "_row_locator_stream",
+  std::vector<EngineEvidenceReference> group;
+  group.push_back({std::string(prefix) + "_row_locator_stream",
                        stream.ok ? DmlRowLocatorStreamSourceName(stream.source)
                                  : "refused"});
-  evidence->push_back({std::string(prefix) + "_row_locator_stream_ok",
+  group.push_back({std::string(prefix) + "_row_locator_stream_ok",
                        stream.ok ? "true" : "false"});
-  evidence->push_back({std::string(prefix) + "_row_locator_count",
+  group.push_back({std::string(prefix) + "_row_locator_count",
                        std::to_string(stream.locators.size())});
-  for (const auto& item : stream.evidence) {
-    evidence->push_back({std::string(prefix) + "_row_locator_stream_evidence",
-                         item.evidence_kind + "=" + item.evidence_id});
-  }
+  AppendApiEvidenceGroup(group, stream.evidence,
+                         std::string(prefix) + "_row_locator_stream_evidence");
+  AppendApiEvidenceGroup(*evidence, group);
 }
 
 DmlTargetAccessPlanRequest BuildOnConflictLocatorPlanRequest(

@@ -120,10 +120,8 @@ CanonicalizeEngineSblrEnvelopeForTest(
                              operation.operation_id);
   }
   operation.opcode_code = registry->code;
-  operation.parser_package_uuid =
-      detail::AdmissionUuidText(detail::AdmissionUuid(0x31));
-  operation.registry_snapshot_uuid =
-      detail::AdmissionUuidText(detail::AdmissionUuid(0x32));
+  operation.parser_package_uuid.bytes = detail::AdmissionUuid(0x31);
+  operation.registry_snapshot_uuid.bytes = detail::AdmissionUuid(0x32);
   operation.parser_resolved_names_to_uuids = true;
   for (std::size_t index = 0; index < operation.operands.size(); ++index) {
     auto& operand = operation.operands[index];
@@ -274,18 +272,13 @@ BuildCanonicalSblrAdmissionRequest(
                                         container_bytes.end());
   request.encoded_execution_envelope.assign(ingress_bytes.begin(),
                                             ingress_bytes.end());
-  request.admitted_parser_package_uuid =
-      detail::AdmissionUuidText(parser_uuid);
+  request.admitted_parser_package_uuid.bytes = parser_uuid;
   request.admitted_parser_package_version_major = 1;
-  request.admitted_registry_snapshot_uuid =
-      detail::AdmissionUuidText(registry_uuid);
-  request.authenticated_principal_uuid = detail::AdmissionUuidText(user_uuid);
-  request.catalog_snapshot_uuid =
-      detail::AdmissionUuidText(detail::AdmissionUuid(0x43));
-  request.engine_mga_statement_uuid =
-      detail::AdmissionUuidText(detail::AdmissionUuid(0x44));
-  request.engine_mga_snapshot_uuid =
-      detail::AdmissionUuidText(detail::AdmissionUuid(0x45));
+  request.admitted_registry_snapshot_uuid.bytes = registry_uuid;
+  request.authenticated_principal_uuid.bytes = user_uuid;
+  request.catalog_snapshot_uuid.bytes = detail::AdmissionUuid(0x43);
+  request.engine_mga_statement_uuid.bytes = detail::AdmissionUuid(0x44);
+  request.engine_mga_snapshot_uuid.bytes = detail::AdmissionUuid(0x45);
   request.catalog_epoch = 7;
   request.security_epoch = 8;
   request.resource_epoch = 9;

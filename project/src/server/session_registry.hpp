@@ -19,6 +19,7 @@
 #include "scratchbird/engine/engine.h"
 #include "prepared_metadata_binding.hpp"
 #include "statement_context.hpp"
+#include "../core/uuid/uuid.hpp"
 
 #include <array>
 #include <deque>
@@ -599,6 +600,9 @@ struct ServerStatementContextRecord {
   scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt;
   scratchbird::server_engine_bridge::StatementContextReceiptView view;
   bool released = false;
+  // Logical revocation precedes physical cleanup. A failed engine release
+  // retains this record/handle for retry but must never admit new execution.
+  bool release_in_progress = false;
   std::string variable_final_receipt_uuid, variable_admission_token_uuid;
   std::array<std::uint8_t,32> variable_binding_sha256{};
   bool variable_binding_finalized = false, variable_token_consumed = false;
@@ -666,7 +670,7 @@ struct ServerSessionRegistry {
   std::map<std::string, ServerCursorRecord> cursors_by_uuid;
   std::map<std::string, ServerPublicAbiSessionContext>
       public_abi_sessions_by_session_uuid;
-  std::map<std::string, ServerStatementContextRecord>
+  std::map<scratchbird::core::platform::Uuid, ServerStatementContextRecord>
       statement_contexts_by_statement_uuid;
   std::map<std::string, ServerParameterExecutionCoordinationRecord>
       parameter_coordinations_by_uuid;
@@ -894,8 +898,14 @@ const char* ServerRequestLifecycleStateName(ServerRequestLifecycleState state);
 const char* ServerDriverTransactionEventName(ServerDriverTransactionEvent event);
 const char* ServerTransactionPressureActionName(ServerTransactionPressureAction action);
 std::string UuidBytesToText(const std::array<std::uint8_t, 16>& uuid);
-bool IsCompleteEngineTransactionIdentity(std::uint64_t local_transaction_id,
-                                         std::string_view transaction_uuid);
+// Shape validation only; live transaction inventory membership and session
+// ownership are checked independently by the transaction owner.
+inline bool IsCompleteEngineTransactionIdentity(
+    std::uint64_t local_transaction_id,
+    const scratchbird::core::platform::Uuid& transaction_uuid) {
+  return local_transaction_id != 0 &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(transaction_uuid);
+}
 ServerLanguageContextIdentity ServerLanguageContextForSession(
     const ServerSessionRecord& session);
 scratchbird::engine::internal_api::EngineMaterializedAuthorizationContext
@@ -1323,7 +1333,7 @@ std::uint64_t ReleaseServerStatementContextsForSession(
     const std::array<std::uint8_t, 16>& session_uuid);
 bool ReleaseServerStatementContext(
     ServerSessionRegistry* registry,
-    std::string_view statement_uuid);
+    const scratchbird::core::platform::Uuid& statement_uuid);
 std::string ServerAuthorityCacheKey(const std::string& cache_kind,
                                     const ServerSessionRecord& session,
                                     const std::string& operation_id,

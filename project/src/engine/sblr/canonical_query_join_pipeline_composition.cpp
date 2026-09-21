@@ -187,7 +187,7 @@ ExecuteCanonicalObjectFreeInnerJoinFilterProjectQuery(
     result.physical_node_count = 0;
     result.canonical_result_column_count = 0;
     result.canonical_result_row_count = 0;
-    result.selected_plan_uuid.clear();
+    result.selected_plan_uuid = {};
     result.canonical_result_bytes.clear();
     result.api_result =
         Failure(request, std::move(diagnostic_id), std::move(detail));

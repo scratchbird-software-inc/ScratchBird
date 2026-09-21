@@ -41,6 +41,10 @@ MetricLabelDescriptor ContractLabel(std::string key, bool required = false, bool
   return {std::move(key), required, sensitive};
 }
 
+MetricLabelDescriptor UuidContractLabel(std::string key, bool required = false, bool sensitive = false) {
+  return {std::move(key), required, sensitive, MetricLabelType::system_uuid};
+}
+
 MetricDescriptor PageCacheContextDescriptor(std::string family,
                                             MetricType type,
                                             MetricUnit unit,
@@ -56,8 +60,8 @@ MetricDescriptor PageCacheContextDescriptor(std::string family,
   descriptor.visibility = MetricVisibilityScope::family;
   descriptor.readiness = MetricReadiness::implemented;
   descriptor.labels = {ContractLabel("component", true),
-                       ContractLabel("database_uuid", true),
-                       ContractLabel("filespace_uuid", true),
+                       UuidContractLabel("database_uuid", true),
+                       UuidContractLabel("filespace_uuid", true),
                        ContractLabel("page_family", true),
                        ContractLabel("context", true),
                        ContractLabel("result", true),
@@ -350,7 +354,7 @@ MetricValidationResult RecordDomainMethodInvocation(std::string domain_uuid,
                           "datatype_runtime");
 }
 
-MetricValidationResult RecordInsertBatchStarted(std::string object_uuid,
+MetricValidationResult RecordInsertBatchStarted(MetricUuid object_uuid,
                                                 std::string insert_mode,
                                                 std::string result) {
   return IncrementCounter("sb_dml_insert_batch_started_total",
@@ -362,7 +366,7 @@ MetricValidationResult RecordInsertBatchStarted(std::string object_uuid,
                           "engine_insert");
 }
 
-MetricValidationResult RecordInsertBatchFallback(std::string object_uuid,
+MetricValidationResult RecordInsertBatchFallback(MetricUuid object_uuid,
                                                  std::string insert_mode,
                                                  std::string reason) {
   auto status = IncrementCounter("sb_dml_insert_batch_fallback_total",
@@ -387,7 +391,7 @@ MetricValidationResult RecordInsertBatchFallback(std::string object_uuid,
 }
 
 MetricValidationResult RecordInsertRowsInserted(double rows,
-                                                std::string object_uuid,
+                                                MetricUuid object_uuid,
                                                 std::string insert_mode) {
   return IncrementCounter("sb_dml_insert_rows_inserted_total",
                           Labels({{"component", "engine.insert"},
@@ -399,7 +403,7 @@ MetricValidationResult RecordInsertRowsInserted(double rows,
 }
 
 MetricValidationResult ObserveInsertRowsPerBatch(double rows,
-                                                 std::string object_uuid,
+                                                 MetricUuid object_uuid,
                                                  std::string insert_mode) {
   return ObserveHistogram("sb_dml_insert_rows_per_batch",
                           Labels({{"component", "engine.insert"},
@@ -410,7 +414,7 @@ MetricValidationResult ObserveInsertRowsPerBatch(double rows,
                           "engine_insert");
 }
 
-MetricValidationResult RecordInsertTraceEvent(std::string object_uuid,
+MetricValidationResult RecordInsertTraceEvent(MetricUuid object_uuid,
                                               std::string insert_mode,
                                               std::string phase) {
   return IncrementCounter("sb_dml_insert_trace_event_total",
@@ -423,7 +427,7 @@ MetricValidationResult RecordInsertTraceEvent(std::string object_uuid,
                           "engine_insert");
 }
 
-MetricValidationResult RecordInsertCancel(std::string object_uuid,
+MetricValidationResult RecordInsertCancel(MetricUuid object_uuid,
                                           std::string insert_mode,
                                           std::string reason) {
   return IncrementCounter("sb_dml_insert_cancel_total",
@@ -436,7 +440,7 @@ MetricValidationResult RecordInsertCancel(std::string object_uuid,
                           "engine_insert");
 }
 
-MetricValidationResult RecordInsertPreparedDescriptorCache(std::string object_uuid,
+MetricValidationResult RecordInsertPreparedDescriptorCache(MetricUuid object_uuid,
                                                            std::string insert_mode,
                                                            bool cache_hit) {
   return IncrementCounter("sb_dml_insert_prepared_descriptor_cache_total",
@@ -449,7 +453,7 @@ MetricValidationResult RecordInsertPreparedDescriptorCache(std::string object_uu
                           "engine_insert");
 }
 
-MetricValidationResult RecordInsertRelationStateLoad(std::string object_uuid,
+MetricValidationResult RecordInsertRelationStateLoad(MetricUuid object_uuid,
                                                      std::string insert_mode,
                                                      bool full_state_load,
                                                      bool scoped_state_load,
@@ -482,19 +486,19 @@ MetricValidationResult RecordInsertRelationStateLoad(std::string object_uuid,
 }
 
 MetricValidationResult RecordMgaRelationStateLoad(
-    std::string object_uuid,
+    MetricUuid object_uuid,
     std::string operation_family,
     std::string load_scope,
     std::string reason,
     double rows_materialized,
     double bytes_materialized,
     double allocation_units_materialized) {
-  const auto labels = Labels(
+  auto labels = Labels(
       {{"component", "engine.mga_relation_store"},
-       {"object_uuid", object_uuid.empty() ? "none" : object_uuid},
        {"operation", operation_family.empty() ? "unspecified" : operation_family},
        {"result", load_scope.empty() ? "unspecified" : load_scope},
        {"reason", reason.empty() ? "unspecified" : reason}});
+  if (!object_uuid.is_nil()) labels.push_back({"object_uuid", object_uuid});
   auto status = IncrementCounter("sb_mga_relation_state_load_total", labels,
                                  1.0, "mga_relation_store");
   if (!status.ok) { return status; }
@@ -511,7 +515,7 @@ MetricValidationResult RecordMgaRelationStateLoad(
       allocation_units_materialized, "mga_relation_store");
 }
 
-MetricValidationResult PublishInsertAdaptiveBatchPlan(std::string object_uuid,
+MetricValidationResult PublishInsertAdaptiveBatchPlan(MetricUuid object_uuid,
                                                       std::string insert_mode,
                                                       double requested_rows,
                                                       double admitted_rows,
@@ -554,7 +558,7 @@ MetricValidationResult PublishInsertAdaptiveBatchPlan(std::string object_uuid,
 }
 
 MetricValidationResult RecordInsertPreallocatedPages(double pages,
-                                                     std::string object_uuid,
+                                                     MetricUuid object_uuid,
                                                      std::string insert_mode,
                                                      std::string page_family,
                                                      std::string result,
@@ -571,7 +575,7 @@ MetricValidationResult RecordInsertPreallocatedPages(double pages,
 }
 
 MetricValidationResult ObserveInsertAllocationStall(double latency_microseconds,
-                                                    std::string object_uuid,
+                                                    MetricUuid object_uuid,
                                                     std::string insert_mode,
                                                     std::string wait_class,
                                                     std::string result) {
@@ -585,7 +589,7 @@ MetricValidationResult ObserveInsertAllocationStall(double latency_microseconds,
                           "engine_insert");
 }
 
-MetricValidationResult RecordInsertUniquePhysicalProbe(std::string object_uuid,
+MetricValidationResult RecordInsertUniquePhysicalProbe(MetricUuid object_uuid,
                                                        std::string insert_mode,
                                                        std::string result,
                                                        std::string reason) {
@@ -599,7 +603,7 @@ MetricValidationResult RecordInsertUniquePhysicalProbe(std::string object_uuid,
                           "engine_insert");
 }
 
-MetricValidationResult RecordInsertSlowPath(std::string object_uuid,
+MetricValidationResult RecordInsertSlowPath(MetricUuid object_uuid,
                                             std::string insert_mode,
                                             std::string chosen_path,
                                             std::string reason) {

@@ -29,7 +29,7 @@ std::string Fold(std::string value) {
 void Number(std::vector<std::uint8_t>& bytes, std::uint64_t value) {
   for (unsigned n = 0; n < 8; ++n) bytes.push_back(static_cast<std::uint8_t>(value >> (n * 8)));
 }
-bool Identity(std::vector<std::uint8_t>& bytes, const std::string& value) {
+bool Identity(std::vector<std::uint8_t>& bytes, const EngineUuid& value) {
   wire::TypedUpdateUuid uuid{};
   if (!p::TypedUuid(value, &uuid)) return false;
   bytes.insert(bytes.end(), uuid.begin(), uuid.end()); return true;
@@ -48,7 +48,7 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
   auto diagnostic = lease.RevalidateLive(context);
   if (diagnostic.error) return fail(std::move(diagnostic));
   const auto& b = lease.bundle(); const auto& d = b.descriptor;
-  const auto target = p::UuidText(d.target_relation_uuid);
+  const auto target = p::UuidValue(d.target_relation_uuid);
   const auto budget = b.resource_budget.maximum_total_canonical_value_bytes;
   if (budget < 65536) return fail(Error("minimum_bounded_heap_workspace"));
   std::vector<CrudRowVersionRecord> candidates;
@@ -66,7 +66,7 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
   stream.prepare_consumer_for_visible_rows = [&](const MgaRelationStorageDescriptor& relation,
       std::uint64_t count, std::uint64_t* growth) {
     if (relation.relation_uuid != target || relation.relation_generation != d.target_relation_generation ||
-        relation.descriptor_uuid != p::UuidText(b.effects.relation_descriptor_uuid) ||
+        relation.descriptor_uuid != p::UuidValue(b.effects.relation_descriptor_uuid) ||
         relation.descriptor_generation != b.effects.relation_descriptor_generation ||
         count > b.resource_budget.maximum_candidate_rows || count > (budget / 8) / sizeof(CrudRowVersionRecord)) {
       callback_failure = Error("visible_candidate_or_descriptor_bound"); return false;
@@ -74,7 +74,7 @@ EngineDmlDeleteCandidateMutationV1 ExecuteDmlDeleteCandidateMutationV1(
     if (!all_rows) {
       const auto& node = b.predicate.records[0]; const auto& literal = b.predicate.records[1];
       for (const auto& column : relation.columns) {
-        if (column.column_uuid != p::UuidText(node.referenced_column_uuid)) continue;
+        if (column.column_uuid != p::UuidValue(node.referenced_column_uuid)) continue;
         if (!predicate_column.empty() || column.column_generation != node.referenced_column_generation) {
           callback_failure = Error("predicate_column_generation", "DATATYPE.DESCRIPTOR.INVALID"); return false;
         }

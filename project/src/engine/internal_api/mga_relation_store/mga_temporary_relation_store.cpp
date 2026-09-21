@@ -234,11 +234,11 @@ std::string MgaTransactionStateName(const TransactionState state) {
 
 MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   MgaTemporaryTableVisibilityResult result;
-  if (table_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(table_uuid)) {
     result.diagnostic = MakeInvalidRequestDiagnostic("mga.temporary_table_visibility",
-                                                     "table_uuid_required");
+                                                     "valid_table_uuid_required");
     return result;
   }
   const auto metadata = LoadMgaMetadataSnapshot(context);
@@ -291,7 +291,8 @@ MgaTemporaryTableVisibilityResult CheckMgaTemporaryTableVisibility(
   result.known_temporary = true;
   result.visible_to_session =
       visible->temporary_scope == "global" ||
-      (!visible->temporary_session_uuid.empty() &&
+      (visible->temporary_scope == "private" &&
+       scratchbird::core::uuid::IsEngineIdentityUuid(visible->temporary_session_uuid) &&
        visible->temporary_session_uuid == context.session_uuid);
   return result;
 }
@@ -602,7 +603,7 @@ EngineApiDiagnostic ApplyMgaTemporaryCleanupActions(
     row_context.local_transaction_id = local_transaction_id;
     const auto rows =
         VisibleCrudRowsForContext(state, table.table_uuid, row_context);
-    std::set<std::string> visible_row_uuids;
+    std::set<EngineUuid> visible_row_uuids;
     for (const auto& row : rows) { visible_row_uuids.insert(row.row_uuid); }
     for (const auto& row_version : state.row_versions) {
       if (row_version.table_uuid != table.table_uuid ||
@@ -678,11 +679,11 @@ EngineApiDiagnostic ApplyMgaTemporarySessionCleanupActions(
 
 MgaTemporaryTableDropResult DropMgaTemporaryTable(
     const EngineRequestContext& context,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   MgaTemporaryTableDropResult result;
-  if (table_uuid.empty()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(table_uuid)) {
     result.diagnostic = MakeInvalidRequestDiagnostic("ddl.drop_object",
-                                                     "target_table_uuid_required");
+                                                     "valid_target_table_uuid_required");
     return result;
   }
   const auto visibility = CheckMgaTemporaryTableVisibility(context, table_uuid);
@@ -755,7 +756,7 @@ MgaTemporaryTableDropResult DropMgaTemporaryTable(
 
   auto row_context = context;
   const auto rows = VisibleCrudRowsForContext(state, table_uuid, row_context);
-  std::set<std::string> visible_row_uuids;
+  std::set<EngineUuid> visible_row_uuids;
   for (const auto& row : rows) { visible_row_uuids.insert(row.row_uuid); }
   for (const auto& row_version : state.row_versions) {
     if (row_version.table_uuid != table_uuid ||

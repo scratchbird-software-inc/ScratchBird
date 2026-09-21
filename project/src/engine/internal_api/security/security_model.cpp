@@ -161,6 +161,10 @@ const std::set<std::string>& KnownRights() {
       "OBS_METRICS_READ_CLUSTER", "OBS_METRICS_EXPORT", "OBS_METRICS_EXPORT_READ", "SEC_AUTH_METRICS_READ",
       "OBS_POLICY_READ", "OBS_AGENT_STATE_READ", "OBS_AGENT_EVIDENCE_READ", "OBS_AGENT_CONTROL",
       "OBS_AGENT_POLICY_CONTROL", "OBS_AGENT_OVERRIDE", "OBS_AGENT_RECOMMENDATION_READ",
+      "OBS_AGENT_ACTION_APPROVE", "OBS_AGENT_ACTION_CANCEL", "OBS_SUPPORT_BUNDLE_READ",
+      "OBS_POLICY_SIMULATE", "OBS_POLICY_EDIT_DRAFT", "OBS_POLICY_APPROVE", "OBS_POLICY_APPLY",
+      "OBS_POLICY_ROLLBACK", "OBS_POLICY_DELETE", "OBS_CLUSTER_TOPOLOGY_INSPECT",
+      "SEC_REDACTION_POLICY_EDIT", "SEC_EXPORT_POLICY_APPROVE",
       "OBS_POLICY_VALIDATE", "OBS_METRICS_POLICY_INSPECT",
       "OBS_METRICS_POLICY_CONTROL", "OBS_METRICS_EXPORT_CONTROL", "OBS_METRICS_RETENTION_CONTROL", "OBS_RUNTIME_SELF",
       "OBS_RUNTIME_ALL", "OBS_INDEX_PROFILE_READ", "OBS_MANAGEMENT_INSPECT", "OBS_MANAGEMENT_CONTROL",
@@ -227,6 +231,10 @@ bool SecurityTraceAuthorizationFallbackAllowed(const EngineRequestContext& conte
 
 bool IsKnownSecurityRight(const std::string& right) {
   return KnownRights().count(right) != 0;
+}
+
+const std::set<std::string>& KnownSecurityRights() {
+  return KnownRights();
 }
 
 DurableAuthorizationMaterializeResult MaterializeDurableAuthorizationContext(
@@ -765,11 +773,11 @@ ConnectionSecurityContextRecord ConnectionSecurityContextFromRequest(const Engin
   return record;
 }
 
-void AddSecurityEvidence(EngineApiResult* result, std::string kind, std::string id) {
-  result->evidence.push_back({std::move(kind), std::move(id)});
+void AddSecurityEvidence(EngineApiResult* result, std::string kind, EngineEvidenceValue id) {
+  AddApiBehaviorEvidence(result, std::move(kind), std::move(id));
 }
 
-void AddSecurityRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
+void AddSecurityRow(EngineApiResult* result, SecurityRowFields fields) {
   AddApiBehaviorRow(result, std::move(fields));
 }
 

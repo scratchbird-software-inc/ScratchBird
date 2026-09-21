@@ -9,11 +9,13 @@
 #pragma once
 
 #include "native_index_btree_page.hpp"
+#include "native_row_data_page.hpp"
 #include "database_dirty_manifest.hpp"
 
 // SB-PHYSICAL-MGA-COW-ANCHOR
 #include "copy_on_write.hpp"
 #include "catalog_record_codec.hpp"
+#include "catalog_metric_binding.hpp"
 #include "catalog_name_envelope.hpp"
 #include "catalog_page.hpp"
 #include "row_data_page.hpp"
@@ -45,6 +47,38 @@ enum class PhysicalMgaCowMutationKind : u16 {
   update,
   delete_row
 };
+
+enum class NativeRowDataStageError {
+  none, invalid_request, checkpoint_failure, allocation_failure, page_failure,
+  invalid_destination, creator_mismatch, creator_not_active, reservation_mismatch,
+  map_creator_mismatch, map_creator_not_committed, row_creator_mismatch,
+  root_mismatch, resource_exhausted, hash_failure, destination_not_empty,
+  io_failure, readback_mismatch, cluster_requires_authority, header_requires_authority,
+  creator_rollback_only
+};
+struct NativeRowDataStageReceipt {
+  scratchbird::core::platform::Uuid database_uuid, allocation_uuid, page_uuid, relation_uuid;
+  scratchbird::transaction::mga::TransactionIdentity transaction;
+  scratchbird::storage::disk::NativePageReference page;
+  std::array<scratchbird::core::platform::byte,32> sha256{};
+};
+struct NativeRowDataStageResult {
+  NativeRowDataStageError error=NativeRowDataStageError::invalid_request;
+  NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
+  scratchbird::storage::page::NativeDirectoryError directory_error=scratchbird::storage::page::NativeDirectoryError::none;
+  scratchbird::storage::page::NativeInventoryError inventory_error=scratchbird::storage::page::NativeInventoryError::none;
+  scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
+  scratchbird::storage::page::NativeRowDataError page_error=scratchbird::storage::page::NativeRowDataError::none;
+  std::optional<NativeRowDataStageReceipt> receipt;
+  bool ok() const noexcept {return error==NativeRowDataStageError::none&&receipt.has_value();}
+};
+// Actual reserved-page write/sync/readback. Does not allocate row identities,
+// decide visibility, grant relocation/archive ownership or publish/commit roots.
+NativeRowDataStageResult StageNativeRowDataPageFromOpenDevices(
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
+    const scratchbird::transaction::mga::TransactionIdentity& owner,
+    const scratchbird::storage::page::NativeRowDataPage&,u64 maximum_retained_image_bytes) noexcept;
 
 struct NativeCatalogLeafPage {
   scratchbird::storage::disk::NativeCommonPageHeader header;
@@ -332,6 +366,31 @@ NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
     u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding&,
     const scratchbird::transaction::mga::TransactionIdentity& reader,
     const scratchbird::transaction::mga::PublishedSnapshotPin&,
+    u64 maximum_retained_image_bytes) noexcept;
+
+enum class NativeMetricCatalogReadError {
+  none, invalid_request, source_failure, dependency_failure, snapshot_failure,
+  resource_exhausted, read_failure
+};
+struct NativeMetricCatalogReadResult {
+  NativeMetricCatalogReadError error = NativeMetricCatalogReadError::invalid_request;
+  NativePinnedCatalogReadResult source;
+  scratchbird::core::catalog::CatalogMetricBindingResult dependencies;
+  DiagnosticRecord diagnostic;
+  bool ok() const noexcept {
+    return error == NativeMetricCatalogReadError::none && source.ok() && dependencies.ok();
+  }
+};
+// Reads dependencies by binary identity from the real pinned local catalog.
+// It does not interpret security policy, activate a producer or record samples.
+NativeMetricCatalogReadResult ReadLocalNativeMetricCatalogFromOpenDevices(
+    const scratchbird::core::platform::Uuid& database_uuid,
+    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
+    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding&,
+    const scratchbird::transaction::mga::TransactionIdentity& reader,
+    const scratchbird::transaction::mga::PublishedSnapshotPin&,
+    const scratchbird::core::platform::Uuid& metric_uuid, u64 descriptor_generation,
     u64 maximum_retained_image_bytes) noexcept;
 
 // Path-free mutation fields for an already-owned node device. A storage

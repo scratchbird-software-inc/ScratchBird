@@ -270,6 +270,6 @@ void ReleaseNarrowQueryBindingAuthorityNoAllocV1(
 // decoding any parser bytes.  Missing and already-released receipts are
 // intentionally non-disclosing.
 void RevokeNarrowQueryBindingAuthorityForReceiptV1(
-    const std::string& statement_receipt_uuid);
+    const EngineUuid& statement_receipt_uuid);
 
 }  // namespace scratchbird::engine::internal_api

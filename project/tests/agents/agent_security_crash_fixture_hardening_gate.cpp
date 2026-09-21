@@ -335,9 +335,11 @@ void TestArhc080SecurityNegativeAndBypassCoverage() {
   Require(!insufficient.allowed && insufficient.missing_right == "OBS_AGENT_CONTROL",
           "ARHC-080 insufficient rights were accepted");
 
-  const auto security_group = Context({}, {"SEC"});
+  const auto security_group = Context({"SEC_AUTH_METRICS_READ"}, {"SEC"});
   Require(agents::AgentContextHasRight(security_group, "SEC_AUTH_METRICS_READ"),
-          "ARHC-080 SEC group did not retain security metric read");
+          "ARHC-080 evaluated security metric grant missing");
+  Require(!agents::AgentContextHasRight(Context({}, {"SEC"}), "SEC_AUTH_METRICS_READ"),
+          "ARHC-080 SEC display label granted security metric read");
   Require(!agents::AgentContextHasRight(security_group, "OBS_AGENT_CONTROL"),
           "ARHC-080 SEC group incorrectly gained generic agent control");
 

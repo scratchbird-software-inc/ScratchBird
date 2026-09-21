@@ -94,7 +94,7 @@ class TransactionalRelationStore {
   MgaRelationStoreResult LoadTriggerMetadataScope(
       const std::string& table_uuid) const;
   MgaRelationStorageDescriptorLoadResult LoadRelationDescriptor(
-      const std::string& relation_uuid) const;
+      const EngineUuid& relation_uuid) const;
 
   MgaRelationReadView BuildReadView(MgaRelationStoreResult* loaded) const;
 

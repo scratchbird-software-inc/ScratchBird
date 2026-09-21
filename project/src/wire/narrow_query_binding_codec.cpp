@@ -49,18 +49,18 @@ constexpr u32 kMaximumAliasBytes = 128;
 constexpr u32 kMaximumNameBytes = 4096;
 constexpr u32 kMaximumCodecIdBytes = 255;
 
-constexpr const char* kOperandInvalid = "SBLR.OPERAND.INVALID";
+constexpr const char* kOperandInvalid = "SBLR.OPERAND_INVALID";
 constexpr const char* kSecurityDenied = "SECURITY.ACCESS_DENIED";
-constexpr const char* kTransactionInvalid = "MGA.TRANSACTION.INVALID";
-constexpr const char* kTransactionStale = "MGA.TRANSACTION.STALE";
+constexpr const char* kTransactionInvalid = "MGA.TRANSACTION_INVALID";
+constexpr const char* kBindingStale = "SBLR.QUERY_BINDING.STALE";
 constexpr const char* kPlanInvalid = "SBLR.PLAN_TREE.INVALID_HANDLE";
 constexpr const char* kDatatypeInvalid = "DATATYPE.DESCRIPTOR.INVALID";
 constexpr const char* kProjectionExpressionInvalid =
-    "PROJECTION.EXPRESSION_VECTOR_INVALID";
+    "PROJECTION.EXPRESSION_VECTOR.INVALID";
 constexpr const char* kProjectionOutputInvalid =
-    "PROJECTION.OUTPUT_ROWSET_INVALID";
-constexpr const char* kOrderingInvalid = "SORT.ORDERING_VECTOR_INVALID";
-constexpr const char* kCollationInvalid = "SORT.COLLATION_PROFILE_INVALID";
+    "PROJECTION.OUTPUT_ROWSET.INVALID";
+constexpr const char* kOrderingInvalid = "SORT.ORDERING_VECTOR.INVALID";
+constexpr const char* kCollationInvalid = "SORT.COLLATION_PROFILE.INVALID";
 constexpr const char* kResultShapeInvalid = "RESULT_SET.SHAPE_INVALID";
 constexpr const char* kResourceExceeded = "RESOURCE.BUDGET_EXCEEDED";
 constexpr const char* kCancelled = "PROCESS.CANCELLED";
@@ -90,6 +90,10 @@ void ClearError(NarrowQueryBindingError* error) {
 bool UuidPresent(const NarrowQueryUuid& value) {
   return std::any_of(value.begin(), value.end(),
                      [](byte octet) { return octet != 0; });
+}
+
+bool UuidV7(const NarrowQueryUuid& value) {
+  return (value[6] & 0xf0u) == 0x70u && (value[8] & 0xc0u) == 0x80u;
 }
 
 bool HashPresent(const NarrowQueryHash& value) {
@@ -347,68 +351,69 @@ bool ValidateBindingStructure(const NarrowQueryBinding& binding,
                 kResourceExceeded, "post_projection_result_bound", 0,
                 "result bound exceeds the narrow-profile row maximum");
   }
-  if (!UuidPresent(binding.statement_receipt_uuid)) {
+  if (!UuidV7(binding.statement_receipt_uuid)) {
     return Fail(error, NarrowQueryBindingErrorCode::statement_receipt_mismatch,
-                kTransactionStale, "statement_receipt_uuid", 0,
-                "statement receipt is zero");
+                kBindingStale, "statement_receipt_uuid", 0,
+                "statement receipt is not a canonical system UUIDv7");
   }
-  if (!UuidPresent(binding.owning_transaction_uuid) ||
+  if (!UuidV7(binding.owning_transaction_uuid) ||
       binding.owning_local_transaction_id == 0) {
     return Fail(error, NarrowQueryBindingErrorCode::transaction_invalid,
                 kTransactionInvalid, "owning_transaction", 0,
-                "transaction identity is zero");
+                "transaction system UUIDv7 or local transaction id is invalid");
   }
-  if (!UuidPresent(binding.statement_snapshot_uuid)) {
+  if (!UuidV7(binding.statement_snapshot_uuid)) {
     return Fail(error, NarrowQueryBindingErrorCode::snapshot_mismatch,
-                kTransactionStale, "statement_snapshot_uuid", 0,
-                "statement snapshot is zero");
+                kBindingStale, "statement_snapshot_uuid", 0,
+                "statement snapshot is not a canonical system UUIDv7");
   }
-  if (!UuidPresent(binding.datatype_catalog_snapshot_uuid) ||
+  if (!UuidV7(binding.datatype_catalog_snapshot_uuid) ||
       binding.datatype_catalog_generation == 0 ||
       binding.datatype_registry_generation == 0) {
     return Fail(error, NarrowQueryBindingErrorCode::catalog_mismatch,
                 kDatatypeInvalid, "datatype_catalog_binding", 0,
-                "datatype catalog identity or generation is zero");
+                "datatype catalog system UUIDv7 or generation is invalid");
   }
-  if (!UuidPresent(binding.security_context_uuid) ||
-      !UuidPresent(binding.policy_snapshot_uuid) ||
+  if (!UuidV7(binding.security_context_uuid) ||
+      !UuidV7(binding.policy_snapshot_uuid) ||
       binding.policy_generation == 0) {
     return Fail(error, NarrowQueryBindingErrorCode::security_mismatch,
                 kSecurityDenied, "security_policy_binding", 0,
-                "security or policy identity is zero");
+                "security/policy system UUIDv7 or policy generation is invalid");
   }
-  if (!UuidPresent(binding.resource_grant_receipt_uuid) ||
+  if (!UuidV7(binding.resource_grant_receipt_uuid) ||
       binding.resource_grant_generation == 0) {
     return Fail(error, NarrowQueryBindingErrorCode::resource_grant_mismatch,
                 kResourceExceeded, "resource_grant_binding", 0,
-                "resource grant identity is zero");
+                "resource grant system UUIDv7 or generation is invalid");
   }
-  if (!UuidPresent(binding.cancellation_receipt_uuid) ||
+  if (!UuidV7(binding.cancellation_receipt_uuid) ||
       binding.cancellation_generation == 0) {
     return Fail(error,
                 NarrowQueryBindingErrorCode::cancellation_receipt_mismatch,
-                kTransactionStale, "cancellation_receipt_binding", 0,
-                "cancellation receipt identity is zero");
+                kBindingStale, "cancellation_receipt_binding", 0,
+                "cancellation receipt system UUIDv7 or generation is invalid");
   }
-  if (!UuidPresent(binding.execution_uuid) ||
-      !UuidPresent(binding.result_set_uuid) ||
-      !UuidPresent(binding.row_descriptor_uuid) ||
+  if (!UuidV7(binding.execution_uuid) ||
+      !UuidV7(binding.result_set_uuid) ||
+      !UuidV7(binding.row_descriptor_uuid) ||
       binding.row_descriptor_generation == 0) {
     return Fail(error, NarrowQueryBindingErrorCode::result_handle_mismatch,
                 kResultShapeInvalid, "result_handle", 0,
-                "result handle identity is zero");
+                "result handle system UUIDv7 or descriptor generation is invalid");
   }
-  if (!UuidPresent(binding.source_vector_uuid) ||
+  if (!UuidV7(binding.source_vector_uuid) ||
       binding.source_vector_generation == 0 ||
-      !UuidPresent(binding.output_vector_uuid) ||
+      !UuidV7(binding.output_vector_uuid) ||
       binding.output_vector_generation == 0) {
     return Fail(error, NarrowQueryBindingErrorCode::profile_shape_invalid,
                 kOperandInvalid, "vector_identity", 0,
-                "source or output vector identity is zero");
+                "source/output vector system UUIDv7 or generation is invalid");
   }
   const bool ordered =
       binding.profile == NarrowQueryProfile::ordered_projection;
   if (ordered != UuidPresent(binding.ordering_vector_uuid) ||
+      (ordered && !UuidV7(binding.ordering_vector_uuid)) ||
       (ordered ? binding.ordering_vector_generation == 0
                : binding.ordering_vector_generation != 0)) {
     return Fail(error, NarrowQueryBindingErrorCode::profile_shape_invalid,
@@ -445,16 +450,16 @@ bool ValidateBindingStructure(const NarrowQueryBinding& binding,
                   kPlanInvalid, "source_record", static_cast<u32>(index),
                   "source ordinal or alias encoding is invalid");
     }
-    if (!UuidPresent(source.source_occurrence_uuid) ||
+    if (!UuidV7(source.source_occurrence_uuid) ||
         source.source_occurrence_generation == 0 ||
-        !UuidPresent(source.relation_descriptor_uuid) ||
+        !UuidV7(source.relation_descriptor_uuid) ||
         source.relation_descriptor_generation == 0 ||
-        !UuidPresent(source.relation_object_uuid) ||
-        !UuidPresent(source.schema_uuid) || source.validated_resource_epoch == 0 ||
+        !UuidV7(source.relation_object_uuid) ||
+        !UuidV7(source.schema_uuid) || source.validated_resource_epoch == 0 ||
         !HashPresent(source.relation_projection_sha256)) {
       return Fail(error, NarrowQueryBindingErrorCode::source_identity_invalid,
                   kPlanInvalid, "source_identity", static_cast<u32>(index),
-                  "source identity generation or projection hash is zero");
+                  "source system UUIDv7, generation or projection hash is invalid");
     }
     if (!source_occurrences.emplace(source.source_occurrence_uuid,
                                     source.source_occurrence_generation).second) {
@@ -493,17 +498,17 @@ bool ValidateBindingStructure(const NarrowQueryBinding& binding,
                   "name occurrence is not the count of earlier exact names");
     }
     earlier_names.push_back(output.name);
-    if (!UuidPresent(output.output_occurrence_uuid) ||
+    if (!UuidV7(output.output_occurrence_uuid) ||
         output.output_occurrence_generation == 0 ||
-        !UuidPresent(output.source_occurrence_uuid) ||
+        !UuidV7(output.source_occurrence_uuid) ||
         output.source_occurrence_generation == 0 ||
-        !UuidPresent(output.source_column_uuid) ||
-        !UuidPresent(output.output_descriptor_uuid) ||
+        !UuidV7(output.source_column_uuid) ||
+        !UuidV7(output.output_descriptor_uuid) ||
         output.output_descriptor_generation == 0) {
       return Fail(error, NarrowQueryBindingErrorCode::output_identity_invalid,
                   kProjectionOutputInvalid, "output_identity",
                   static_cast<u32>(index),
-                  "output occurrence source or descriptor identity is zero");
+                  "output/source/descriptor system UUIDv7 or generation is invalid");
     }
     if (!output_occurrences.emplace(output.output_occurrence_uuid,
                                     output.output_occurrence_generation).second ||
@@ -525,15 +530,15 @@ bool ValidateBindingStructure(const NarrowQueryBinding& binding,
                   static_cast<u32>(index),
                   "output source occurrence is absent or stale");
     }
-    if (!UuidPresent(output.datatype_descriptor_uuid) ||
+    if (!UuidV7(output.datatype_descriptor_uuid) ||
         output.datatype_descriptor_generation == 0 ||
-        !UuidPresent(output.datatype_type_uuid) ||
+        !UuidV7(output.datatype_type_uuid) ||
         output.datatype_type_generation == 0 ||
         output.datatype_binary_type_code == 0 || output.codec_version == 0 ||
         output.codec_generation == 0) {
       return Fail(error, NarrowQueryBindingErrorCode::output_datatype_invalid,
                   kDatatypeInvalid, "output_datatype", static_cast<u32>(index),
-                  "output datatype/type/codec identity is zero");
+                  "output datatype/type system UUIDv7 or codec binding is invalid");
     }
     output_source_columns.emplace_back(
         output.source_occurrence_uuid, output.source_occurrence_generation,
@@ -546,14 +551,15 @@ bool ValidateBindingStructure(const NarrowQueryBinding& binding,
     const auto& term = binding.ordering_terms[index];
     const bool collation_present = UuidPresent(term.collation_uuid);
     if (term.term_ordinal != index ||
-        !UuidPresent(term.ordering_term_uuid) ||
+        !UuidV7(term.ordering_term_uuid) ||
         term.ordering_term_generation == 0 ||
-        !UuidPresent(term.source_occurrence_uuid) ||
+        !UuidV7(term.source_occurrence_uuid) ||
         term.source_occurrence_generation == 0 ||
-        !UuidPresent(term.source_column_uuid) ||
+        !UuidV7(term.source_column_uuid) ||
         !ValidDirection(term.direction) ||
         !ValidNullPlacement(term.null_placement) ||
-        collation_present != (term.collation_generation != 0)) {
+        collation_present != (term.collation_generation != 0) ||
+        (collation_present && !UuidV7(term.collation_uuid))) {
       return Fail(error, NarrowQueryBindingErrorCode::ordering_record_invalid,
                   kOrderingInvalid, "ordering_record", static_cast<u32>(index),
                   "ordering ordinal identity code or collation pair is invalid");
@@ -743,23 +749,23 @@ void EncodeOrdering(const NarrowQueryOrderingTerm& term,
 bool ValidateContextShape(const NarrowQueryBindingValidationContext& context,
                           bool needs_collation_validator,
                           NarrowQueryBindingError* error) {
-  if (!UuidPresent(context.statement_receipt_uuid) ||
-      !UuidPresent(context.owning_transaction_uuid) ||
+  if (!UuidV7(context.statement_receipt_uuid) ||
+      !UuidV7(context.owning_transaction_uuid) ||
       context.owning_local_transaction_id == 0 ||
-      !UuidPresent(context.statement_snapshot_uuid) ||
-      !UuidPresent(context.datatype_catalog_snapshot_uuid) ||
+      !UuidV7(context.statement_snapshot_uuid) ||
+      !UuidV7(context.datatype_catalog_snapshot_uuid) ||
       context.datatype_catalog_generation == 0 ||
       context.datatype_registry_generation == 0 ||
-      !UuidPresent(context.security_context_uuid) ||
-      !UuidPresent(context.policy_snapshot_uuid) ||
+      !UuidV7(context.security_context_uuid) ||
+      !UuidV7(context.policy_snapshot_uuid) ||
       context.policy_generation == 0 ||
-      !UuidPresent(context.resource_grant_receipt_uuid) ||
+      !UuidV7(context.resource_grant_receipt_uuid) ||
       context.resource_grant_generation == 0 ||
-      !UuidPresent(context.cancellation_receipt_uuid) ||
+      !UuidV7(context.cancellation_receipt_uuid) ||
       context.cancellation_generation == 0 ||
-      !UuidPresent(context.execution_uuid) ||
-      !UuidPresent(context.result_set_uuid) ||
-      !UuidPresent(context.row_descriptor_uuid) ||
+      !UuidV7(context.execution_uuid) ||
+      !UuidV7(context.result_set_uuid) ||
+      !UuidV7(context.row_descriptor_uuid) ||
       context.row_descriptor_generation == 0 ||
       context.maximum_total_bytes == 0 ||
       context.maximum_total_bytes > kNarrowQueryMaximumCarrierBytes ||
@@ -783,7 +789,7 @@ bool ValidateLiveContext(const NarrowQueryBinding& binding,
                 context.statement_receipt_uuid)) {
     return Fail(error,
                 NarrowQueryBindingErrorCode::statement_receipt_mismatch,
-                kTransactionStale, "statement_receipt_uuid", 0,
+                kBindingStale, "statement_receipt_uuid", 0,
                 "binding crosses the live statement receipt");
   }
   if (!SameUuid(binding.owning_transaction_uuid,
@@ -791,13 +797,13 @@ bool ValidateLiveContext(const NarrowQueryBinding& binding,
       binding.owning_local_transaction_id !=
           context.owning_local_transaction_id) {
     return Fail(error, NarrowQueryBindingErrorCode::transaction_stale,
-                kTransactionStale, "owning_transaction", 0,
+                kBindingStale, "owning_transaction", 0,
                 "binding crosses the live MGA transaction");
   }
   if (!SameUuid(binding.statement_snapshot_uuid,
                 context.statement_snapshot_uuid)) {
     return Fail(error, NarrowQueryBindingErrorCode::snapshot_mismatch,
-                kTransactionStale, "statement_snapshot_uuid", 0,
+                kBindingStale, "statement_snapshot_uuid", 0,
                 "binding crosses the live MGA snapshot");
   }
   if (!SameUuid(binding.datatype_catalog_snapshot_uuid,
@@ -854,7 +860,7 @@ bool ValidateLiveContext(const NarrowQueryBinding& binding,
       binding.cancellation_generation != context.cancellation_generation) {
     return Fail(error,
                 NarrowQueryBindingErrorCode::cancellation_receipt_mismatch,
-                kTransactionStale, "cancellation_receipt_binding", 0,
+                kBindingStale, "cancellation_receipt_binding", 0,
                 "binding crosses the live cancellation receipt");
   }
   if (!SameUuid(binding.execution_uuid, context.execution_uuid) ||

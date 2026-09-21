@@ -24,18 +24,20 @@ using scratchbird::core::platform::u64;
 enum class MetricRetentionMode {
   current_only,
   raw_and_rollup,
-  rollup_only
+  rollup_only,
+  invalid = 255
 };
 
 enum class MetricRollupGrain {
   one_minute,
   one_hour,
   one_day,
-  long_summary
+  long_summary,
+  invalid = 255
 };
 
-struct MetricRetentionPolicy {
-  std::string policy_uuid;
+// Identity-free bootstrap/input definition. Never a live policy or lookup fallback.
+struct MetricRetentionPolicyDefinition {
   std::string policy_name;
   std::string scope = "local";
   MetricRetentionMode mode = MetricRetentionMode::current_only;
@@ -50,14 +52,27 @@ struct MetricRetentionPolicy {
   bool evidence_required = true;
 };
 
+// Only catalog-owned runtime records carry identity and generation. Validation
+// checks shape/semantics, not live catalog ownership or transaction publication.
+struct MetricRetentionPolicy : MetricRetentionPolicyDefinition {
+  MetricUuid policy_uuid;
+  u64 generation = 0;
+};
+
+MetricValidationResult ValidateMetricRetentionPolicyDefinition(
+    const MetricRetentionPolicyDefinition& definition);
+bool MetricRetentionTimeExpired(u64 observation_microseconds,
+                                u64 now_microseconds,
+                                u64 retention_seconds) noexcept;
+
 const char* MetricRetentionModeName(MetricRetentionMode mode);
 const char* MetricRollupGrainName(MetricRollupGrain grain);
 MetricRetentionMode MetricRetentionModeFromName(const std::string& value);
 MetricRollupGrain MetricRollupGrainFromName(const std::string& value);
 u64 MetricRollupGrainWindowSeconds(MetricRollupGrain grain);
 MetricValidationResult ValidateMetricRetentionPolicy(const MetricRetentionPolicy& policy);
-std::vector<MetricRetentionPolicy> BaselineMetricRetentionPolicies();
-const MetricRetentionPolicy& DefaultMetricRetentionPolicyForDescriptor(const MetricDescriptor& descriptor);
-const MetricRetentionPolicy* FindBaselineMetricRetentionPolicy(const std::string& policy_name_or_uuid);
+std::vector<MetricRetentionPolicyDefinition> MetricRetentionPolicyDefinitions();
+const MetricRetentionPolicyDefinition* FindMetricRetentionPolicyDefinition(
+    const std::string& name);
 
 }  // namespace scratchbird::core::metrics

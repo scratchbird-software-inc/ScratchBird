@@ -239,8 +239,8 @@ struct AgentTypeDescriptor {
 
 struct AgentRuntimeContext {
   bool security_context_present = false;
-  // Legacy right/group trace and display-name authority is available only to
-  // explicitly marked embedded fixtures. Production adapters leave false.
+  // Legacy fixture hint retained as non-authoritative metadata only. It cannot
+  // enable trace-string or display-name privileges in any build or call path.
   bool fixture_authorization_authority = false;
   bool cluster_authority_available = false;
   bool cluster_time_majority_available = false;
@@ -257,6 +257,14 @@ struct AgentRuntimeContext {
   std::string database_uuid;
   std::string cluster_uuid;
   std::vector<std::string> rights;
+  // Engine-materialized group identity, never a display name or UUID text.
+  // The legacy `groups` field below contains display labels only and cannot
+  // confer rights. Production authorization adapters leave it empty.
+  std::vector<scratchbird::core::platform::Uuid> effective_group_uuids;
+  // Exact scope of the engine-evaluated rights projection; a nil cluster
+  // target permits only global grants before unavailable-provider routing.
+  scratchbird::core::platform::Uuid authorization_target_uuid;
+  bool authorization_cluster_scope = false;
   std::vector<std::string> groups;
   std::vector<std::string> trace_tags;
   u64 monotonic_now_microseconds = 0;

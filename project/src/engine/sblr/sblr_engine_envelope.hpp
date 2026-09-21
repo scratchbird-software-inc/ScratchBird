@@ -232,6 +232,12 @@ enum class SblrValueKind : std::uint16_t {
   catalog_epoch_check_descriptor = 211,
   database_attach_descriptor = 212,
   relational_type_descriptor = 213,
+  relational_expression = 214,
+  relational_node_binding = 215,
+  relational_window_invocation = 216,
+  relational_window_definition = 217,
+  relational_property = 218,
+  relational_row_pattern = 219,
 };
 
 struct SblrLifecycleCreateDatabaseDescriptorV1 {

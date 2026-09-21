@@ -26,6 +26,7 @@ add_library(sb_storage_database
   local_transaction_store.cpp
   physical_mga_cow_store.cpp
   native_catalog_leaf_staging.cpp
+  native_row_data_staging.cpp
   native_catalog_root_staging.cpp
   native_btree_page_staging.cpp
   native_catalog_version_staging.cpp

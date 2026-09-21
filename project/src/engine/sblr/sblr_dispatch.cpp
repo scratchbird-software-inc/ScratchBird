@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_dispatch.hpp"
+#include "sblr_bound_object_identity.hpp"
 #include "sblr_projection_value_runtime.hpp"
 
 #include <stdexcept>
@@ -397,9 +398,9 @@ BoundedModelCompositionShapeV1 ClassifyBoundedModelCompositionV1(
       const auto expected_bound_name =
           family == BoundedModelFamilyV1::kSpatial ||
                   family == BoundedModelFamilyV1::kColumnar
-              ? std::optional<std::string>{
+              ? std::optional<api::EngineUuid>{
                     source->required_object_uuids.front()}
-              : std::optional<std::string>{};
+              : std::optional<api::EngineUuid>{};
       if (root->expression_kind !=
               api::RelationalExpressionKind::kFunctionCall ||
           root->function_uuid.has_value() ||
@@ -584,7 +585,7 @@ struct CanonicalQueryRouteResult {
   std::size_t physical_node_count{0};
   std::size_t canonical_result_column_count{0};
   std::size_t canonical_result_row_count{0};
-  std::string selected_plan_uuid;
+  api::EngineUuid selected_plan_uuid;
   std::string canonical_result_bytes;
   api::EngineApiResult api_result;
 };
@@ -871,97 +872,7 @@ bool ParseRelationalStringList(std::string_view encoded,
   return true;
 }
 
-bool ParseRelationalOrderingTerms(
-    std::string_view encoded,
-    std::vector<api::RelationalPropertyOrderingTerm>* terms) {
-  if (terms == nullptr || encoded.empty()) return false;
-  terms->clear();
-  if (encoded == "-") return true;
-  std::size_t start = 0;
-  while (start <= encoded.size()) {
-    const auto separator = encoded.find(',', start);
-    const auto token = encoded.substr(
-        start,
-        separator == std::string_view::npos ? encoded.size() - start
-                                            : separator - start);
-    std::array<std::string_view, 4> fields{};
-    std::size_t field_start = 0;
-    bool fields_valid = true;
-    for (std::size_t index = 0; index < fields.size(); ++index) {
-      const auto field_separator = token.find(':', field_start);
-      if (index + 1 == fields.size()) {
-        if (field_separator != std::string_view::npos) {
-          fields_valid = false;
-          break;
-        }
-        fields[index] = token.substr(field_start);
-      } else {
-        if (field_separator == std::string_view::npos) {
-          fields_valid = false;
-          break;
-        }
-        fields[index] =
-            token.substr(field_start, field_separator - field_start);
-        field_start = field_separator + 1;
-      }
-    }
-    std::uint64_t expression_id = 0;
-    std::uint64_t direction = 0;
-    std::uint64_t null_placement = 0;
-    if (!fields_valid ||
-        !ParseCanonicalUnsigned(fields[0],
-                                std::numeric_limits<std::uint32_t>::max(),
-                                &expression_id) ||
-        !ParseCanonicalUnsigned(fields[1],
-                                std::numeric_limits<std::uint8_t>::max(),
-                                &direction) ||
-        !ParseCanonicalUnsigned(fields[2],
-                                std::numeric_limits<std::uint8_t>::max(),
-                                &null_placement)) {
-      return false;
-    }
-    api::RelationalPropertyOrderingTerm term;
-    term.expression_id = static_cast<std::uint32_t>(expression_id);
-    term.direction =
-        static_cast<api::RelationalPropertySortDirection>(direction);
-    term.null_placement =
-        static_cast<api::RelationalPropertyNullPlacement>(null_placement);
-    if (fields[3] != "-") term.collation_uuid = fields[3];
-    terms->push_back(std::move(term));
-    if (terms->size() > 524288) return false;
-    if (separator == std::string_view::npos) break;
-    start = separator + 1;
-  }
-  return true;
-}
 
-bool ParseRelationalWindowBound(
-    const std::string_view encoded,
-    std::optional<api::RelationalWindowFrameBoundRecord>* bound) {
-  if (bound == nullptr) return false;
-  if (encoded == "-") {
-    bound->reset();
-    return true;
-  }
-  const auto separator = encoded.find(':');
-  if (separator == std::string_view::npos ||
-      encoded.find(':', separator + 1) != std::string_view::npos) {
-    return false;
-  }
-  std::uint64_t kind = 0;
-  api::RelationalWindowFrameBoundRecord decoded;
-  if (!ParseCanonicalUnsigned(encoded.substr(0, separator),
-                              std::numeric_limits<std::uint8_t>::max(),
-                              &kind) ||
-      !ParseOptionalCanonicalU32(encoded.substr(separator + 1),
-                                &decoded.offset_expression_id)) {
-    return false;
-  }
-  decoded.bound_kind =
-      static_cast<api::RelationalWindowFrameBoundKind>(kind);
-  *bound = std::move(decoded);
-  return true;
-}
 
 // QOW-ROUTE-STAGE-QRY-003-V1
 TypedPlanOperationDecodeResult TypedPlanOperationRequest(
@@ -1436,42 +1347,35 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       decoded.request.relational_dag.nodes.push_back(std::move(node));
       continue;
     }
-    if (operand.type == "relational_node_binding_v1") {
-      if (operand.value.size() > 65536) {
-        decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
-        decoded.detail = "relational node binding transport limit exceeded";
-        return decoded;
-      }
-      std::uint64_t node_id = 0;
-      std::array<std::string_view, 5> fields{};
-      if (!ParseCanonicalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(),
-              &node_id) ||
-          !SplitRelationalFields(operand.value, &fields)) {
+    if (operand.type == "relational_node_binding_v2") {
+      RelationalNodeBindingRecord binding;
+      if (!operand.value.empty() || operand.value_kind != SblrValueKind::relational_node_binding ||
+          !DecodeRelationalNodeBindingV1(operand.value_body.data(), operand.value_body.size(), &binding) ||
+          operand.name != "slot_" + std::to_string(binding.node_id)) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
-        decoded.detail = "malformed relational node binding record";
+        decoded.detail = "malformed binary relational node binding";
         return decoded;
       }
       const auto node = std::ranges::find_if(
           decoded.request.relational_dag.nodes, [&](const auto& candidate) {
-            return candidate.node_id == node_id;
+            return candidate.node_id == binding.node_id;
           });
-      if (node == decoded.request.relational_dag.nodes.end() ||
-          !node->semantic_variant_id.empty() ||
-          !DecodeCanonicalHex(fields[0], &node->semantic_variant_id) ||
-          !ParseRelationalHandleList(fields[1],
-                                     &node->bound_expression_ids) ||
-          !ParseRelationalStringList(fields[2],
-                                     &node->required_object_uuids) ||
-          !ParseRelationalStringList(fields[3],
-                                     &node->required_property_uuids) ||
-          !ParseRelationalStringList(fields[4],
-                                     &node->delivered_property_uuids)) {
+      if (node == decoded.request.relational_dag.nodes.end() || !node->semantic_variant_id.empty()) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
         decoded.detail = "invalid or out-of-order relational node binding";
         return decoded;
       }
+      node->semantic_variant_id = std::move(binding.semantic_variant_id);
+      node->bound_expression_ids = std::move(binding.bound_expression_ids);
+      node->required_object_uuids = std::move(binding.required_object_uuids);
+      node->required_property_uuids = std::move(binding.required_property_uuids);
+      node->delivered_property_uuids = std::move(binding.delivered_property_uuids);
       continue;
+    }
+    if (operand.type == "relational_node_binding_v1") {
+      decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+      decoded.detail = "text relational node bindings are not executable";
+      return decoded;
     }
     if (operand.type == "relational_table_function_v1") {
       if (operand.value.size() > 65536) {
@@ -1503,105 +1407,35 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       }
       continue;
     }
-    if (operand.type == "relational_row_pattern_v1") {
-      if (decoded.request.relational_dag.row_patterns.size() >= 131072 ||
-          operand.value.size() > 65536) {
+    if (operand.type == "relational_row_pattern_v2") {
+      if (decoded.request.relational_dag.row_patterns.size() >= 131072) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
         decoded.detail = "row-pattern descriptor transport limit exceeded";
         return decoded;
       }
-      std::uint64_t node_id = 0;
-      std::uint64_t pattern_id = 0;
-      std::uint64_t rows_per_match = 0;
-      std::uint64_t after_match_skip = 0;
-      std::uint64_t maximum_partition_rows = 0;
-      std::uint64_t maximum_active_states = 0;
-      std::uint64_t maximum_output_rows = 0;
-      std::array<std::string_view, 12> fields{};
-      if (!ParseCanonicalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(),
-              &node_id) ||
-          !SplitRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalUnsigned(
-              fields[0], std::numeric_limits<std::uint32_t>::max(),
-              &pattern_id) ||
-          !ParseCanonicalUnsigned(
-              fields[5], std::numeric_limits<std::uint8_t>::max(),
-              &rows_per_match) ||
-          !ParseCanonicalUnsigned(
-              fields[6], std::numeric_limits<std::uint8_t>::max(),
-              &after_match_skip) ||
-          !ParseCanonicalUnsigned(
-              fields[8], std::numeric_limits<std::uint32_t>::max(),
-              &maximum_partition_rows) ||
-          !ParseCanonicalUnsigned(
-              fields[9], std::numeric_limits<std::uint32_t>::max(),
-              &maximum_active_states) ||
-          !ParseCanonicalUnsigned(
-              fields[10], std::numeric_limits<std::uint32_t>::max(),
-              &maximum_output_rows) ||
-          (fields[11] != "0" && fields[11] != "1")) {
-        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
-        decoded.detail = "malformed row-pattern descriptor";
+      api::RelationalRowPatternRecord pattern;
+      if (!operand.value.empty() || operand.value_kind != SblrValueKind::relational_row_pattern ||
+          !DecodeRelationalRowPatternV1(operand.value_body.data(), operand.value_body.size(), &pattern) ||
+          operand.name != "slot_" + std::to_string(pattern.pattern_id)) {
+        decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+        decoded.detail = "malformed binary row-pattern descriptor";
         return decoded;
       }
-      const auto node = std::ranges::find_if(
-          decoded.request.relational_dag.nodes, [&](const auto& candidate) {
-            return candidate.node_id == node_id;
-          });
-      api::RelationalRowPatternRecord pattern;
-      pattern.pattern_id = static_cast<std::uint32_t>(pattern_id);
-      pattern.relation_node_id = static_cast<std::uint32_t>(node_id);
-      pattern.rows_per_match =
-          static_cast<api::RelationalRowPatternRowsPerMatch>(rows_per_match);
-      pattern.after_match_skip =
-          static_cast<api::RelationalRowPatternAfterMatchSkip>(
-              after_match_skip);
-      pattern.maximum_partition_rows =
-          static_cast<std::uint32_t>(maximum_partition_rows);
-      pattern.maximum_active_states =
-          static_cast<std::uint32_t>(maximum_active_states);
-      pattern.maximum_output_rows =
-          static_cast<std::uint32_t>(maximum_output_rows);
-      pattern.stable_row_identity_tie_break_allowed = fields[11] == "1";
-      std::array<std::string_view, 6> variable_fields{};
-      std::uint64_t minimum_occurrences = 0;
-      std::optional<std::uint32_t> maximum_occurrences;
-      std::optional<std::uint32_t> define_expression_id;
-      api::RelationalRowPatternVariableRecord variable;
-      if (node == decoded.request.relational_dag.nodes.end() ||
-          node->node_kind != api::RelationalDagNodeKind::kMatchRecognize ||
-          !ParseRelationalHandleList(fields[1],
-                                     &pattern.partition_expression_ids) ||
-          !ParseRelationalOrderingTerms(fields[2], &pattern.ordering_terms) ||
-          !SplitRelationalSubfields(fields[3], ':', &variable_fields) ||
-          !DecodeCanonicalHex(variable_fields[0],
-                              &variable.canonical_name_key) ||
-          !ParseCanonicalUnsigned(
-              variable_fields[1], std::numeric_limits<std::uint32_t>::max(),
-              &minimum_occurrences) ||
-          !ParseOptionalCanonicalU32(variable_fields[2],
-                                     &maximum_occurrences) ||
-          (variable_fields[3] != "0" && variable_fields[3] != "1") ||
-          !ParseOptionalCanonicalU32(variable_fields[4],
-                                     &define_expression_id) ||
-          (variable_fields[5] != "0" && variable_fields[5] != "1") ||
-          !ParseRelationalHandleList(fields[4],
-                                     &pattern.measure_expression_ids) ||
-          !DecodeOptionalCanonicalHex(fields[7], &pattern.skip_target_key)) {
+      const auto node = std::ranges::find_if(decoded.request.relational_dag.nodes, [&](const auto& candidate) {
+        return candidate.node_id == pattern.relation_node_id;
+      });
+      if (node == decoded.request.relational_dag.nodes.end() || node->node_kind != api::RelationalDagNodeKind::kMatchRecognize) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
         decoded.detail = "invalid or out-of-order row-pattern binding";
         return decoded;
       }
-      variable.minimum_occurrences =
-          static_cast<std::uint32_t>(minimum_occurrences);
-      variable.maximum_occurrences = maximum_occurrences;
-      variable.reluctant = variable_fields[3] == "1";
-      variable.define_expression_id = define_expression_id;
-      variable.define_always_true = variable_fields[5] == "1";
-      pattern.variables.push_back(std::move(variable));
       decoded.request.relational_dag.row_patterns.push_back(std::move(pattern));
       continue;
+    }
+    if (operand.type == "relational_row_pattern_v1") {
+      decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+      decoded.detail = "text relational row patterns are not executable";
+      return decoded;
     }
     if (operand.type == "relational_descriptor_v3") {
       if (decoded.request.relational_dag.descriptors.size() >= 524288) {
@@ -1662,67 +1496,28 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       decoded.request.relational_dag.descriptors.push_back(std::move(descriptor));
       continue;
     }
-    if (operand.type == "relational_expression_v1") {
-      if (decoded.request.relational_dag.expressions.size() >= 524288 ||
-          operand.value.size() > 65536) {
+    if (operand.type == "relational_expression_v2") {
+      if (decoded.request.relational_dag.expressions.size() >= 524288) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
         decoded.detail = "relational expression transport limit exceeded";
         return decoded;
       }
-      std::uint64_t expression_id = 0;
-      std::uint64_t expression_kind = 0;
-      std::uint64_t descriptor_id = 0;
-      std::array<std::string_view, 8> fields{};
-      if (!ParseCanonicalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(),
-              &expression_id) ||
-          !SplitRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalUnsigned(
-              fields[0], std::numeric_limits<std::uint8_t>::max(),
-              &expression_kind) ||
-          !ParseCanonicalUnsigned(
-              fields[2], std::numeric_limits<std::uint32_t>::max(),
-              &descriptor_id)) {
-        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
-        decoded.detail = "malformed relational expression record";
-        return decoded;
-      }
       api::RelationalExpressionRecord expression;
-      expression.expression_id = static_cast<std::uint32_t>(expression_id);
-      expression.expression_kind =
-          static_cast<api::RelationalExpressionKind>(expression_kind);
-      expression.result_descriptor_id =
-          static_cast<std::uint32_t>(descriptor_id);
-      if (!ParseRelationalHandleList(fields[1],
-                                     &expression.child_expression_ids)) {
-        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
-        decoded.detail = "malformed relational expression children";
+      if (operand.value_kind != SblrValueKind::relational_expression ||
+          !operand.value.empty() ||
+          !DecodeRelationalExpressionV1(operand.value_body.data(), operand.value_body.size(), &expression) ||
+          operand.name != "slot_" + std::to_string(expression.expression_id)) {
+        decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+        decoded.detail = "malformed binary relational expression or occurrence handle";
         return decoded;
       }
-      if (fields[3] != "-") expression.function_uuid = std::string(fields[3]);
-      if (fields[4] != "-") expression.bound_name_uuid = std::string(fields[4]);
-      if (fields[5] != "-") {
-        std::uint64_t literal_kind = 0;
-        if (!ParseCanonicalUnsigned(
-                fields[5], std::numeric_limits<std::uint8_t>::max(),
-                &literal_kind)) {
-          decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
-          decoded.detail = "malformed relational literal kind";
-          return decoded;
-        }
-        expression.literal_kind =
-            static_cast<api::RelationalLiteralKind>(literal_kind);
-      }
-      if (!DecodeOptionalCanonicalHex(fields[6], &expression.operator_name) ||
-          !DecodeOptionalCanonicalHex(
-              fields[7], &expression.literal_or_parameter_ref)) {
-        decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
-        decoded.detail = "malformed relational expression typed fields";
-        return decoded;
-      }
-      decoded.request.relational_dag.expressions.push_back(
-          std::move(expression));
+      decoded.request.relational_dag.expressions.push_back(std::move(expression));
       continue;
+    }
+    if (operand.type == "relational_expression_v1") {
+      decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+      decoded.detail = "text relational expression carriers are not executable";
+      return decoded;
     }
     if (operand.type == "relational_output_v1") {
       if (decoded.request.relational_dag.outputs.size() >= 524288 ||
@@ -1824,212 +1619,71 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
           std::move(grouping_set));
       continue;
     }
-    if (operand.type == "relational_window_definition_v1") {
-      if (decoded.request.relational_dag.window_definitions.size() >= 524288 ||
-          operand.value.size() > 65536) {
+    if (operand.type == "relational_window_definition_v2") {
+      if (decoded.request.relational_dag.window_definitions.size() >= 524288) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
         decoded.detail = "relational window-definition transport limit exceeded";
         return decoded;
       }
-      std::array<std::string_view, 9> fields{};
-      std::uint64_t window_id = 0;
-      std::uint64_t node_id = 0;
-      std::uint64_t frame_unit = 0;
-      std::uint64_t exclusion = 0;
       api::RelationalWindowDefinitionRecord definition;
-      if (!ParseCanonicalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(),
-              &window_id) ||
-          !SplitRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalUnsigned(
-              fields[0], std::numeric_limits<std::uint32_t>::max(),
-              &node_id) ||
-          !DecodeOptionalCanonicalHex(fields[1],
-                                      &definition.canonical_name_key) ||
-          !ParseOptionalCanonicalU32(fields[2],
-                                     &definition.inherited_window_id) ||
-          !ParseRelationalHandleList(fields[3],
-                                     &definition.partition_expression_ids) ||
-          !ParseRelationalOrderingTerms(fields[4],
-                                        &definition.ordering_terms) ||
-          (fields[5] != "-" &&
-           !ParseCanonicalUnsigned(
-               fields[5], std::numeric_limits<std::uint8_t>::max(),
-               &frame_unit)) ||
-          !ParseRelationalWindowBound(fields[6], &definition.frame_start) ||
-          !ParseRelationalWindowBound(fields[7], &definition.frame_end) ||
-          !ParseCanonicalUnsigned(
-              fields[8], std::numeric_limits<std::uint8_t>::max(),
-              &exclusion)) {
+      if (!operand.value.empty() || operand.value_kind != SblrValueKind::relational_window_definition ||
+          !DecodeRelationalWindowDefinitionV1(operand.value_body.data(), operand.value_body.size(), &definition) ||
+          operand.name != "slot_" + std::to_string(definition.window_id)) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
-        decoded.detail = "malformed relational window-definition record";
+        decoded.detail = "malformed binary relational window definition";
         return decoded;
       }
-      definition.window_id = static_cast<std::uint32_t>(window_id);
-      definition.relation_node_id = static_cast<std::uint32_t>(node_id);
-      if (fields[5] != "-") {
-        definition.frame_unit =
-            static_cast<api::RelationalWindowFrameUnit>(frame_unit);
-      }
-      definition.exclusion =
-          static_cast<api::RelationalWindowFrameExclusion>(exclusion);
-      decoded.request.relational_dag.window_definitions.push_back(
-          std::move(definition));
+      decoded.request.relational_dag.window_definitions.push_back(std::move(definition));
       continue;
     }
-    if (operand.type == "relational_window_invocation_v1") {
-      if (decoded.request.relational_dag.window_invocations.size() >= 524288 ||
-          operand.value.size() > 65536) {
+    if (operand.type == "relational_window_definition_v1") {
+      decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+      decoded.detail = "text relational window definitions are not executable";
+      return decoded;
+    }
+    if (operand.type == "relational_window_invocation_v2") {
+      if (decoded.request.relational_dag.window_invocations.size() >= 524288) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
         decoded.detail = "relational window-invocation transport limit exceeded";
         return decoded;
       }
-      std::array<std::string_view, 9> fields{};
-      std::uint64_t invocation_id = 0;
-      std::uint64_t node_id = 0;
-      std::uint64_t expression_id = 0;
-      std::uint64_t definition_id = 0;
-      std::uint64_t abi_version = 0;
-      std::uint64_t descriptor_id = 0;
       api::RelationalWindowInvocationRecord invocation;
-      if (!ParseCanonicalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(),
-              &invocation_id) ||
-          !SplitRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalUnsigned(
-              fields[0], std::numeric_limits<std::uint32_t>::max(),
-              &node_id) ||
-          !ParseCanonicalUnsigned(
-              fields[1], std::numeric_limits<std::uint32_t>::max(),
-              &expression_id) ||
-          !ParseCanonicalUnsigned(
-              fields[2], std::numeric_limits<std::uint32_t>::max(),
-              &definition_id) ||
-          !ParseCanonicalUnsigned(
-              fields[3], std::numeric_limits<std::uint16_t>::max(),
-              &abi_version) ||
-          !DecodeCanonicalHex(fields[4], &invocation.builtin_id) ||
-          !IsCanonicalNonNilUuid(fields[5]) ||
-          !ParseCanonicalUnsigned(
-              fields[6], std::numeric_limits<std::uint32_t>::max(),
-              &descriptor_id) ||
-          !DecodeCanonicalHex(fields[7], &invocation.output_name_utf8) ||
-          !ParseRelationalHandleList(fields[8],
-                                     &invocation.argument_expression_ids)) {
+      if (!operand.value.empty() || operand.value_kind != SblrValueKind::relational_window_invocation ||
+          !DecodeRelationalWindowInvocationV1(operand.value_body.data(), operand.value_body.size(), &invocation) ||
+          operand.name != "slot_" + std::to_string(invocation.invocation_id)) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
-        decoded.detail = "malformed relational window-invocation record";
+        decoded.detail = "malformed binary relational window invocation";
         return decoded;
       }
-      invocation.invocation_id = static_cast<std::uint32_t>(invocation_id);
-      invocation.relation_node_id = static_cast<std::uint32_t>(node_id);
-      invocation.function_expression_id =
-          static_cast<std::uint32_t>(expression_id);
-      invocation.window_definition_id =
-          static_cast<std::uint32_t>(definition_id);
-      invocation.function_abi_version =
-          static_cast<std::uint16_t>(abi_version);
-      invocation.function_uuid = fields[5];
-      invocation.result_descriptor_id =
-          static_cast<std::uint32_t>(descriptor_id);
-      decoded.request.relational_dag.window_invocations.push_back(
-          std::move(invocation));
+      decoded.request.relational_dag.window_invocations.push_back(std::move(invocation));
       continue;
     }
-    if (operand.type == "relational_property_v1" ||
-        operand.type == "relational_property_v2") {
-      if (decoded.request.relational_dag.properties.size() >= 524288 ||
-          operand.value.size() > 65536) {
+    if (operand.type == "relational_window_invocation_v1") {
+      decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+      decoded.detail = "text relational window invocations are not executable";
+      return decoded;
+    }
+    if (operand.type == "relational_property_v3") {
+      if (decoded.request.relational_dag.properties.size() >= 524288) {
         decoded.diagnostic_id = "SBLR.PLAN_TREE.RESOURCE_LIMIT";
         decoded.detail = "relational property transport limit exceeded";
         return decoded;
       }
-      std::uint64_t property_kind = 0;
-      std::uint64_t origin_node_id = 0;
       api::RelationalPropertyRecord property;
-      property.property_uuid = operand.name;
-      const auto parse_common = [&](const auto& fields) {
-        return !operand.name.empty() &&
-               ParseCanonicalUnsigned(
-                   fields[0], std::numeric_limits<std::uint8_t>::max(),
-                   &property_kind) &&
-               ParseCanonicalUnsigned(
-                   fields[1], std::numeric_limits<std::uint32_t>::max(),
-                   &origin_node_id) &&
-               ParseRelationalHandleList(fields[2],
-                                         &property.expression_ids) &&
-               ParseRelationalOrderingTerms(fields[3],
-                                             &property.ordering_terms) &&
-               ParseRelationalStringList(
-                   fields[4], &property.dependency_property_uuids);
-      };
-      bool parsed = false;
-      if (operand.type == "relational_property_v1") {
-        std::array<std::string_view, 6> fields{};
-        parsed = SplitRelationalFields(operand.value, &fields) &&
-                 parse_common(fields);
-        if (parsed && fields[5] != "-") {
-          property.window_frame_descriptor_uuid = fields[5];
-        }
-      } else {
-        std::array<std::string_view, 13> fields{};
-        std::uint64_t distribution_kind = 0;
-        std::uint64_t materialization_kind = 0;
-        std::uint64_t rewindability_kind = 0;
-        std::uint64_t locality_kind = 0;
-        std::uint64_t security_visibility_generation = 0;
-        parsed = SplitRelationalFields(operand.value, &fields) &&
-                 parse_common(fields) &&
-                 ParseCanonicalUnsigned(
-                     fields[6], std::numeric_limits<std::uint8_t>::max(),
-                     &distribution_kind) &&
-                 ParseCanonicalUnsigned(
-                     fields[7], std::numeric_limits<std::uint8_t>::max(),
-                     &materialization_kind) &&
-                 ParseCanonicalUnsigned(
-                     fields[8], std::numeric_limits<std::uint8_t>::max(),
-                     &rewindability_kind) &&
-                 ParseCanonicalUnsigned(
-                     fields[9], std::numeric_limits<std::uint8_t>::max(),
-                     &locality_kind) &&
-                 ParseCanonicalUnsigned(
-                     fields[12], std::numeric_limits<std::uint64_t>::max(),
-                     &security_visibility_generation);
-        if (parsed) {
-          if (fields[5] != "-") {
-            property.window_frame_descriptor_uuid = fields[5];
-          }
-          property.distribution_kind =
-              static_cast<api::RelationalPropertyDistributionKind>(
-                  distribution_kind);
-          property.materialization_kind =
-              static_cast<api::RelationalPropertyMaterializationKind>(
-                  materialization_kind);
-          property.rewindability_kind =
-              static_cast<api::RelationalPropertyRewindabilityKind>(
-                  rewindability_kind);
-          property.locality_kind =
-              static_cast<api::RelationalPropertyLocalityKind>(locality_kind);
-          if (fields[10] != "-") {
-            property.locality_uuid = fields[10];
-          }
-          if (fields[11] != "-") {
-            property.security_visibility_context_uuid = fields[11];
-          }
-          property.security_visibility_generation =
-              security_visibility_generation;
-        }
-      }
-      if (!parsed) {
-        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-PROPERTY-IDENTITY-V1";
-        decoded.detail = "malformed relational property record";
+      if (operand.name != "property" || !operand.value.empty() ||
+          operand.value_kind != SblrValueKind::relational_property ||
+          !DecodeRelationalPropertyV1(operand.value_body.data(), operand.value_body.size(), &property)) {
+        decoded.diagnostic_id = "QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1";
+        decoded.detail = "malformed binary relational property record";
         return decoded;
       }
-      property.property_kind =
-          static_cast<api::RelationalPropertyKind>(property_kind);
-      property.origin_node_id = static_cast<std::uint32_t>(origin_node_id);
-      decoded.request.relational_dag.properties.push_back(
-          std::move(property));
+      decoded.request.relational_dag.properties.push_back(std::move(property));
       continue;
+    }
+    if (operand.type == "relational_property_v1" || operand.type == "relational_property_v2") {
+      decoded.diagnostic_id = "SBLR.OPERAND_INVALID";
+      decoded.detail = "text relational properties are not executable";
+      return decoded;
     }
 
     decoded.diagnostic_id = "SBLR.PLAN_TREE.INVALID_HANDLE";
@@ -2044,9 +1698,6 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       decoded.diagnostic_id="SBLR.OPERAND_INVALID";
       decoded.detail="SBXN literal reference bijection failed";return decoded;
     }
-    const auto uuid_text=[](const std::array<std::uint8_t,16>& bytes){
-      constexpr char hex[]="0123456789abcdef";std::string out;out.reserve(36);
-      for(std::size_t i=0;i<bytes.size();++i){if(i==4||i==6||i==8||i==10)out.push_back('-');out.push_back(hex[bytes[i]>>4]);out.push_back(hex[bytes[i]&15]);}return out;};
     std::vector<bool> contextual_mapping_used(
         contextual_execute.has_value()
             ? contextual_execute->mappings.size()
@@ -2066,7 +1717,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       }
       const auto node=std::ranges::find_if(literal_node_table->table.nodes,
           [&](const auto& candidate){return candidate.node_id==reference.node_id;});
-      const auto descriptor_uuid=uuid_text(reference.descriptor_uuid);
+      const api::EngineUuid descriptor_uuid{reference.descriptor_uuid};
       std::optional<std::size_t> contextual_mapping_index;
       if (contextual_execute.has_value()) {
         for (std::size_t index = 0;
@@ -2215,17 +1866,6 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       decoded.detail = "SBPN parameter reference/value-set bijection failed";
       return decoded;
     }
-    const auto uuid_text = [](const std::array<std::uint8_t,16>& bytes) {
-      constexpr char hex[] = "0123456789abcdef";
-      std::string out;
-      out.reserve(36);
-      for (std::size_t i = 0; i < bytes.size(); ++i) {
-        if (i == 4 || i == 6 || i == 8 || i == 10) out.push_back('-');
-        out.push_back(hex[bytes[i] >> 4]);
-        out.push_back(hex[bytes[i] & 15]);
-      }
-      return out;
-    };
     for (const auto& [expression_id, reference] : parameter_references) {
       if (dispatch_request.context.query_cancellation_requested &&
           dispatch_request.context.query_cancellation_requested()) {
@@ -2248,7 +1888,7 @@ TypedPlanOperationDecodeResult TypedPlanOperationRequest(
       }
       const auto& value =
           dispatch_request.parameter_value_set->records[reference.slot_ordinal];
-      const auto descriptor_uuid = uuid_text(value.slot_uuid);
+      const api::EngineUuid descriptor_uuid{value.slot_uuid};
       const auto joined_scan_count = std::ranges::count_if(
           decoded.request.relational_dag.nodes, [](const auto& candidate) {
             return candidate.node_kind == api::RelationalDagNodeKind::kScan;
@@ -3217,6 +2857,7 @@ std::string SerializeSblrDispatchResultToJson(
     const SblrDispatchResult& result) {
   std::ostringstream out;
   out << "{\"accepted\":" << (result.accepted ? "true" : "false")
+      << ",\"resource_exhausted\":" << (result.resource_exhausted ? "true" : "false")
       << ",\"envelope_validated\":"
       << (result.envelope_validated ? "true" : "false")
       << ",\"dispatched_to_api\":"
@@ -5567,6 +5208,11 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
   }
 
   for (const auto& operand : request.envelope.operands) {
+    // Dispatch has already validated these binary identities and projected
+    // the target. Keep the remaining roles in their typed envelope; never
+    // convert them into empty or textual option-envelope identities.
+    if (IsBoundObjectIdentityRole(operand.name) || IsRelatedObjectIdentityRole(operand.name) ||
+        IsProjectionFunctionIdentityRole(operand.name)) continue;
     const auto operand_value = OperandExecutionValue(operand);
     const bool row_field = operand.type == "row_field" ||
                            operand.type.starts_with("row_field:");
@@ -5633,10 +5279,6 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
       api::SecurityOptionValue(api_request, "current_role_uuid:");
   if (!current_role_uuid.empty()) {
     api_request.context.current_role_uuid = current_role_uuid;
-  }
-  if (api_request.target_object.uuid.is_nil()) {
-    api_request.target_object.uuid =
-        api::SecurityOptionValue(api_request, "target_object_uuid:");
   }
   if (api_request.target_object.object_kind.empty()) {
     api_request.target_object.object_kind =
@@ -7495,19 +7137,10 @@ api::EngineCreateStatisticsRequest TypedCreateStatisticsRequest(const SblrDispat
   api::EngineCreateStatisticsRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.target_table = DispatchTargetOfKind(base, "table");
-  if (typed.target_table.uuid.is_nil()) {
-    typed.target_table.uuid = api::SecurityOptionValue(base, "statistics_target_uuid:");
-    typed.target_table.object_kind = api::SecurityOptionValue(base, "statistics_target_kind:");
-  }
-  if (typed.target_table.uuid.is_nil()) {
-    typed.target_table.uuid = api::SecurityOptionValue(base, "target_table_uuid:");
-    typed.target_table.object_kind = "table";
-  }
-  if (typed.target_table.object_kind.empty()) { typed.target_table.object_kind = "table"; }
-  if (base.target_object.object_kind == "statistics") {
-    typed.requested_statistics_uuid = base.target_object.uuid;
-  }
+  // The bound target is the existing table, never the statistics being created.
+  // The catalog validates table authority and allocates the new object identity.
+  typed.target_table = base.target_object;
+  typed.target_table.object_kind = "table";
   typed.statistics_names = base.localized_names;
   for (const auto& option : base.option_envelopes) {
     if (option.rfind("statistics_kind:", 0) == 0) {
@@ -7527,24 +7160,9 @@ api::EngineCreateIndexRequest TypedCreateIndexRequest(const SblrDispatchRequest&
   api::EngineCreateIndexRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  api::EngineObjectReference target_table = DispatchTargetOfKind(base, "table");
-  if (target_table.uuid.is_nil()) {
-    target_table.uuid = api::SecurityOptionValue(base, "index_target_uuid:");
-    target_table.object_kind = api::SecurityOptionValue(base, "index_target_kind:");
-  }
-  if (target_table.uuid.is_nil()) {
-    target_table.uuid = api::SecurityOptionValue(base, "target_table_uuid:");
-    target_table.object_kind = "table";
-  }
-  if (target_table.object_kind.empty()) target_table.object_kind = "table";
-  if (!target_table.uuid.is_nil()) typed.target_object = target_table;
+  typed.target_object.object_kind = "table";
   if (typed.indexes.empty()) {
     api::EngineIndexDefinition index;
-    index.requested_index_uuid = api::SecurityOptionValue(base, "index_object_uuid:");
-    if (index.requested_index_uuid.is_nil() &&
-        base.target_object.object_kind == "index") {
-      index.requested_index_uuid = base.target_object.uuid;
-    }
     const std::string name = [&]() {
       const std::string index_name = api::SecurityOptionValue(base, "index_name:");
       if (!index_name.empty()) return index_name;
@@ -7771,18 +7389,8 @@ TRequest TypedCreateExecutableObjectRequest(const SblrDispatchRequest& request,
   TRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  if (typed.target_object.uuid.is_nil()) {
-    typed.target_object.uuid =
-        api::SecurityOptionValue(base, std::string(object_uuid_prefix) + "_object_uuid:");
-  }
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = std::string(object_kind);
-  }
-  if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
-  }
-  if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
   }
   if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
@@ -7795,29 +7403,15 @@ TRequest TypedCreateExecutableObjectRequest(const SblrDispatchRequest& request,
       typed.localized_names.push_back({"en", "primary", "", object_name, true});
     }
   }
-  for (std::size_t related_index = 0; related_index < 64; ++related_index) {
-    const std::string prefix = "related_object_" + std::to_string(related_index);
-    const std::string related_uuid =
-        api::SecurityOptionValue(base, prefix + "_uuid:");
-    if (related_uuid.empty() &&
-        api::SecurityOptionValue(base, prefix + "_kind:").empty()) {
-      break;
+  // Binary related identities were admitted atomically by dispatch. This
+  // adapter may fill presentation kind metadata but cannot append text UUIDs,
+  // truncate the cohort, change its occurrence order, or guess missing kinds.
+  for (std::size_t index = 0; index < typed.related_objects.size(); ++index) {
+    auto& related = typed.related_objects[index];
+    if (related.object_kind.empty()) {
+      related.object_kind = api::SecurityOptionValue(
+          base, "related_object_" + std::to_string(index) + "_kind:");
     }
-    if (related_uuid.empty()) continue;
-    api::EngineObjectReference related;
-    related.uuid = related_uuid;
-    related.object_kind = api::SecurityOptionValue(base, prefix + "_kind:");
-    if (related.object_kind.empty()) related.object_kind = "table";
-    if (related.object_kind != "executable_object" &&
-        related.object_kind != "procedure" &&
-        related.object_kind != "function" &&
-        related.object_kind != "trigger" &&
-        related.object_kind != "table" &&
-        related.object_kind != "sequence" &&
-        related.object_kind != "view") {
-      continue;
-    }
-    typed.related_objects.push_back(std::move(related));
   }
   return typed;
 }
@@ -7832,24 +7426,8 @@ api::EngineCatalogDescriptorMutationRequest TypedCatalogDescriptorMutationReques
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = api::SecurityOptionValue(base, "target_object_kind:");
   }
-  if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
-  }
-  if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
-  }
-  if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_parent_uuid:");
-  }
   std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
-  if (typed.target_schema.uuid.is_nil() && !schema_parent_path.empty()) {
-    const auto resolved_parent =
-        ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
-    if (resolved_parent) {
-      typed.target_schema.uuid = *resolved_parent;
-    }
-  }
   if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
@@ -7871,18 +7449,8 @@ api::EngineAlterObjectRequest TypedAlterObjectRequest(const SblrDispatchRequest&
   api::EngineAlterObjectRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  if (typed.target_object.uuid.is_nil()) {
-    typed.target_object.uuid = api::SecurityOptionValue(base, "target_object_uuid:");
-  }
-  if (typed.target_object.uuid.is_nil()) {
-    typed.target_object.uuid = api::SecurityOptionValue(base, "domain_target_uuid:");
-  }
-  if (typed.target_object.uuid.is_nil()) {
-    typed.target_object.uuid = api::SecurityOptionValue(base, "rename_target_uuid:");
-  }
-  if (typed.target_object.uuid.is_nil()) {
-    typed.target_object.uuid = api::SecurityOptionValue(base, "sequence_target_uuid:");
-  }
+  // Dispatch has projected the bound binary target. Text options and names
+  // cannot supply a second identity or a fallback schema authority.
   if (typed.target_object.object_kind.empty()) {
     typed.target_object.object_kind = api::SecurityOptionValue(base, "target_object_kind:");
   }
@@ -7890,24 +7458,7 @@ api::EngineAlterObjectRequest TypedAlterObjectRequest(const SblrDispatchRequest&
     typed.target_object.object_kind = api::SecurityOptionValue(base, "rename_target_kind:");
   }
   if (typed.target_object.object_kind.empty()) typed.target_object.object_kind = "object";
-  if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "target_schema_uuid:");
-  }
-  if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_uuid:");
-  }
-  if (typed.target_schema.uuid.is_nil()) {
-    typed.target_schema.uuid = api::SecurityOptionValue(base, "schema_parent_uuid:");
-  }
-  std::string normalized_parent_path;
   const std::string schema_parent_path = api::SecurityOptionValue(base, "schema_parent_path:");
-  if (typed.target_schema.uuid.is_nil() && !schema_parent_path.empty()) {
-    const auto resolved_parent =
-        ResolveSchemaParentPathToUuid(base, schema_parent_path, &normalized_parent_path);
-    if (resolved_parent) {
-      typed.target_schema.uuid = *resolved_parent;
-    }
-  }
   if (!typed.target_schema.uuid.is_nil() && typed.target_schema.object_kind.empty()) {
     typed.target_schema.object_kind = "schema";
   }
@@ -8069,15 +7620,16 @@ api::EnginePlanOperationRequest TypedLegacyPlanOperationRequest(
   api::EnginePlanOperationRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.target_object = TargetObjectForDml(base, "table");
-  for (std::size_t index = 0; index < 16; ++index) {
+  // A catalog projection can have related tables but no target table. Do not
+  // promote a related identity into the target position or parse a text UUID.
+  typed.target_object = base.target_object;
+  if (typed.target_object.object_kind.empty()) typed.target_object.object_kind = "table";
+  for (std::size_t index = 0; index < typed.related_objects.size(); ++index) {
     const std::string prefix = "related_object_" + std::to_string(index) + "_";
-    api::EngineObjectReference related;
-    related.uuid = api::SecurityOptionValue(base, prefix + "uuid:");
-    related.object_kind = api::SecurityOptionValue(base, prefix + "kind:");
-    if (!related.uuid.is_nil()) {
+    auto& related = typed.related_objects[index];
+    if (related.object_kind.empty()) {
+      related.object_kind = api::SecurityOptionValue(base, prefix + "kind:");
       if (related.object_kind.empty()) related.object_kind = "table";
-      typed.related_objects.push_back(std::move(related));
     }
   }
   typed.execute = api::SecurityOptionBool(base, "execute:", false);
@@ -9946,17 +9498,14 @@ api::EngineExecuteNativeBulkIngestRequest TypedExecuteNativeBulkIngestRequest(
 }
 
 api::EngineSecurityGrantPrivilegeRequest TypedSecurityGrantPrivilegeRequest(
-    const SblrDispatchRequest& request) {
+    const SblrDispatchRequest& request, const SblrSecurityDclIdentities& identities) {
   api::EngineSecurityGrantPrivilegeRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.grant_uuid = api::SecurityOptionValue(base, "grant_uuid:");
-  typed.grantee_uuid = api::SecurityOptionValue(base, "grantee_uuid:");
+  typed.grantee_uuid = identities.grantee_uuid;
   typed.grantee_kind = api::SecurityOptionValue(base, "grantee_kind:");
   if (typed.grantee_kind.empty()) typed.grantee_kind = "principal";
-  typed.target_object_uuid = !base.target_object.uuid.is_nil()
-                                 ? base.target_object.uuid
-                                 : api::SecurityOptionValue(base, "target_object_uuid:");
+  typed.target_object_uuid = identities.target_object_uuid;
   typed.target_object_kind = !base.target_object.object_kind.empty()
                                  ? base.target_object.object_kind
                                  : api::SecurityOptionValue(base, "target_object_kind:");
@@ -9967,37 +9516,34 @@ api::EngineSecurityGrantPrivilegeRequest TypedSecurityGrantPrivilegeRequest(
 }
 
 api::EngineSecurityGrantMembershipRequest TypedSecurityGrantMembershipRequest(
-    const SblrDispatchRequest& request) {
+    const SblrDispatchRequest& request, const SblrSecurityDclIdentities& identities) {
   api::EngineSecurityGrantMembershipRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.membership_uuid = api::SecurityOptionValue(base, "membership_uuid:");
-  typed.member_principal_uuid = api::SecurityOptionValue(base, "member_principal_uuid:");
-  typed.container_uuid = api::SecurityOptionValue(base, "container_uuid:");
+  typed.member_principal_uuid = identities.member_principal_uuid;
+  typed.container_uuid = identities.container_uuid;
   typed.container_kind = api::SecurityOptionValue(base, "container_kind:");
   return typed;
 }
 
 api::EngineSecurityRevokeMembershipRequest TypedSecurityRevokeMembershipRequest(
-    const SblrDispatchRequest& request) {
+    const SblrDispatchRequest& request, const SblrSecurityDclIdentities& identities) {
   api::EngineSecurityRevokeMembershipRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.member_principal_uuid = api::SecurityOptionValue(base, "member_principal_uuid:");
-  typed.container_uuid = api::SecurityOptionValue(base, "container_uuid:");
+  typed.member_principal_uuid = identities.member_principal_uuid;
+  typed.container_uuid = identities.container_uuid;
   typed.container_kind = api::SecurityOptionValue(base, "container_kind:");
   return typed;
 }
 
 api::EngineSecurityRevokePrivilegeRequest TypedSecurityRevokePrivilegeRequest(
-    const SblrDispatchRequest& request) {
+    const SblrDispatchRequest& request, const SblrSecurityDclIdentities& identities) {
   api::EngineSecurityRevokePrivilegeRequest typed;
   const api::EngineApiRequest base = BaseApiRequest(request);
   static_cast<api::EngineApiRequest&>(typed) = base;
-  typed.grantee_uuid = api::SecurityOptionValue(base, "grantee_uuid:");
-  typed.target_object_uuid = !base.target_object.uuid.is_nil()
-                                 ? base.target_object.uuid
-                                 : api::SecurityOptionValue(base, "target_object_uuid:");
+  typed.grantee_uuid = identities.grantee_uuid;
+  typed.target_object_uuid = identities.target_object_uuid;
   typed.privilege = api::SecurityOptionValue(base, "privilege:");
   return typed;
 }
@@ -11053,19 +10599,6 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
         std::all_of(operand.name.begin() + 5, operand.name.end(),
                     [](unsigned char ch) { return ch >= '0' && ch <= '9'; })) {
       operand.name.erase(0, 5);
-    } else if ((operand.type == "relational_property_v1" ||
-                operand.type == "relational_property_v2") &&
-               operand.name.rfind("property_", 0) == 0 &&
-               operand.name.size() == 41 &&
-               std::all_of(operand.name.begin() + 9, operand.name.end(),
-                           [](unsigned char ch) {
-                             return (ch >= '0' && ch <= '9') ||
-                                    (ch >= 'a' && ch <= 'f');
-                           })) {
-      const std::string hex = operand.name.substr(9);
-      operand.name = hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" +
-                     hex.substr(12, 4) + "-" + hex.substr(16, 4) + "-" +
-                     hex.substr(20, 12);
     }
   }
   const auto opcode_validation =
@@ -11100,63 +10633,6 @@ SblrQueryPreflightResult PreflightSblrQueryOperation(
   return result;
 }
 
-QueryExecuteResultHandleValidationV1 ValidateQueryExecuteResultHandleV1(
-    std::string_view result_shape_id,
-    std::uint32_t result_shape_version,
-    const std::vector<QueryExecuteResultHandleFieldV1>& fields) {
-  QueryExecuteResultHandleValidationV1 result;
-  const auto refuse = [&](std::string detail) {
-    result.diagnostic_id = "DATATYPE.DESCRIPTOR.INVALID";
-    result.detail = std::move(detail);
-    return result;
-  };
-  if (result_shape_id != "query_execute_result" || result_shape_version != 1) {
-    return refuse("query_execute_result_registry_identity_mismatch");
-  }
-  static constexpr std::array<std::string_view, 4> kNames{
-      "execution_uuid", "result_set_uuid", "row_descriptor_uuid",
-      "snapshot_uuid"};
-  static constexpr std::string_view kDescriptor = "desc.uuid";
-  if (fields.size() != kNames.size()) {
-    return refuse("query_execute_result_exact_cardinality_invalid");
-  }
-  const auto canonical_nonzero_uuid = [](std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') return false;
-    bool nonzero = false;
-    for (std::size_t index = 0; index != value.size(); ++index) {
-      if (value[index] == '-') continue;
-      const auto ch = value[index];
-      if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-        return false;
-      }
-      nonzero = nonzero || ch != '0';
-    }
-    return nonzero;
-  };
-  std::array<std::string, 4> values;
-  for (std::size_t index = 0; index != fields.size(); ++index) {
-    if (fields[index].name != kNames[index] ||
-        fields[index].descriptor != kDescriptor ||
-        !canonical_nonzero_uuid(fields[index].value)) {
-      return refuse("query_execute_result_field_contract_invalid");
-    }
-    values[index] = fields[index].value;
-  }
-  for (std::size_t left = 0; left != values.size(); ++left) {
-    for (std::size_t right = left + 1; right != values.size(); ++right) {
-      if (values[left] == values[right]) {
-        return refuse("query_execute_result_identity_roles_duplicated");
-      }
-    }
-  }
-  result.handle.execution_uuid = std::move(values[0]);
-  result.handle.result_set_uuid = std::move(values[1]);
-  result.handle.row_descriptor_uuid = std::move(values[2]);
-  result.handle.snapshot_uuid = std::move(values[3]);
-  result.ok = true;
-  return result;
-}
 
 bool IsClusterOperationId(std::string_view operation_id) {
   return operation_id.starts_with("cluster.") ||
@@ -11237,6 +10713,38 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
         "SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH",
         "engine.sblr.dispatch.routed_operation_parent_mismatch",
         routed_operation.detail);
+    return result;
+  }
+  const auto& identity_operation = routed_operation.present
+      ? routed_operation.operation_id : request.envelope.operation_id;
+  const bool privilege_dcl = identity_operation == "security.privilege.grant" ||
+      identity_operation == "security.privilege.revoke";
+  const bool membership_dcl = identity_operation == "security.membership.grant" ||
+      identity_operation == "security.membership.revoke";
+  SblrSecurityDclIdentities security_dcl_identities;
+  if ((privilege_dcl || membership_dcl) && !DecodeSblrSecurityDclIdentities(
+          request.envelope, privilege_dcl ? SblrSecurityDclKind::privilege
+                                         : SblrSecurityDclKind::membership,
+          &security_dcl_identities)) {
+    constexpr const char* detail =
+        "Security grant/revoke requires its exact pair of bound binary identity roles";
+    result.diagnostics.push_back(DispatchDiagnostic("SBLR.OPERAND_INVALID", detail));
+    result.api_result = FailureResult(request.context, request.envelope.operation_id,
+        "SBLR.OPERAND_INVALID", "engine.sblr.dispatch.security_identity_invalid", detail);
+    return result;
+  }
+  SblrIdentityProjectionFailure identity_failure = SblrIdentityProjectionFailure::none;
+  if (!ProjectSblrBoundTargetIdentity(request.envelope, &request.api_request, &identity_failure)) {
+    if (identity_failure == SblrIdentityProjectionFailure::allocation_failed) {
+      result.resource_exhausted = true;
+      return result;
+    }
+    constexpr const char* detail =
+        "Object identity operands must be unique binary UUIDv7 references consistent with the bound request";
+    result.diagnostics.push_back(DispatchDiagnostic("SBLR.OPERAND_INVALID", detail));
+    result.api_result = FailureResult(
+        request.context, request.envelope.operation_id, "SBLR.OPERAND_INVALID",
+        "engine.sblr.dispatch.bound_object_identity_invalid", detail);
     return result;
   }
   // SOURCE_MAP is local-observed even in a cluster-scoped package. Validate
@@ -11540,6 +11048,12 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
           ((operand.value_kind == SblrValueKind::uuid_ref &&
             IsRelationalContextIdentitySlot(operand.name)) ||
            operand.value_kind == SblrValueKind::relational_type_descriptor ||
+           operand.value_kind == SblrValueKind::relational_expression ||
+           operand.value_kind == SblrValueKind::relational_node_binding ||
+           operand.value_kind == SblrValueKind::relational_window_invocation ||
+           operand.value_kind == SblrValueKind::relational_window_definition ||
+           operand.value_kind == SblrValueKind::relational_property ||
+           operand.value_kind == SblrValueKind::relational_row_pattern ||
            operand.value_kind == SblrValueKind::expression_node_table ||
            operand.value_kind == SblrValueKind::expression_node_ref ||
            operand.value_kind == SblrValueKind::parameter_node_table ||
@@ -11592,20 +11106,6 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
                         return ch >= '0' && ch <= '9';
                       })) {
         operand.name.erase(0, 5);
-      } else if (materialize_query_slots &&
-                 (operand.type == "relational_property_v1" ||
-                  operand.type == "relational_property_v2") &&
-                 operand.name.rfind("property_", 0) == 0 &&
-                 operand.name.size() == 41 &&
-                 std::all_of(operand.name.begin() + 9, operand.name.end(),
-                             [](unsigned char ch) {
-                               return (ch >= '0' && ch <= '9') ||
-                                      (ch >= 'a' && ch <= 'f');
-                             })) {
-        const std::string hex = operand.name.substr(9);
-        operand.name = hex.substr(0, 8) + "-" + hex.substr(8, 4) + "-" +
-                       hex.substr(12, 4) + "-" + hex.substr(16, 4) + "-" +
-                       hex.substr(20, 12);
       }
     }
   }
@@ -12501,10 +12001,10 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op == "security.group.drop") result.api_result = api::EngineSecurityDropGroup(TypedSecurityDropGroupRequest(request));
   else if (op == "security.principal.create") result.api_result = api::EngineSecurityCreatePrincipal(TypedSecurityCreatePrincipalRequest(request));
   else if (op == "security.principal.alter") result.api_result = api::EngineSecurityAlterPrincipal(TypedSecurityAlterPrincipalRequest(request));
-  else if (op == "security.membership.grant") result.api_result = api::EngineSecurityGrantMembership(TypedSecurityGrantMembershipRequest(request));
-  else if (op == "security.membership.revoke") result.api_result = api::EngineSecurityRevokeMembership(TypedSecurityRevokeMembershipRequest(request));
-  else if (op == "security.privilege.grant") result.api_result = api::EngineSecurityGrantPrivilege(TypedSecurityGrantPrivilegeRequest(request));
-  else if (op == "security.privilege.revoke") result.api_result = api::EngineSecurityRevokePrivilege(TypedSecurityRevokePrivilegeRequest(request));
+  else if (op == "security.membership.grant") result.api_result = api::EngineSecurityGrantMembership(TypedSecurityGrantMembershipRequest(request, security_dcl_identities));
+  else if (op == "security.membership.revoke") result.api_result = api::EngineSecurityRevokeMembership(TypedSecurityRevokeMembershipRequest(request, security_dcl_identities));
+  else if (op == "security.privilege.grant") result.api_result = api::EngineSecurityGrantPrivilege(TypedSecurityGrantPrivilegeRequest(request, security_dcl_identities));
+  else if (op == "security.privilege.revoke") result.api_result = api::EngineSecurityRevokePrivilege(TypedSecurityRevokePrivilegeRequest(request, security_dcl_identities));
   else if (op == "security.session.set_role") result.api_result = api::EngineSecuritySetRole(TypedSecuritySetRoleRequest(request));
   else if (op == "security.policy.create") result.api_result = api::EngineSecurityCreatePolicy(TypedSecurityCreatePolicyRequest(request));
   else if (op == "security.policy.alter") result.api_result = api::EngineSecurityAlterPolicy(TypedSecurityAlterPolicyRequest(request));
@@ -12706,16 +12206,6 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   }
 
   PropagateClusterApiDiagnostics(&result);
-  if (op == "engine.op.ddl_validate_constraint" &&
-      !(request.context.query_cancellation_requested && request.context.query_cancellation_requested()) &&
-      !result.api_result.ok) {
-    result.accepted = true;
-    result.dispatched_to_api = true;
-    result.api_result.operation_id = op;
-    result.api_result.ok = true;
-    result.api_result.result_shape.result_kind = "management_operation_result";
-    result.api_result.evidence.push_back({op, "executor_dispatch_admitted"});
-  }
   return result;
 }
 
@@ -12753,6 +12243,7 @@ SblrDispatchResult DecodeAndDispatchSblrOperation(std::string_view encoded_envel
   request.api_request = std::move(api_request);
   const std::string operation_id = request.envelope.operation_id;
   auto result = DispatchSblrOperation(std::move(request));
+  if (result.resource_exhausted) return result;
   mark_phase("dispatch_operation");
   WriteSblrDispatchPhaseTrace("decode_and_dispatch",
                               operation_id,
@@ -12765,6 +12256,7 @@ std::string SerializeSblrDispatchResultToJson(const SblrDispatchResult& result) 
   std::ostringstream out;
   out << "{\n";
   out << "  \"accepted\": " << (result.accepted ? "true" : "false") << ",\n";
+  out << "  \"resource_exhausted\": " << (result.resource_exhausted ? "true" : "false") << ",\n";
   out << "  \"envelope_validated\": " << (result.envelope_validated ? "true" : "false") << ",\n";
   out << "  \"dispatched_to_api\": " << (result.dispatched_to_api ? "true" : "false") << ",\n";
   out << "  \"logical_graph_populated\": "

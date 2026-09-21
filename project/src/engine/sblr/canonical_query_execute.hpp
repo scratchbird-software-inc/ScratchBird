@@ -70,7 +70,7 @@ struct CanonicalObjectFreeValuesExecutionResult {
   std::size_t physical_node_count{0};
   std::size_t canonical_result_column_count{0};
   std::size_t canonical_result_row_count{0};
-  std::string selected_plan_uuid;
+  scratchbird::engine::internal_api::EngineUuid selected_plan_uuid;
   std::string canonical_result_bytes;
   scratchbird::engine::internal_api::EngineApiResult api_result;
 };

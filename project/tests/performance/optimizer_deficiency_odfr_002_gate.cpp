@@ -33,7 +33,8 @@ bool HasLabel(const metrics::MetricLabelSet& labels,
               const std::string& key,
               const std::string& value) {
   return std::find_if(labels.begin(), labels.end(), [&](const metrics::MetricLabel& label) {
-    return label.key == key && label.value == value;
+    const auto* text = std::get_if<std::string>(&label.value);
+    return label.key == key && text && *text == value;
   }) != labels.end();
 }
 
@@ -106,7 +107,26 @@ bool RecordsBenchmarkAndSupportBundleSurfaces() {
     }
   }
 
-  const auto exported = metrics::ExportOpenMetrics(metrics::DefaultMetricRegistry(), true);
+  // Presentation assertions only. These explicit fixture metadata identities
+  // do not model native export authorization, committed selection or delivery.
+  metrics::MetricExportContext export_context;
+  const auto fixture_id=[](unsigned char tag){metrics::MetricUuid id;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[15]=tag;return id;};
+  export_context.export_profile_uuid=fixture_id(1);export_context.source_scope_uuid=fixture_id(2);
+  export_context.redaction_policy_uuid=fixture_id(3);export_context.schema_version=1;
+  export_context.observation_time_utc_ns=1;export_context.export_time_utc_ns=2;
+  export_context.residency_decision="fixture-local";
+  std::vector<metrics::MetricExportSample> projection;
+  for(const auto& value:current){
+    if(value.family!="sb_lock_latch_contention_wait_total"&&value.family!="sb_lock_latch_contention_wait_microseconds")continue;
+    const auto* descriptor=metrics::DefaultMetricRegistry().FindDescriptor(value.family);
+    if(!Require(descriptor!=nullptr,"export fixture missing descriptor"))return false;
+    metrics::MetricExportSample sample;sample.descriptor=*descriptor;sample.value=value;sample.export_name=value.family;
+    for(const auto& label:descriptor->labels)sample.label_rules.push_back({label.key,label.sensitive?std::string{}:label.key,label.sensitive});
+    projection.push_back(std::move(sample));
+  }
+  const auto rendered=metrics::RenderOpenMetricsProjection(export_context,projection);
+  if(!Require(rendered.ok(),"contention projection rendering failed"))return false;
+  const auto& exported=rendered.text;
   return Require(ContainsText(exported, "sb_lock_latch_contention_wait_total"),
                  "OpenMetrics export missing contention wait count family") &&
          Require(ContainsText(exported, "sb_lock_latch_contention_wait_microseconds"),

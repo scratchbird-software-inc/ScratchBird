@@ -8,6 +8,7 @@
 
 #include "lowering/lowering.hpp"
 #include "lowering/relational_identity_operand.hpp"
+#include "binder/relational_property_identity.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "engine/sblr/sblr_engine_envelope.hpp"
 
@@ -35,8 +36,15 @@
 namespace scratchbird::parser::sbsql {
 namespace {
 
-constexpr std::string_view kGenerateSeriesFunctionUuid =
-    "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+constexpr scratchbird::core::platform::Uuid kGenerateSeriesFunctionUuid{{
+    0x01, 0x9d, 0xff, 0xbb, 0xf0, 0x00, 0x7e, 0x2c,
+    0xb4, 0x37, 0xeb, 0xbb, 0xc2, 0xd4, 0xf3, 0x5b}};
+constexpr core::platform::Uuid kBuiltinSumFunctionUuid{{
+    0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x72, 0xe4,
+    0x85, 0x49, 0x82, 0xb2, 0xee, 0xf5, 0xa7, 0x77}};
+constexpr core::platform::Uuid kBuiltinCountStarFunctionUuid{{
+    0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x78, 0x4a,
+    0x9a, 0xec, 0x37, 0x1f, 0x8b, 0x95, 0xb7, 0xea}};
 
 unsigned BoundedSignedIntegerTypeRank(const std::string_view type_name) {
   constexpr std::array<std::string_view, 4> kTypes{
@@ -244,11 +252,12 @@ std::vector<std::string> LifecycleSurfaceIdsForCommand(
 
 struct ConstraintDdlInfo {
   bool active{false};
+  bool identities_bound{false};
   std::string operation_id;
   std::string catalog_action;
-  std::string target_object_uuid;
+  core::platform::Uuid target_object_uuid;
   std::string target_object_kind{"table"};
-  std::string owner_object_uuid;
+  std::vector<core::platform::Uuid> related_object_uuids;
   std::string constraint_name;
   std::string constraint_kind;
   std::string canonical_constraint_envelope;
@@ -309,7 +318,7 @@ struct VectorSearchRouteInfo {
   bool rerank_present{false};
   bool modifier_present{false};
   std::string invalid_reason;
-  std::string target_object_uuid;
+  core::platform::Uuid target_object_uuid;
   std::size_t target_name_parts{0};
   std::string metric{"default"};
   std::string distance_operator;
@@ -350,7 +359,7 @@ struct VectorCollectionOperationInfo {
   bool with_options_present{false};
   std::string invalid_reason;
   std::string operation{"reindex"};
-  std::string target_object_uuid;
+  core::platform::Uuid target_object_uuid;
   std::size_t collection_name_parts{0};
   std::vector<std::string> row_surface_ids;
 };
@@ -366,7 +375,7 @@ struct MultiModelNoSqlRouteInfo {
   std::string surface;
   std::string route_kind;
   std::string target_object_kind;
-  std::string target_object_uuid;
+  core::platform::Uuid target_object_uuid;
   std::size_t target_name_parts{0};
   std::vector<std::string> row_surface_ids;
   std::vector<std::string> descriptor_refs;
@@ -392,7 +401,7 @@ struct SimpleCreateStatisticsInfo {
   std::size_t expression_count{0};
   std::size_t target_table_count{0};
   std::string statistics_kind{"auto"};
-  std::string statistics_target_uuid;
+  core::platform::Uuid statistics_target_uuid;
   std::vector<std::string> statistics_kinds;
 };
 
@@ -405,7 +414,7 @@ struct SimpleCreateIndexInfo {
   std::size_t target_table_name_parts{0};
   std::size_t key_count{0};
   std::string index_name;
-  std::string index_target_uuid;
+  core::platform::Uuid index_target_uuid;
   std::string index_profile{"btree"};
   std::vector<std::string> key_envelopes;
 };
@@ -427,7 +436,7 @@ struct IndexTemplateDdlInfo {
   std::size_t template_name_parts{0};
   std::size_t index_pattern_count{0};
   std::size_t composed_of_count{0};
-  std::string target_object_uuid;
+  core::platform::Uuid target_object_uuid;
 };
 
 struct CommentOnDdlInfo {
@@ -437,7 +446,7 @@ struct CommentOnDdlInfo {
   std::string invalid_reason;
   std::string target_object_kind;
   std::size_t target_name_parts{0};
-  std::string target_object_uuid;
+  core::platform::Uuid target_object_uuid;
   std::string comment_text;
 };
 
@@ -448,8 +457,7 @@ struct AlterRenameDdlInfo {
   std::string invalid_reason;
   std::string target_object_kind;
   std::size_t target_name_parts{0};
-  std::string target_object_uuid;
-  std::string target_schema_uuid;
+  core::platform::Uuid target_object_uuid;
   std::string new_name;
 };
 
@@ -457,8 +465,7 @@ struct AlterTableColumnDdlInfo {
   bool active{false};
   bool valid{false};
   std::string invalid_reason;
-  std::string target_object_uuid;
-  std::string target_schema_uuid;
+  core::platform::Uuid target_object_uuid;
   std::string action;
   std::string column_name;
   std::string new_column_name;
@@ -471,8 +478,7 @@ struct AlterDomainDdlInfo {
   bool valid{false};
   std::string invalid_reason;
   std::size_t domain_name_parts{0};
-  std::string target_object_uuid;
-  std::string target_schema_uuid;
+  core::platform::Uuid target_object_uuid;
   std::string default_expression_envelope;
   std::string check_constraint_envelope;
   bool append_check_constraint{false};
@@ -487,8 +493,7 @@ struct AlterSequenceDdlInfo {
   std::string invalid_reason;
   std::size_t sequence_name_parts{0};
   std::string sequence_lookup_key;
-  std::string target_object_uuid;
-  std::string target_schema_uuid;
+  core::platform::Uuid target_object_uuid;
   std::string cache_value;
   std::string max_value;
   std::string restart_value;
@@ -503,8 +508,7 @@ struct SimpleDropObjectDdlInfo {
   std::string catalog_authority;
   std::string row_surface_id;
   std::size_t target_name_parts{0};
-  std::string target_object_uuid;
-  std::string target_schema_uuid;
+  core::platform::Uuid target_object_uuid;
 };
 
 struct SimpleCreateSequenceInfo {
@@ -590,7 +594,7 @@ struct SimpleCreateExecutableObjectInfo {
   std::size_t name_parts{0};
   std::string object_name;
   std::string schema_parent_path;
-  std::string target_object_uuid;
+  core::platform::Uuid target_object_uuid;
   bool parameter_def_present{false};
   bool parameter_name_present{false};
   bool parameter_is_cursor{false};
@@ -608,7 +612,7 @@ struct SimpleCreateExecutableObjectInfo {
   std::string internal_procedure_id;
   std::string compiled_body_descriptor;
   std::string side_effect_class{"none"};
-  std::vector<std::string> body_dependency_uuids;
+  std::vector<core::platform::Uuid> body_dependency_uuids;
   std::string trigger_timing;
   std::string trigger_event;
   std::string trigger_target_table_name;
@@ -632,8 +636,8 @@ struct RoutineInvocationInfo {
   std::string engine_api_function{"EngineInvokeExecutableObject"};
   std::size_t routine_name_parts{0};
   std::string routine_name;
-  std::string routine_object_uuid;
-  std::string target_schema_uuid;
+  core::platform::Uuid routine_object_uuid;
+  core::platform::Uuid target_schema_uuid;
   std::vector<RoutineInvocationArgumentInfo> arguments;
   std::vector<std::string> row_surface_ids;
 };
@@ -656,7 +660,7 @@ struct CatalogDescriptorMutationInfo {
   std::size_t name_parts{0};
   std::string object_name;
   std::string schema_parent_path;
-  std::string target_object_uuid;
+  core::platform::Uuid target_object_uuid;
   std::vector<std::string> row_surface_ids;
 };
 
@@ -693,10 +697,10 @@ struct SecurityDclInfo {
   std::string target_object_kind{"object"};
   std::string grantee_kind{"principal"};
   std::string grant_effect{"allow"};
-  std::string target_object_uuid;
-  std::string grantee_uuid;
-  std::string member_principal_uuid;
-  std::string container_uuid;
+  core::platform::Uuid target_object_uuid;
+  core::platform::Uuid grantee_uuid;
+  core::platform::Uuid member_principal_uuid;
+  core::platform::Uuid container_uuid;
   std::string container_kind{"group"};
   std::size_t target_name_parts{0};
   std::size_t grantee_name_parts{0};
@@ -710,22 +714,21 @@ struct SecurityPolicyRouteInfo {
   std::string operation_id;
   std::string opcode;
   std::string surface_variant;
-  std::string principal_uuid;
+  core::platform::Uuid principal_uuid;
   std::string principal_name;
   std::string principal_kind;
   std::string credential_protected_material_ref;
   std::string credential_fingerprint;
   std::string lifecycle_state;
-  std::string policy_uuid;
+  core::platform::Uuid policy_uuid;
   std::string policy_name;
-  std::string target_schema_uuid;
-  std::string target_object_uuid;
+  core::platform::Uuid target_schema_uuid;
+  core::platform::Uuid target_object_uuid;
   std::string target_object_kind{"security_policy"};
   std::string policy_scope{"security_policy"};
   std::string policy_effect;
   std::string predicate_envelope;
-  std::string definer_principal_uuid;
-  std::string role_uuid;
+  core::platform::Uuid role_uuid;
   std::string role_mode{"explicit"};
   std::size_t principal_name_parts{0};
   std::size_t policy_name_parts{0};
@@ -803,8 +806,8 @@ struct DmlRouteInfo {
   std::string opcode;
   std::string surface_variant;
   std::string target_object_kind{"table"};
-  std::string target_object_uuid;
-  std::string source_object_uuid;
+  core::platform::Uuid target_object_uuid;
+  core::platform::Uuid source_object_uuid;
   std::string source_kind;
   std::string import_source_kind;
   std::string import_format_family;
@@ -849,8 +852,8 @@ struct DmlRouteInfo {
   std::string insert_select_counter_step;
   std::string insert_select_counter_limit;
   std::string insert_select_counter_predicate;
-  std::string insert_select_source_uuid_0;
-  std::string insert_select_source_uuid_1;
+  core::platform::Uuid insert_select_source_uuid_0;
+  core::platform::Uuid insert_select_source_uuid_1;
   std::string delete_batch_on_column;
   std::string delete_batch_limit;
   std::string delete_series_name;
@@ -903,7 +906,7 @@ struct EventNotificationRouteInfo {
   std::string opcode;
   std::string surface_variant;
   std::string channel_name;
-  std::string channel_uuid;
+  core::platform::Uuid channel_uuid;
   std::string payload;
   std::string delivery_profile{"ephemeral_session"};
   std::string invalid_reason;
@@ -954,7 +957,7 @@ struct ShowCreateRouteInfo {
   bool valid{false};
   std::string target_kind{"table"};
   std::size_t target_name_parts{0};
-  std::string target_object_uuid;
+  core::platform::Uuid target_object_uuid;
   std::string invalid_reason;
   std::vector<std::string> row_surface_ids;
 };
@@ -1048,7 +1051,7 @@ struct Sbsfc077NonGeneralResidualRouteInfo {
   std::string runtime_evidence_kind;
   std::string runtime_evidence_id;
   std::string object_kind{"sbsfc077_surface"};
-  std::string target_object_uuid;
+  core::platform::Uuid target_object_uuid;
   std::string requested_pages;
   std::string compile_statement_name;
   std::string compile_module_symbol;
@@ -1269,6 +1272,7 @@ struct ScalarProjectionItem {
   std::string interval_literal_payload;
   std::string expression_kind{"literal"};
   std::string function_id;
+  core::platform::Uuid function_uuid;
   std::string operator_id;
   std::string canonical_operator_id;
   std::string special_form_id;
@@ -1352,8 +1356,8 @@ struct TableJoinInfo {
   std::string aggregate_function{"sb.aggregate.count"};
   bool distinct_count_projection{false};
   std::string distinct_count_field;
-  std::string left_object_uuid;
-  std::string right_object_uuid;
+  core::platform::Uuid left_object_uuid;
+  core::platform::Uuid right_object_uuid;
   std::string catalog_projection_path;
   std::string left_key_field;
   std::string right_key_field;
@@ -1380,11 +1384,11 @@ struct TableSetOperationInfo {
   bool by_name{false};
   std::string invalid_reason;
   std::string operation;
-  std::string left_object_uuid;
-  std::string right_object_uuid;
+  core::platform::Uuid left_object_uuid;
+  core::platform::Uuid right_object_uuid;
   std::string left_project_field;
   std::string right_project_field;
-  std::vector<std::string> relation_object_uuids;
+  std::vector<core::platform::Uuid> relation_object_uuids;
   std::vector<std::string> relation_project_fields;
   std::vector<std::string> relation_not_null_filter_fields;
   std::vector<std::string> relation_filter_kinds;
@@ -1397,7 +1401,7 @@ struct TableSampleInfo {
   bool active{false};
   bool valid{false};
   std::string invalid_reason;
-  std::string object_uuid;
+  core::platform::Uuid object_uuid;
   std::string sample_method;
   std::string sample_percent;
   std::vector<std::string> grammar_surface_ids;
@@ -1407,7 +1411,7 @@ struct PivotRouteInfo {
   bool active{false};
   bool valid{false};
   std::string invalid_reason;
-  std::string object_uuid;
+  core::platform::Uuid object_uuid;
   std::string aggregate_function{"sb.aggregate.sum"};
   std::string aggregate_field;
   std::string for_field;
@@ -1421,7 +1425,7 @@ struct UnpivotRouteInfo {
   bool active{false};
   bool valid{false};
   std::string invalid_reason;
-  std::string object_uuid;
+  core::platform::Uuid object_uuid;
   std::string value_field;
   std::string pivot_field;
   std::size_t value_column_count{0};
@@ -1435,7 +1439,7 @@ struct RowNumberWindowInfo {
   std::string invalid_reason;
   std::string window_function{"row_number"};
   std::string value_field;
-  std::string object_uuid;
+  core::platform::Uuid object_uuid;
   std::string order_field;
   std::string partition_field;
   std::uint64_t window_n{1};
@@ -1455,7 +1459,7 @@ struct GroupByAggregateInfo {
   bool active{false};
   bool valid{false};
   std::string invalid_reason;
-  std::string object_uuid;
+  core::platform::Uuid object_uuid;
   std::string group_field;
   std::string aggregate_field;
   std::string aggregate_pair_field;
@@ -1482,7 +1486,7 @@ struct TableCountInfo {
   bool active{false};
   bool valid{false};
   std::string invalid_reason;
-  std::string object_uuid;
+  core::platform::Uuid object_uuid;
   bool catalog_projection_count{false};
   std::string catalog_projection_path;
   bool count_all{true};
@@ -1525,10 +1529,11 @@ struct MaterializedCteInfo {
   bool active{false};
   bool valid{false};
   bool recursive{false};
+  bool table_backed{false};
   bool recursive_counter_step{false};
   bool count_result_projection{false};
   std::string invalid_reason;
-  std::string object_uuid;
+  core::platform::Uuid object_uuid;
   std::string cte_name;
   std::size_t column_count{0};
   std::vector<std::string> column_names;
@@ -1545,7 +1550,7 @@ struct ScalarSubqueryInfo {
   bool active{false};
   bool valid{false};
   std::string invalid_reason;
-  std::string object_uuid;
+  core::platform::Uuid object_uuid;
   std::string projected_field;
 };
 
@@ -8509,7 +8514,7 @@ void AnalyzeMergeRouteDetails(const CstDocument& cst, DmlRouteInfo* info) {
 }
 
 void AnalyzeSelectOrderLimitOffset(const CstDocument& cst,
-                                   const std::vector<std::string>& resolved_object_uuids,
+                                   const std::vector<core::platform::Uuid>& resolved_object_uuids,
                                    DmlRouteInfo* info) {
   if (info == nullptr || !info->read) return;
   const auto tokens = MeaningfulTokenPtrs(cst);
@@ -10158,7 +10163,7 @@ bool RecursiveCteOuterStatementStartsWithInsert(const std::vector<const Token*>&
 
 DmlRouteInfo AnalyzeRecursiveCteInsertRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   DmlRouteInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || !TokenTextEquals(tokens, 0, "WITH")) return info;
@@ -10338,7 +10343,7 @@ DmlRouteInfo AnalyzeRecursiveCteInsertRoute(
 
 DmlRouteInfo AnalyzeRowNumberInsertSelectRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   DmlRouteInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || !TokenTextEquals(tokens, 0, "INSERT")) return info;
@@ -10484,7 +10489,7 @@ DmlRouteInfo AnalyzeRowNumberInsertSelectRoute(
 }
 
 DmlRouteInfo AnalyzeDmlRoute(const CstDocument& cst,
-                             const std::vector<std::string>& resolved_object_uuids) {
+                             const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   DmlRouteInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty()) return info;
@@ -16982,13 +16987,13 @@ bool ParseScalarFunctionProjectionItem(const std::vector<const Token*>& tokens,
 bool ParseUserFunctionProjectionArgument(const std::vector<const Token*>& tokens,
                                          std::size_t* cursor,
                                          ScalarProjectionItem* argument,
-                                         const std::vector<std::string>& resolved_object_uuids,
+                                         const std::vector<core::platform::Uuid>& resolved_object_uuids,
                                          std::size_t* routine_uuid_cursor);
 
 bool ParseUserFunctionProjectionItem(const std::vector<const Token*>& tokens,
                                      std::size_t* index,
                                      ScalarProjectionItem* item,
-                                     const std::vector<std::string>& resolved_object_uuids,
+                                     const std::vector<core::platform::Uuid>& resolved_object_uuids,
                                      std::size_t* routine_uuid_cursor) {
   if (index == nullptr || item == nullptr || routine_uuid_cursor == nullptr) return false;
   const auto parsed_name = ParseFunctionNameTokenSequence(tokens, *index);
@@ -16996,14 +17001,16 @@ bool ParseUserFunctionProjectionItem(const std::vector<const Token*>& tokens,
   std::size_t cursor = parsed_name->end_index;
   if (cursor >= tokens.size() || tokens[cursor]->text != "(") return false;
   if (*routine_uuid_cursor >= resolved_object_uuids.size()) return false;
-  const std::string routine_uuid = resolved_object_uuids[*routine_uuid_cursor];
-  if (routine_uuid.empty()) return false;
-  ++(*routine_uuid_cursor);
+  const auto routine_uuid = resolved_object_uuids[*routine_uuid_cursor];
+  if (!core::uuid::IsEngineIdentityUuid(routine_uuid)) return false;
+  std::size_t next_routine_cursor = *routine_uuid_cursor + 1;
   ++cursor;
 
   std::vector<ScalarProjectionItem> arguments;
+  bool closed = false;
   if (cursor < tokens.size() && tokens[cursor]->text == ")") {
     ++cursor;
+    closed = true;
   } else {
     while (cursor < tokens.size()) {
       ScalarProjectionItem argument;
@@ -17011,7 +17018,7 @@ bool ParseUserFunctionProjectionItem(const std::vector<const Token*>& tokens,
                                                &cursor,
                                                &argument,
                                                resolved_object_uuids,
-                                               routine_uuid_cursor)) {
+                                               &next_routine_cursor)) {
         return false;
       }
       arguments.push_back(std::move(argument));
@@ -17022,20 +17029,24 @@ bool ParseUserFunctionProjectionItem(const std::vector<const Token*>& tokens,
       }
       if (tokens[cursor]->text == ")") {
         ++cursor;
+        closed = true;
         break;
       }
       return false;
     }
   }
 
+  if (!closed) return false;
   item->expression_kind = "function";
-  item->function_id = "sbsql.user_function:" + routine_uuid;
+  item->function_id = "sbsql.user_function";
+  item->function_uuid = routine_uuid;
   item->type_name = "unknown";
   item->sblr_binding = "sblr.expr.executable_function_call.v1";
   item->engine_entrypoint = "executable_function_invoke";
   item->is_null = false;
   item->arguments = std::move(arguments);
   AppendIfMissing(&item->expression_surface_ids, "SBSQL-17B72695FA1A");
+  *routine_uuid_cursor = next_routine_cursor;
   *index = cursor;
   return true;
 }
@@ -17043,7 +17054,7 @@ bool ParseUserFunctionProjectionItem(const std::vector<const Token*>& tokens,
 bool ParseUserFunctionProjectionArgument(const std::vector<const Token*>& tokens,
                                          std::size_t* cursor,
                                          ScalarProjectionItem* argument,
-                                         const std::vector<std::string>& resolved_object_uuids,
+                                         const std::vector<core::platform::Uuid>& resolved_object_uuids,
                                          std::size_t* routine_uuid_cursor) {
   std::size_t nested = *cursor;
   if (ParseUserFunctionProjectionItem(tokens,
@@ -17058,7 +17069,7 @@ bool ParseUserFunctionProjectionArgument(const std::vector<const Token*>& tokens
 }
 
 ScalarProjectionInfo AnalyzeScalarProjection(const CstDocument& cst,
-                                             const std::vector<std::string>& resolved_object_uuids = {}) {
+                                             const std::vector<core::platform::Uuid>& resolved_object_uuids = {}) {
   ScalarProjectionInfo info;
   const auto words = MeaningfulUpperTokens(cst);
   const auto tokens = MeaningfulTokens(cst);
@@ -17149,7 +17160,7 @@ ScalarProjectionInfo AnalyzeScalarProjection(const CstDocument& cst,
     if (tokens[index]->text != ",") return info;
     ++index;
   }
-  info.valid = !info.items.empty();
+  info.valid = !info.items.empty() && routine_uuid_cursor == resolved_object_uuids.size();
   return info;
 }
 
@@ -18081,7 +18092,7 @@ bool ConsumeJoinLeftWhereFilters(const std::vector<const Token*>& tokens,
 
 bool TryAnalyzeJoinGroupAllEqualityRoute(
     const std::vector<const Token*>& tokens,
-    const std::vector<std::string>& resolved_object_uuids,
+    const std::vector<core::platform::Uuid>& resolved_object_uuids,
     TableJoinInfo* info) {
   if (info == nullptr || tokens.empty() ||
       ToUpperAscii(tokens.front()->text) != "SELECT") {
@@ -18195,7 +18206,7 @@ bool TryAnalyzeJoinGroupAllEqualityRoute(
 }
 
 TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
-                                    const std::vector<std::string>& resolved_object_uuids) {
+                                    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   TableJoinInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") return info;
@@ -18614,7 +18625,7 @@ TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
       return info;
     }
     info.catalog_projection_path = lowered_left_relation_path;
-    info.left_object_uuid.clear();
+    info.left_object_uuid = {};
     info.right_object_uuid = resolved_object_uuids.back();
     AppendIfMissing(&info.keyword_surface_ids, "SBSQL-B18D3DA70CBB");
     info.valid = true;
@@ -18636,7 +18647,7 @@ TableJoinInfo AnalyzeTableJoinRoute(const CstDocument& cst,
 }
 
 TableJoinInfo AnalyzeExistsCountRoute(const CstDocument& cst,
-                                      const std::vector<std::string>& resolved_object_uuids) {
+                                      const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   TableJoinInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") return info;
@@ -18871,7 +18882,7 @@ bool ConsumeSelectSingleFieldFromRelation(const std::vector<const Token*>& token
 
 TableSetOperationInfo AnalyzeTableSetOperationRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   TableSetOperationInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") return info;
@@ -19094,7 +19105,7 @@ bool IsPercentLiteralInRange(const Token& token, std::string* percent) {
 
 TableSampleInfo AnalyzeTableSampleRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   TableSampleInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") return info;
@@ -19248,7 +19259,7 @@ bool ConsumeUnpivotInItem(const std::vector<const Token*>& tokens,
 
 PivotRouteInfo AnalyzePivotRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   PivotRouteInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || !TokenTextEquals(tokens, 0, "SELECT")) return info;
@@ -19387,7 +19398,7 @@ PivotRouteInfo AnalyzePivotRoute(
 
 UnpivotRouteInfo AnalyzeUnpivotRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   UnpivotRouteInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || !TokenTextEquals(tokens, 0, "SELECT")) return info;
@@ -19805,7 +19816,7 @@ CanonicalNamedWindowResolution ResolveCanonicalNamedWindowsInternal(
 // shapes here.
 RowNumberWindowInfo AnalyzeRowNumberWindowRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   RowNumberWindowInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") return info;
@@ -20034,7 +20045,7 @@ RowNumberWindowInfo AnalyzeRowNumberWindowRoute(
 
 GroupByAggregateInfo AnalyzeGroupByAggregateRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   GroupByAggregateInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") return info;
@@ -20429,7 +20440,7 @@ GroupByAggregateInfo AnalyzeGroupByAggregateRoute(
 
 GroupByAggregateInfo AnalyzeDerivedGroupConstantProjectionRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   GroupByAggregateInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.size() < 16 || !TokenTextEquals(tokens, 0, "SELECT")) return info;
@@ -20668,7 +20679,7 @@ bool ConsumeTableCountDerivedWindowSubquery(const std::vector<const Token*>& tok
 
 TableCountInfo AnalyzeTableCountRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   TableCountInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") return info;
@@ -20978,7 +20989,7 @@ TableCountInfo AnalyzeTableCountRoute(
 
 MaterializedCteInfo AnalyzeMaterializedCteRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   MaterializedCteInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty()) return info;
@@ -21268,6 +21279,7 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
     info.invalid_reason = "cte_body_current_route_requires_select_star_from_relation";
     return info;
   }
+  info.table_backed = true;
   if (index >= tokens.size() || tokens[index]->text != ")") {
     info.invalid_reason = "cte_body_close_parenthesis_required";
     return info;
@@ -21317,7 +21329,7 @@ MaterializedCteInfo AnalyzeMaterializedCteRoute(
 
 ScalarSubqueryInfo AnalyzeScalarSubqueryRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   ScalarSubqueryInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SELECT") return info;
@@ -21567,12 +21579,14 @@ bool ConsumeOptionalEventPayload(const CstDocument& cst,
 }
 
 void FinalizeEventChannelReference(EventNotificationRouteInfo* info,
-                                   const std::vector<std::string>& resolved_object_uuids) {
+                                   const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   if (info == nullptr) return;
   info->opcode = EventOpcodeForOperation(info->operation_id);
-  if (!resolved_object_uuids.empty()) info->channel_uuid = resolved_object_uuids.front();
-  if (info->requires_channel_uuid && info->channel_uuid.empty()) {
-    info->invalid_reason = "event_channel_uuid_required";
+  if (!BindOperationTargetIdentity(resolved_object_uuids,
+          info->requires_channel_uuid ? BoundTargetRequirement::exactly_one : BoundTargetRequirement::none,
+          &info->channel_uuid)) {
+    info->invalid_reason = info->requires_channel_uuid ? "event_channel_uuid_required"
+                                                     : "event_operation_has_no_existing_channel_target";
     return;
   }
   info->valid = true;
@@ -21580,7 +21594,7 @@ void FinalizeEventChannelReference(EventNotificationRouteInfo* info,
 
 EventNotificationRouteInfo AnalyzeEventNotificationRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   EventNotificationRouteInfo info;
   std::size_t index = 0;
 
@@ -23147,7 +23161,7 @@ void ParseVectorSearchTrailingClauses(const std::vector<const Token*>& tokens,
 
 VectorSearchRouteInfo AnalyzeVectorSearchRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   VectorSearchRouteInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty() || ToUpperAscii(tokens.front()->text) != "SEARCH") return info;
@@ -23390,7 +23404,7 @@ CreateVectorCollectionInfo AnalyzeCreateVectorCollection(const CstDocument& cst)
 
 VectorCollectionOperationInfo AnalyzeVectorCollectionOperation(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   VectorCollectionOperationInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.size() < 4 || ToUpperAscii(tokens[0]->text) != "REINDEX" ||
@@ -23542,7 +23556,7 @@ void ClassifyKvRoute(const std::vector<const Token*>& tokens,
 
 MultiModelNoSqlRouteInfo AnalyzeMultiModelNoSqlRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   MultiModelNoSqlRouteInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.empty()) return info;
@@ -23669,7 +23683,7 @@ SimpleCreateSchemaInfo AnalyzeSimpleCreateSchema(const CstDocument& cst) {
 
 SimpleCreateStatisticsInfo AnalyzeSimpleCreateStatistics(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   SimpleCreateStatisticsInfo info;
   std::size_t index = 0;
   if (!ConsumeKeyword(cst, &index, "CREATE")) return info;
@@ -23728,11 +23742,10 @@ SimpleCreateStatisticsInfo AnalyzeSimpleCreateStatistics(
     info.invalid_reason = "statistics_only_single_expression_route_supported";
     return info;
   }
-  if (resolved_object_uuids.empty()) {
+  if (!BindSingleDdlTargetIdentity(resolved_object_uuids, &info.statistics_target_uuid)) {
     info.invalid_reason = "statistics_target_uuid_required";
     return info;
   }
-  info.statistics_target_uuid = resolved_object_uuids.front();
   info.valid = true;
   return info;
 }
@@ -23752,7 +23765,7 @@ std::string LastQualifiedNameLeaf(const CstDocument& cst,
 
 SimpleCreateIndexInfo AnalyzeSimpleCreateIndex(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   SimpleCreateIndexInfo info;
   std::size_t index = 0;
   if (!ConsumeKeyword(cst, &index, "CREATE")) return info;
@@ -23899,18 +23912,17 @@ SimpleCreateIndexInfo AnalyzeSimpleCreateIndex(
     info.invalid_reason = "index_key_required";
     return info;
   }
-  if (resolved_object_uuids.empty()) {
+  if (!BindSingleDdlTargetIdentity(resolved_object_uuids, &info.index_target_uuid)) {
     info.invalid_reason = "index_target_uuid_required";
     return info;
   }
-  info.index_target_uuid = resolved_object_uuids.front();
   info.valid = true;
   return info;
 }
 
 IndexTemplateDdlInfo AnalyzeIndexTemplateDdl(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   IndexTemplateDdlInfo info;
   std::size_t index = 0;
   if (ConsumeKeyword(cst, &index, "CREATE")) {
@@ -23969,11 +23981,10 @@ IndexTemplateDdlInfo AnalyzeIndexTemplateDdl(
       info.invalid_reason = "index_template_drop_extra_tokens";
       return info;
     }
-    if (resolved_object_uuids.empty()) {
+    if (!BindSingleDdlTargetIdentity(resolved_object_uuids, &info.target_object_uuid)) {
       info.invalid_reason = "index_template_target_uuid_required";
       return info;
     }
-    info.target_object_uuid = resolved_object_uuids.front();
     info.valid = true;
     return info;
   }
@@ -24043,7 +24054,7 @@ IndexTemplateDdlInfo AnalyzeIndexTemplateDdl(
 
 CommentOnDdlInfo AnalyzeCommentOnDdl(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   CommentOnDdlInfo info;
   std::size_t index = 0;
   if (!ConsumeKeyword(cst, &index, "COMMENT")) return info;
@@ -24077,18 +24088,17 @@ CommentOnDdlInfo AnalyzeCommentOnDdl(
     info.invalid_reason = "comment_extra_tokens";
     return info;
   }
-  if (resolved_object_uuids.empty()) {
+  if (!BindSingleDdlTargetIdentity(resolved_object_uuids, &info.target_object_uuid)) {
     info.invalid_reason = "comment_target_uuid_required";
     return info;
   }
-  info.target_object_uuid = resolved_object_uuids.front();
   info.valid = true;
   return info;
 }
 
 AlterRenameDdlInfo AnalyzeAlterRenameDdl(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   AlterRenameDdlInfo info;
   std::size_t index = 0;
   if (ConsumeKeyword(cst, &index, "RENAME")) {
@@ -24137,19 +24147,17 @@ AlterRenameDdlInfo AnalyzeAlterRenameDdl(
     info.invalid_reason = "rename_extra_tokens";
     return info;
   }
-  if (resolved_object_uuids.empty()) {
+  if (!BindSingleDdlTargetIdentity(resolved_object_uuids, &info.target_object_uuid)) {
     info.invalid_reason = "rename_target_uuid_required";
     return info;
   }
-  info.target_object_uuid = resolved_object_uuids.front();
-  if (resolved_object_uuids.size() > 1) info.target_schema_uuid = resolved_object_uuids[1];
   info.valid = true;
   return info;
 }
 
 SimpleDropObjectDdlInfo AnalyzeSimpleDropObjectDdl(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   SimpleDropObjectDdlInfo info;
   std::size_t index = 0;
   if (!ConsumeKeyword(cst, &index, "DROP")) return info;
@@ -24182,12 +24190,10 @@ SimpleDropObjectDdlInfo AnalyzeSimpleDropObjectDdl(
     info.invalid_reason = "drop_options_or_dependencies_out_of_slice";
     return info;
   }
-  if (resolved_object_uuids.empty()) {
+  if (!BindSingleDdlTargetIdentity(resolved_object_uuids, &info.target_object_uuid)) {
     info.invalid_reason = "drop_target_uuid_required";
     return info;
   }
-  info.target_object_uuid = resolved_object_uuids.front();
-  if (resolved_object_uuids.size() > 1) info.target_schema_uuid = resolved_object_uuids[1];
   info.valid = true;
   return info;
 }
@@ -24795,7 +24801,7 @@ SimpleCreateDomainInfo AnalyzeSimpleCreateDomain(const CstDocument& cst) {
 
 AlterTableColumnDdlInfo AnalyzeAlterTableColumnDdl(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   AlterTableColumnDdlInfo info;
   const auto tokens = MeaningfulTokenPtrs(cst);
   if (tokens.size() < 6 || ToUpperAscii(tokens[0]->text) != "ALTER" ||
@@ -24941,19 +24947,17 @@ AlterTableColumnDdlInfo AnalyzeAlterTableColumnDdl(
     info.invalid_reason = "alter_table_column_action_unsupported";
     return info;
   }
-  if (resolved_object_uuids.empty()) {
+  if (!BindSingleDdlTargetIdentity(resolved_object_uuids, &info.target_object_uuid)) {
     info.invalid_reason = "alter_table_column_requires_table_uuid";
     return info;
   }
-  info.target_object_uuid = resolved_object_uuids.front();
-  if (resolved_object_uuids.size() > 1) info.target_schema_uuid = resolved_object_uuids[1];
   info.valid = true;
   return info;
 }
 
 AlterDomainDdlInfo AnalyzeAlterDomainDdl(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   AlterDomainDdlInfo info;
   std::size_t index = 0;
   if (!ConsumeKeyword(cst, &index, "ALTER")) return info;
@@ -24993,19 +24997,17 @@ AlterDomainDdlInfo AnalyzeAlterDomainDdl(
     info.invalid_reason = "domain_alter_extra_tokens";
     return info;
   }
-  if (resolved_object_uuids.empty()) {
+  if (!BindSingleDdlTargetIdentity(resolved_object_uuids, &info.target_object_uuid)) {
     info.invalid_reason = "domain_target_uuid_required";
     return info;
   }
-  info.target_object_uuid = resolved_object_uuids.front();
-  if (resolved_object_uuids.size() > 1) info.target_schema_uuid = resolved_object_uuids[1];
   info.valid = true;
   return info;
 }
 
 AlterSequenceDdlInfo AnalyzeAlterSequenceDdl(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   AlterSequenceDdlInfo info;
   std::size_t index = 0;
   if (!ConsumeKeyword(cst, &index, "ALTER")) return info;
@@ -25089,12 +25091,10 @@ AlterSequenceDdlInfo AnalyzeAlterSequenceDdl(
     info.invalid_reason = "sequence_alter_trailing_tokens";
     return info;
   }
-  if (resolved_object_uuids.empty()) {
+  if (!BindSingleDdlTargetIdentity(resolved_object_uuids, &info.target_object_uuid)) {
     info.invalid_reason = "sequence_target_uuid_required";
     return info;
   }
-  info.target_object_uuid = resolved_object_uuids.front();
-  if (resolved_object_uuids.size() > 1) info.target_schema_uuid = resolved_object_uuids[1];
   info.valid = true;
   return info;
 }
@@ -25454,7 +25454,7 @@ bool ConsumeOptionalExecutableBody(const CstDocument& cst,
 
 SimpleCreateExecutableObjectInfo AnalyzeSimpleCreateExecutableObject(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids = {}) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids = {}) {
   SimpleCreateExecutableObjectInfo info;
   std::size_t index = 0;
   if (!ConsumeKeyword(cst, &index, "CREATE")) return info;
@@ -25495,12 +25495,14 @@ SimpleCreateExecutableObjectInfo AnalyzeSimpleCreateExecutableObject(
   if (info.body_present) {
     info.internal_procedure_id =
         "sbsql.internal." + info.object_kind + "." + LowerAscii(info.object_name);
-    if (!resolved_object_uuids.empty()) {
-      info.target_object_uuid = resolved_object_uuids.front();
-      info.body_dependency_uuids.assign(resolved_object_uuids.begin() + 1,
-                                        resolved_object_uuids.end());
-    }
   }
+  std::span<const core::platform::Uuid> dependencies;
+  if (!BindTargetWithRelatedIdentities(resolved_object_uuids, &info.target_object_uuid,
+                                       &dependencies)) {
+    info.invalid_reason = "executable_object_bound_creation_identity_required";
+    return info;
+  }
+  info.body_dependency_uuids.assign(dependencies.begin(), dependencies.end());
   info.valid = true;
   return info;
 }
@@ -25578,7 +25580,7 @@ bool ConsumeRoutineInvocationArguments(const CstDocument& cst,
 
 RoutineInvocationInfo AnalyzeRoutineInvocationRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   RoutineInvocationInfo info;
   std::size_t index = 0;
   if (!ConsumeKeyword(cst, &index, "EXECUTE")) return info;
@@ -25599,7 +25601,10 @@ RoutineInvocationInfo AnalyzeRoutineInvocationRoute(
     info.invalid_reason = "routine_invocation_trailing_tokens";
     return info;
   }
-  if (resolved_object_uuids.empty()) {
+  if (resolved_object_uuids.empty() || resolved_object_uuids.size() > 2 ||
+      !core::uuid::IsEngineIdentityUuid(resolved_object_uuids.front()) ||
+      (resolved_object_uuids.size() > 1 &&
+       !core::uuid::IsEngineIdentityUuid(resolved_object_uuids[1]))) {
     info.invalid_reason = "routine_invocation_target_uuid_required";
     return info;
   }
@@ -25902,7 +25907,7 @@ void ApplyCatalogDescriptorNameParts(CatalogDescriptorMutationInfo* info,
 
 CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   auto words = MeaningfulUpperTokens(cst);
   if (words.empty()) return {};
   CatalogDescriptorMutationInfo info;
@@ -26125,7 +26130,8 @@ CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
   }
 
   if (info.requires_existing_uuid) {
-    if (resolved_object_uuids.empty()) {
+    if (resolved_object_uuids.empty() ||
+        !core::uuid::IsEngineIdentityUuid(resolved_object_uuids.front())) {
       info.valid = false;
       info.invalid_reason = "catalog_descriptor_target_uuid_required";
     } else {
@@ -26138,7 +26144,7 @@ CatalogDescriptorMutationInfo AnalyzeCatalogDescriptorMutation(
 
 ShowCreateRouteInfo AnalyzeShowCreateRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   ShowCreateRouteInfo info;
   info.row_surface_ids = {"SBSQL-A424141B1639", "SBSQL-E8B6AB62C4F9"};
   std::size_t index = 0;
@@ -26157,17 +26163,16 @@ ShowCreateRouteInfo AnalyzeShowCreateRoute(
     info.invalid_reason = "show_create_extra_tokens";
     return info;
   }
-  if (resolved_object_uuids.empty()) {
+  if (!BindSingleDdlTargetIdentity(resolved_object_uuids, &info.target_object_uuid)) {
     info.invalid_reason = "show_create_target_uuid_required";
     return info;
   }
-  info.target_object_uuid = resolved_object_uuids.front();
   info.valid = true;
   return info;
 }
 
 SecurityDclInfo AnalyzeSecurityDcl(const CstDocument& cst,
-                                   const std::vector<std::string>& resolved_object_uuids) {
+                                   const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   SecurityDclInfo info;
   std::size_t index = 0;
   const bool grant = ConsumeKeyword(cst, &index, "GRANT");
@@ -26204,11 +26209,8 @@ SecurityDclInfo AnalyzeSecurityDcl(const CstDocument& cst,
         info.opcode = SecurityOpcodeForOperation(info.operation_id);
         info.target_name_parts = member_name_parts;
         info.grantee_name_parts = container_name_parts;
-        info.valid = resolved_object_uuids.size() >= 2;
-        if (info.valid) {
-          info.member_principal_uuid = resolved_object_uuids[0];
-          info.container_uuid = resolved_object_uuids[1];
-        }
+        info.valid = BindSecurityDclIdentityPair(resolved_object_uuids,
+                                                 &info.member_principal_uuid, &info.container_uuid);
         return info;
       }
     }
@@ -26241,17 +26243,14 @@ SecurityDclInfo AnalyzeSecurityDcl(const CstDocument& cst,
   }
 
   info.valid = OnlyStatementTerminatorRemains(cst, index) &&
-               resolved_object_uuids.size() >= 2;
-  if (info.valid) {
-    info.target_object_uuid = resolved_object_uuids[0];
-    info.grantee_uuid = resolved_object_uuids[1];
-  }
+               BindSecurityDclIdentityPair(resolved_object_uuids,
+                                            &info.target_object_uuid, &info.grantee_uuid);
   return info;
 }
 
 SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   SecurityPolicyRouteInfo info;
   std::size_t index = 0;
 
@@ -26328,7 +26327,8 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
         info.invalid_reason = "drop_security_object_extra_tokens";
         return info;
       }
-      if (resolved_object_uuids.empty()) {
+      if (resolved_object_uuids.size() != 1 ||
+          !core::uuid::IsEngineIdentityUuid(resolved_object_uuids.front())) {
         info.invalid_reason = (role_drop || group_drop || principal_drop)
                                   ? "principal_uuid_required"
                                   : "policy_uuid_required";
@@ -26394,7 +26394,8 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
                                           : "create_role_unrecognized_clause";
         return info;
       }
-      if (resolved_object_uuids.empty()) {
+      if (resolved_object_uuids.size() != 1 ||
+          !core::uuid::IsEngineIdentityUuid(resolved_object_uuids.front())) {
         info.invalid_reason = group_route ? "group_uuid_required" : "role_uuid_required";
         return info;
       }
@@ -26454,7 +26455,8 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
         info.invalid_reason = "create_principal_unrecognized_clause";
         return info;
       }
-      if (resolved_object_uuids.empty()) {
+      if (resolved_object_uuids.size() != 1 ||
+          !core::uuid::IsEngineIdentityUuid(resolved_object_uuids.front())) {
         info.invalid_reason = "principal_uuid_required";
         return info;
       }
@@ -26567,19 +26569,16 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
                                           : "create_rls_unrecognized_clause";
         return info;
       }
-      if (resolved_object_uuids.size() < 2) {
-        info.invalid_reason = mask_create ? "mask_target_uuid_required" : "rls_target_uuid_required";
+      BoundPolicyObjectIdentities identities;
+      if (!BindPolicyObjectIdentities(resolved_object_uuids, info.role_name_parts != 0,
+                                     info.policy_name_parts > 1, &identities)) {
+        info.invalid_reason = "policy_complete_binary_binding_required";
         return info;
       }
-      info.policy_uuid = resolved_object_uuids[0];
-      info.target_object_uuid = resolved_object_uuids[1];
-      if (info.role_name_parts != 0 && resolved_object_uuids.size() >= 3) {
-        info.role_uuid = resolved_object_uuids[2];
-      }
-      const std::size_t policy_schema_index = 2 + (info.role_name_parts != 0 ? 1 : 0);
-      if (info.policy_name_parts > 1 && resolved_object_uuids.size() > policy_schema_index) {
-        info.target_schema_uuid = resolved_object_uuids[policy_schema_index];
-      }
+      info.policy_uuid = identities.policy_uuid;
+      info.target_object_uuid = identities.target_object_uuid;
+      info.role_uuid = identities.role_uuid;
+      info.target_schema_uuid = identities.target_schema_uuid;
       info.valid = true;
       return info;
     }
@@ -26677,19 +26676,16 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
         info.invalid_reason = "create_policy_unrecognized_clause";
         return info;
       }
-      if (resolved_object_uuids.size() < 2) {
-        info.invalid_reason = "policy_target_uuid_required";
+      BoundPolicyObjectIdentities identities;
+      if (!BindPolicyObjectIdentities(resolved_object_uuids, info.role_name_parts != 0,
+                                     info.policy_name_parts > 1, &identities)) {
+        info.invalid_reason = "policy_complete_binary_binding_required";
         return info;
       }
-      info.policy_uuid = resolved_object_uuids[0];
-      info.target_object_uuid = resolved_object_uuids[1];
-      if (info.role_name_parts != 0 && resolved_object_uuids.size() >= 3) {
-        info.role_uuid = resolved_object_uuids[2];
-      }
-      const std::size_t policy_schema_index = 2 + (info.role_name_parts != 0 ? 1 : 0);
-      if (info.policy_name_parts > 1 && resolved_object_uuids.size() > policy_schema_index) {
-        info.target_schema_uuid = resolved_object_uuids[policy_schema_index];
-      }
+      info.policy_uuid = identities.policy_uuid;
+      info.target_object_uuid = identities.target_object_uuid;
+      info.role_uuid = identities.role_uuid;
+      info.target_schema_uuid = identities.target_schema_uuid;
       info.valid = true;
       return info;
     }
@@ -26767,7 +26763,8 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
         info.invalid_reason = "alter_principal_action_required";
         return info;
       }
-      if (resolved_object_uuids.empty()) {
+      if (resolved_object_uuids.size() != 1 ||
+          !core::uuid::IsEngineIdentityUuid(resolved_object_uuids.front())) {
         info.invalid_reason = "principal_uuid_required";
         return info;
       }
@@ -26833,7 +26830,8 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
         info.invalid_reason = "alter_policy_action_required";
         return info;
       }
-      if (resolved_object_uuids.empty()) {
+      if (resolved_object_uuids.size() != 1 ||
+          !core::uuid::IsEngineIdentityUuid(resolved_object_uuids.front())) {
         info.invalid_reason = "policy_uuid_required";
         return info;
       }
@@ -26857,7 +26855,8 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
     if (PeekKeyword(cst, index, "NONE")) {
       ConsumeKeyword(cst, &index, "NONE");
       info.role_mode = "none";
-      info.valid = OnlyStatementTerminatorRemains(cst, index);
+      info.valid = OnlyStatementTerminatorRemains(cst, index) &&
+          BindOperationTargetIdentity(resolved_object_uuids, BoundTargetRequirement::none, &info.role_uuid);
       if (!info.valid) info.invalid_reason = "set_role_none_extra_tokens";
       return info;
     }
@@ -26869,7 +26868,8 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
       info.invalid_reason = "set_role_extra_tokens";
       return info;
     }
-    if (resolved_object_uuids.empty()) {
+    if (resolved_object_uuids.size() != 1 ||
+          !core::uuid::IsEngineIdentityUuid(resolved_object_uuids.front())) {
       info.invalid_reason = "role_uuid_required";
       return info;
     }
@@ -26899,7 +26899,8 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
       info.invalid_reason = "show_security_policy_extra_tokens";
       return info;
     }
-    if (resolved_object_uuids.empty()) {
+    if (resolved_object_uuids.size() != 1 ||
+          !core::uuid::IsEngineIdentityUuid(resolved_object_uuids.front())) {
       info.invalid_reason = "policy_uuid_required";
       return info;
     }
@@ -26938,7 +26939,8 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
       info.invalid_reason = "policy_statement_extra_tokens";
       return info;
     }
-    if (resolved_object_uuids.empty()) {
+    if (resolved_object_uuids.size() != 1 ||
+          !core::uuid::IsEngineIdentityUuid(resolved_object_uuids.front())) {
       info.invalid_reason = "policy_uuid_required";
       return info;
     }
@@ -27025,19 +27027,17 @@ SecurityPolicyRouteInfo AnalyzeSecurityPolicyRoute(
     info.invalid_reason = "attach_policy_extra_tokens";
     return info;
   }
-  const std::size_t required_uuids = role_required ? 3 : 2;
-  if (resolved_object_uuids.size() < required_uuids) {
-    info.invalid_reason = role_required ? "policy_target_role_uuids_required"
-                                        : "policy_target_uuids_required";
+  BoundPolicyObjectIdentities identities;
+  if (!BindPolicyObjectIdentities(resolved_object_uuids, role_required, false, &identities)) {
+    info.invalid_reason = "policy_complete_binary_binding_required";
     return info;
   }
-  info.policy_uuid = resolved_object_uuids[0];
-  info.target_object_uuid = resolved_object_uuids[1];
-  if (role_required) info.role_uuid = resolved_object_uuids[2];
+  info.policy_uuid = identities.policy_uuid;
+  info.target_object_uuid = identities.target_object_uuid;
+  info.role_uuid = identities.role_uuid;
   info.valid = true;
   return info;
 }
-
 SynonymDdlInfo AnalyzeSynonymDdl(const CstDocument& cst) {
   SynonymDdlInfo info;
   std::size_t index = 0;
@@ -27176,7 +27176,7 @@ std::string ConstraintEnvelopeForStatement(const CstDocument& cst,
 
 ConstraintDdlInfo AnalyzeConstraintDdl(
     const CstDocument& cst,
-    const std::vector<std::string>& resolved_object_uuids) {
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   ConstraintDdlInfo info;
   const auto words = MeaningfulUpperTokens(cst);
   if (words.size() < 2 || words[0] != "ALTER" || words[1] != "TABLE") {
@@ -27287,10 +27287,10 @@ ConstraintDdlInfo AnalyzeConstraintDdl(
   if (info.constraint_kind.empty() && info.operation_id == "ddl.constraint.drop") {
     info.constraint_kind = "constraint";
   }
-  if (!resolved_object_uuids.empty()) {
-    info.target_object_uuid = resolved_object_uuids.front();
-    info.owner_object_uuid = resolved_object_uuids.front();
-  }
+  std::span<const core::platform::Uuid> related;
+  info.identities_bound = BindTargetWithRelatedIdentities(
+      resolved_object_uuids, &info.target_object_uuid, &related);
+  if (info.identities_bound) info.related_object_uuids.assign(related.begin(), related.end());
   if (info.operation_id != "ddl.constraint.drop") {
     info.canonical_constraint_envelope =
         ConstraintEnvelopeForStatement(cst, info.enforcement_timing);
@@ -27300,6 +27300,14 @@ ConstraintDdlInfo AnalyzeConstraintDdl(
 
 void PopulateConstraintDdlAuthority(SblrEnvelope* envelope, const ConstraintDdlInfo& info) {
   if (!info.active) return;
+  if (!info.identities_bound ||
+      !AppendBoundQueryObjectIdentities(envelope, info.target_object_uuid, info.related_object_uuids)) {
+    envelope->messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR",
+        "Constraint DDL requires its complete bound binary target and dependency identities",
+        "sbp_sbsql.catalog_lowering"));
+    return;
+  }
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = ConstraintDdlOpcodeForOperation(info.operation_id);
   envelope->engine_api_operation_id = info.operation_id;
@@ -27403,8 +27411,11 @@ void PopulateSimpleCreateSchemaAuthority(SblrEnvelope* envelope, const SimpleCre
   AppendIfMissing(&envelope->policy_refs, "ddl_create_schema_authorization_policy");
 }
 
+bool PopulateSingleDdlTargetAuthority(SblrEnvelope* envelope, const core::platform::Uuid& target);
+
 void PopulateSimpleCreateStatisticsAuthority(SblrEnvelope* envelope, const SimpleCreateStatisticsInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleDdlTargetAuthority(envelope, info.statistics_target_uuid)) return;
   envelope->operation_id = "ddl.create_statistics";
   envelope->sblr_opcode = "SBLR_DDL_CREATE_STATISTICS";
   envelope->engine_api_operation_id = "ddl.create_statistics";
@@ -27431,6 +27442,7 @@ void PopulateSimpleCreateStatisticsAuthority(SblrEnvelope* envelope, const Simpl
 
 void PopulateSimpleCreateIndexAuthority(SblrEnvelope* envelope, const SimpleCreateIndexInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleDdlTargetAuthority(envelope, info.index_target_uuid)) return;
   envelope->operation_id = "ddl.create_index";
   envelope->sblr_opcode = "SBLR_DDL_CREATE_INDEX";
   envelope->engine_api_operation_id = "ddl.create_index";
@@ -27458,6 +27470,7 @@ void PopulateSimpleCreateIndexAuthority(SblrEnvelope* envelope, const SimpleCrea
 
 void PopulateIndexTemplateDdlAuthority(SblrEnvelope* envelope, const IndexTemplateDdlInfo& info) {
   if (!info.active || !info.valid) return;
+  if (info.drop && !PopulateSingleDdlTargetAuthority(envelope, info.target_object_uuid)) return;
   if (info.create) {
     envelope->operation_id = "ddl.create_index_template";
     envelope->sblr_opcode = "SBLR_DDL_CREATE_INDEX_TEMPLATE";
@@ -27493,6 +27506,7 @@ void PopulateIndexTemplateDdlAuthority(SblrEnvelope* envelope, const IndexTempla
 
 void PopulateCommentOnDdlAuthority(SblrEnvelope* envelope, const CommentOnDdlInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleDdlTargetAuthority(envelope, info.target_object_uuid)) return;
   envelope->operation_id = "ddl.comment_on_object";
   envelope->sblr_opcode = "SBLR_DDL_COMMENT_ON";
   envelope->engine_api_operation_id = "ddl.comment_on_object";
@@ -27515,8 +27529,19 @@ void PopulateCommentOnDdlAuthority(SblrEnvelope* envelope, const CommentOnDdlInf
   AppendIfMissing(&envelope->policy_refs, "ddl_comment_on_object_authorization_policy");
 }
 
+bool PopulateSingleDdlTargetAuthority(SblrEnvelope* envelope, const core::platform::Uuid& target) {
+  const std::array<std::pair<std::string_view, core::platform::Uuid>, 1> identities{{
+      {"target_object_uuid", target}}};
+  if (AppendBoundDmlObjectIdentities(envelope, identities)) return true;
+  envelope->messages.diagnostics.push_back(MakeDiagnostic(
+      "SBLR.OPERAND_INVALID", "ERROR",
+      "DDL requires an exact binary bound object identity.", "sbp_sbsql.catalog_lowering"));
+  return false;
+}
+
 void PopulateAlterRenameDdlAuthority(SblrEnvelope* envelope, const AlterRenameDdlInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleDdlTargetAuthority(envelope, info.target_object_uuid)) return;
   envelope->operation_id = "ddl.alter_object";
   envelope->sblr_opcode = "SBLR_DDL_ALTER_OBJECT";
   envelope->engine_api_operation_id = "ddl.alter_object";
@@ -27541,6 +27566,7 @@ void PopulateAlterRenameDdlAuthority(SblrEnvelope* envelope, const AlterRenameDd
 
 void PopulateAlterTableColumnDdlAuthority(SblrEnvelope* envelope, const AlterTableColumnDdlInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleDdlTargetAuthority(envelope, info.target_object_uuid)) return;
   envelope->operation_id = "ddl.alter_object";
   envelope->sblr_opcode = "SBLR_DDL_ALTER_OBJECT";
   envelope->engine_api_operation_id = "ddl.alter_object";
@@ -27564,6 +27590,7 @@ void PopulateAlterTableColumnDdlAuthority(SblrEnvelope* envelope, const AlterTab
 
 void PopulateAlterDomainDdlAuthority(SblrEnvelope* envelope, const AlterDomainDdlInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleDdlTargetAuthority(envelope, info.target_object_uuid)) return;
   envelope->operation_id = "ddl.alter_object";
   envelope->sblr_opcode = "SBLR_DDL_ALTER_OBJECT";
   envelope->engine_api_operation_id = "ddl.alter_object";
@@ -27588,6 +27615,7 @@ void PopulateAlterDomainDdlAuthority(SblrEnvelope* envelope, const AlterDomainDd
 
 void PopulateAlterSequenceDdlAuthority(SblrEnvelope* envelope, const AlterSequenceDdlInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleDdlTargetAuthority(envelope, info.target_object_uuid)) return;
   envelope->operation_id = "ddl.alter_object";
   envelope->sblr_opcode = "SBLR_DDL_ALTER_OBJECT";
   envelope->engine_api_operation_id = "ddl.alter_object";
@@ -27613,6 +27641,7 @@ void PopulateAlterSequenceDdlAuthority(SblrEnvelope* envelope, const AlterSequen
 
 void PopulateSimpleDropObjectAuthority(SblrEnvelope* envelope, const SimpleDropObjectDdlInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleDdlTargetAuthority(envelope, info.target_object_uuid)) return;
   envelope->operation_id = "ddl.drop_object";
   envelope->sblr_opcode = "SBLR_DDL_DROP_OBJECT";
   envelope->engine_api_operation_id = "ddl.drop_object";
@@ -27725,6 +27754,14 @@ void PopulateSimpleCreateDomainAuthority(SblrEnvelope* envelope, const SimpleCre
 void PopulateSimpleCreateExecutableObjectAuthority(SblrEnvelope* envelope,
                                                    const SimpleCreateExecutableObjectInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!AppendBoundQueryObjectIdentities(envelope, info.target_object_uuid,
+                                       info.body_dependency_uuids)) {
+    envelope->messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR",
+        "Executable-object target and dependencies must retain their complete binary binding",
+        "sbp_sbsql.catalog_lowering"));
+    return;
+  }
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = info.sblr_opcode;
   envelope->engine_api_operation_id = info.operation_id;
@@ -27759,6 +27796,16 @@ void PopulateSimpleCreateExecutableObjectAuthority(SblrEnvelope* envelope,
 void PopulateRoutineInvocationAuthority(SblrEnvelope* envelope,
                                         const RoutineInvocationInfo& info) {
   if (!info.active || !info.valid) return;
+  const std::array<std::pair<std::string_view, core::platform::Uuid>, 2> identities{{
+      {"target_object_uuid", info.routine_object_uuid},
+      {"routine_object_uuid", info.routine_object_uuid}}};
+  if (!AppendBoundDmlObjectIdentities(envelope, identities)) {
+    envelope->messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR",
+        "Routine invocation requires an exact binary bound object identity.",
+        "sbp_sbsql.routine_lowering"));
+    return;
+  }
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = info.sblr_opcode;
   envelope->engine_api_operation_id = info.operation_id;
@@ -27786,12 +27833,22 @@ void PopulateRoutineInvocationAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->descriptor_requirements, "sys.executable_object_descriptor");
   AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "routine_execute_authorization_policy");
-  AppendIfMissing(&envelope->resolved_object_uuids, info.routine_object_uuid);
 }
 
 void PopulateCatalogDescriptorMutationAuthority(SblrEnvelope* envelope,
                                                 const CatalogDescriptorMutationInfo& info) {
   if (!info.active || !info.valid) return;
+  if (info.requires_existing_uuid || !info.target_object_uuid.is_nil()) {
+    const std::array<std::pair<std::string_view, core::platform::Uuid>, 1> identities{{
+        {"target_object_uuid", info.target_object_uuid}}};
+    if (!AppendBoundDmlObjectIdentities(envelope, identities)) {
+      envelope->messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.OPERAND_INVALID", "ERROR",
+          "Catalog mutation requires an exact binary bound object identity.",
+          "sbp_sbsql.catalog_lowering"));
+      return;
+    }
+  }
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = info.opcode;
   envelope->engine_api_operation_id = info.operation_id;
@@ -27821,9 +27878,6 @@ void PopulateCatalogDescriptorMutationAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->descriptor_requirements, "sys.catalog.descriptor_mutation_request");
   AppendIfMissing(&envelope->descriptor_requirements, "sys.name_registry");
   AppendIfMissing(&envelope->policy_refs, "catalog_descriptor_mutation_authorization_policy");
-  if (!info.target_object_uuid.empty()) {
-    AppendIfMissing(&envelope->resolved_object_uuids, info.target_object_uuid);
-  }
 }
 
 void PopulateTransactionLockAuthority(SblrEnvelope* envelope,
@@ -27883,6 +27937,7 @@ void PopulateTransactionLockAuthority(SblrEnvelope* envelope,
 
 void PopulateShowCreateAuthority(SblrEnvelope* envelope, const ShowCreateRouteInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleDdlTargetAuthority(envelope, info.target_object_uuid)) return;
   envelope->operation_id = "catalog.get_descriptor";
   envelope->sblr_opcode = "SBLR_CATALOG_GET_DESCRIPTOR";
   envelope->engine_api_operation_id = "catalog.get_descriptor";
@@ -27903,6 +27958,17 @@ void PopulateShowCreateAuthority(SblrEnvelope* envelope, const ShowCreateRouteIn
 
 void PopulateSecurityDclAuthority(SblrEnvelope* envelope, const SecurityDclInfo& info) {
   if (!info.active || !info.valid) return;
+  const std::array<std::pair<std::string_view, core::platform::Uuid>, 2> identities{{
+      {info.membership ? "member_principal_uuid" : "target_object_uuid",
+       info.membership ? info.member_principal_uuid : info.target_object_uuid},
+      {info.membership ? "container_uuid" : "grantee_uuid",
+       info.membership ? info.container_uuid : info.grantee_uuid}}};
+  if (!AppendBoundDmlObjectIdentities(envelope, identities)) {
+    envelope->messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR", "Security DCL requires its exact binary identity pair",
+        "sbp_sbsql.security_lowering"));
+    return;
+  }
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = info.opcode;
   envelope->engine_api_operation_id = info.operation_id;
@@ -27928,6 +27994,23 @@ void PopulateSecurityDclAuthority(SblrEnvelope* envelope, const SecurityDclInfo&
 void PopulateSecurityPolicyRouteAuthority(SblrEnvelope* envelope,
                                           const SecurityPolicyRouteInfo& info) {
   if (!info.active || !info.valid) return;
+  std::array<std::pair<std::string_view, core::platform::Uuid>, 5> identities;
+  std::size_t identity_count = 0;
+  const auto append = [&](std::string_view role, const core::platform::Uuid& identity) {
+    if (!identity.is_nil()) identities[identity_count++] = {role, identity};
+  };
+  append("principal_uuid", info.principal_uuid);
+  append("policy_uuid", info.policy_uuid);
+  append("target_object_uuid", info.target_object_uuid);
+  append("role_uuid", info.role_uuid);
+  append("target_schema_uuid", info.target_schema_uuid);
+  if (!AppendBoundDmlObjectIdentities(envelope,
+          std::span(identities).first(identity_count))) {
+    envelope->messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR", "Security policy requires its complete binary identity binding",
+        "sbp_sbsql.security_lowering"));
+    return;
+  }
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = info.opcode;
   envelope->engine_api_operation_id = info.operation_id;
@@ -27985,7 +28068,10 @@ void PopulateSecurityPolicyRouteAuthority(SblrEnvelope* envelope,
   } else if (info.operation_id == "security.role.create" ||
              info.operation_id == "security.group.create" ||
              info.operation_id == "security.principal.create" ||
-             info.operation_id == "security.principal.alter") {
+             info.operation_id == "security.principal.alter" ||
+             info.operation_id == "security.role.drop" ||
+             info.operation_id == "security.group.drop" ||
+             info.operation_id == "security.principal.drop") {
     AppendIfMissing(&envelope->descriptor_requirements, "sys.security.principal");
     AppendIfMissing(&envelope->policy_refs, "security_principal_management_policy");
   } else {
@@ -28397,6 +28483,8 @@ void PopulateEngineApiCommandAuthority(SblrEnvelope* envelope,
 void PopulateEventNotificationAuthority(SblrEnvelope* envelope,
                                         const EventNotificationRouteInfo& info) {
   if (!info.active || !info.valid) return;
+  if (info.requires_channel_uuid &&
+      !PopulateSingleDdlTargetAuthority(envelope, info.channel_uuid)) return;
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = info.opcode;
   envelope->engine_api_operation_id = info.operation_id;
@@ -28554,6 +28642,21 @@ void PopulateUdrPackageAuthority(SblrEnvelope* envelope, const UdrPackageRouteIn
 
 void PopulateDmlRouteAuthority(SblrEnvelope* envelope, const DmlRouteInfo& info) {
   if (!info.active || !info.valid) return;
+  std::vector<std::pair<std::string_view, core::platform::Uuid>> identities;
+  for (const auto& [role, identity] : std::initializer_list<std::pair<std::string_view, core::platform::Uuid>>{
+      {"target_object_uuid", info.target_object_uuid}, {"source_uuid", info.source_object_uuid},
+      {"routine_object_uuid", info.selectable_procedure_source ? info.source_object_uuid : core::platform::Uuid{}},
+      {"insert_select_source_uuid_0", info.insert_select_source_uuid_0},
+      {"insert_select_source_uuid_1", info.insert_select_source_uuid_1}}) {
+    if (identity.is_nil() && !(role == "target_object_uuid" && info.requires_target_uuid)) continue;
+    identities.emplace_back(role, identity);
+  }
+  if (!AppendBoundDmlObjectIdentities(envelope, identities)) {
+    envelope->messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR", "DML requires an exact binary bound object identity.",
+        "sbp_sbsql.dml_lowering"));
+    return;
+  }
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = info.opcode;
   envelope->engine_api_operation_id = info.operation_id;
@@ -28614,6 +28717,25 @@ void PopulateDmlRouteAuthority(SblrEnvelope* envelope, const DmlRouteInfo& info)
 
 void PopulateScalarProjectionAuthority(SblrEnvelope* envelope, const ScalarProjectionInfo& info) {
   if (!info.active || !info.valid) return;
+  std::vector<std::pair<std::string, core::platform::Uuid>> functions;
+  const auto collect = [&](const auto& self, const ScalarProjectionItem& item,
+                           const std::string& prefix) -> void {
+    if (!item.function_uuid.is_nil())
+      functions.emplace_back(prefix + "function_uuid", item.function_uuid);
+    for (std::size_t i = 0; i < item.arguments.size(); ++i)
+      self(self, item.arguments[i], prefix + "arg_" + std::to_string(i) + "_");
+  };
+  for (std::size_t i = 0; i < info.items.size(); ++i)
+    collect(collect, info.items[i], "projection_" + std::to_string(i) + "_");
+  std::vector<std::pair<std::string_view, core::platform::Uuid>> bindings;
+  bindings.reserve(functions.size());
+  for (const auto& [path, identity] : functions) bindings.emplace_back(path, identity);
+  if (!AppendBoundDmlObjectIdentities(envelope, bindings)) {
+    envelope->messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR", "Scalar calls require complete bound binary function identities",
+        "sbp_sbsql.scalar_lowering"));
+    return;
+  }
   envelope->operation_id = "query.evaluate_projection";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -28693,6 +28815,13 @@ void PopulateValuesSetOperationAuthority(SblrEnvelope* envelope,
 
 void PopulateTableJoinAuthority(SblrEnvelope* envelope, const TableJoinInfo& info) {
   if (!info.active || !info.valid) return;
+  const std::array<core::platform::Uuid, 1> related{{info.right_object_uuid}};
+  if (!AppendBoundQueryObjectIdentities(envelope, info.left_object_uuid, related)) {
+    envelope->messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR", "JOIN requires exact binary bound relation identities.",
+        "sbp_sbsql.query_lowering"));
+    return;
+  }
   envelope->operation_id = "query.plan_operation";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -28719,6 +28848,16 @@ void PopulateTableJoinAuthority(SblrEnvelope* envelope, const TableJoinInfo& inf
 void PopulateTableSetOperationAuthority(SblrEnvelope* envelope,
                                         const TableSetOperationInfo& info) {
   if (!info.active || !info.valid) return;
+  const std::array<core::platform::Uuid, 2> pair{{info.left_object_uuid, info.right_object_uuid}};
+  const std::span<const core::platform::Uuid> relations = info.relation_object_uuids.empty()
+      ? std::span<const core::platform::Uuid>(pair)
+      : std::span<const core::platform::Uuid>(info.relation_object_uuids);
+  if (!AppendBoundQueryObjectIdentities(envelope, relations.front(), relations.subspan(1))) {
+    envelope->messages.diagnostics.push_back(MakeDiagnostic(
+        "SBLR.OPERAND_INVALID", "ERROR", "Set operation requires exact binary bound relation identities.",
+        "sbp_sbsql.query_lowering"));
+    return;
+  }
   envelope->operation_id = "query.plan_operation";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -28741,8 +28880,17 @@ void PopulateTableSetOperationAuthority(SblrEnvelope* envelope,
   AppendIfMissing(&envelope->policy_refs, "row_visibility_policy");
 }
 
+bool PopulateSingleQueryTargetIdentity(SblrEnvelope* envelope, const core::platform::Uuid& target) {
+  if (AppendBoundSingleQueryObjectIdentity(envelope, target)) return true;
+  envelope->messages.diagnostics.push_back(MakeDiagnostic(
+      "SBLR.OPERAND_INVALID", "ERROR", "Query requires an exact binary bound relation identity.",
+      "sbp_sbsql.query_lowering"));
+  return false;
+}
+
 void PopulateTableSampleAuthority(SblrEnvelope* envelope, const TableSampleInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleQueryTargetIdentity(envelope, info.object_uuid)) return;
   envelope->operation_id = "query.plan_operation";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -28768,6 +28916,7 @@ void PopulateTableSampleAuthority(SblrEnvelope* envelope, const TableSampleInfo&
 
 void PopulatePivotAuthority(SblrEnvelope* envelope, const PivotRouteInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleQueryTargetIdentity(envelope, info.object_uuid)) return;
   envelope->operation_id = "query.plan_operation";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -28793,6 +28942,7 @@ void PopulatePivotAuthority(SblrEnvelope* envelope, const PivotRouteInfo& info) 
 
 void PopulateUnpivotAuthority(SblrEnvelope* envelope, const UnpivotRouteInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleQueryTargetIdentity(envelope, info.object_uuid)) return;
   envelope->operation_id = "query.plan_operation";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -28819,6 +28969,7 @@ void PopulateUnpivotAuthority(SblrEnvelope* envelope, const UnpivotRouteInfo& in
 void PopulateRowNumberWindowAuthority(SblrEnvelope* envelope,
                                       const RowNumberWindowInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleQueryTargetIdentity(envelope, info.object_uuid)) return;
   envelope->operation_id = "query.plan_operation";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -28844,6 +28995,7 @@ void PopulateRowNumberWindowAuthority(SblrEnvelope* envelope,
 void PopulateGroupByAggregateAuthority(SblrEnvelope* envelope,
                                        const GroupByAggregateInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleQueryTargetIdentity(envelope, info.object_uuid)) return;
   envelope->operation_id = "query.plan_operation";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -28868,6 +29020,7 @@ void PopulateGroupByAggregateAuthority(SblrEnvelope* envelope,
 
 void PopulateTableCountAuthority(SblrEnvelope* envelope, const TableCountInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!info.catalog_projection_count && !PopulateSingleQueryTargetIdentity(envelope, info.object_uuid)) return;
   if (info.catalog_projection_count) {
     envelope->operation_id = "observability.show_catalog";
     envelope->sblr_opcode = ObservabilityOpcodeForOperation(envelope->operation_id);
@@ -28914,6 +29067,7 @@ void PopulateTableCountAuthority(SblrEnvelope* envelope, const TableCountInfo& i
 void PopulateMaterializedCteAuthority(SblrEnvelope* envelope,
                                       const MaterializedCteInfo& info) {
   if (!info.active || !info.valid) return;
+  if (info.table_backed && !PopulateSingleQueryTargetIdentity(envelope, info.object_uuid)) return;
   envelope->operation_id = "query.plan_operation";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -28949,6 +29103,7 @@ void PopulateMaterializedCteAuthority(SblrEnvelope* envelope,
 void PopulateScalarSubqueryAuthority(SblrEnvelope* envelope,
                                      const ScalarSubqueryInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleQueryTargetIdentity(envelope, info.object_uuid)) return;
   envelope->operation_id = "query.plan_operation";
   envelope->sblr_opcode = QueryOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -28974,6 +29129,7 @@ void PopulateScalarSubqueryAuthority(SblrEnvelope* envelope,
 void PopulateVectorSearchAuthority(SblrEnvelope* envelope,
                                    const VectorSearchRouteInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleQueryTargetIdentity(envelope, info.target_object_uuid)) return;
   envelope->operation_id = "nosql.vector_search";
   envelope->sblr_opcode = NoSqlOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -29040,6 +29196,7 @@ void PopulateVectorCollectionOperationAuthority(
     SblrEnvelope* envelope,
     const VectorCollectionOperationInfo& info) {
   if (!info.active || !info.valid) return;
+  if (!PopulateSingleQueryTargetIdentity(envelope, info.target_object_uuid)) return;
   envelope->operation_id = "nosql.vector_collection_op";
   envelope->sblr_opcode = NoSqlOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -29071,6 +29228,7 @@ void PopulateVectorCollectionOperationAuthority(
 void PopulateMultiModelNoSqlAuthority(SblrEnvelope* envelope,
                                       const MultiModelNoSqlRouteInfo& info) {
   if (!info.active || !info.valid) return;
+  if (info.target_uuid_required && !PopulateSingleQueryTargetIdentity(envelope, info.target_object_uuid)) return;
   envelope->operation_id = info.operation_id;
   envelope->sblr_opcode = NoSqlOpcodeForOperation(envelope->operation_id);
   envelope->engine_api_operation_id = envelope->operation_id;
@@ -29149,6 +29307,8 @@ void PopulateSbsfc077NonGeneralResidualAuthority(
     SblrEnvelope* envelope,
     const Sbsfc077NonGeneralResidualRouteInfo& info) {
   if (envelope == nullptr || !info.active || !info.valid) return;
+  if (info.object_kind == "filespace" &&
+      !PopulateSingleDdlTargetAuthority(envelope, info.target_object_uuid)) return;
 
   envelope->operation_family = info.route_family;
   envelope->sblr_operation_key = info.route_family;
@@ -29563,7 +29723,6 @@ void AppendVectorSearchJson(std::ostream& out, const VectorSearchRouteInfo& info
       << "\"query_execute\":\"true\","
       << "\"vector_operation_id\":\"nosql.vector_search\","
       << "\"target_object_kind\":\"vector_collection\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"target_name_parts\":" << info.target_name_parts << ','
       << "\"body_kind\":\""
       << (info.with_body ? "with_args" : (info.operator_body ? "distance_operator" : "unknown"))
@@ -29613,7 +29772,6 @@ void AppendMultiModelNoSqlJson(std::ostream& out,
       << "\"multimodel_surface\":\"" << EscapeJson(info.surface) << "\","
       << "\"multimodel_route_kind\":\"" << EscapeJson(info.route_kind) << "\","
       << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"target_name_parts\":" << info.target_name_parts << ','
       << "\"source_relation_required\":" << (info.target_uuid_required ? "true," : "false,")
       << "\"row_storage_touched\":" << (info.mutation ? "true" : "false") << ','
@@ -29720,10 +29878,6 @@ void AppendSbsfc077NonGeneralResidualJson(
       << "\"private_error_vector_route\":false,"
       << "\"cluster_provider_dispatch\":false,"
       << "\"private_cluster_execution\":false,";
-  if (!info.target_object_uuid.empty()) {
-    out << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
-        << "\"target_filespace_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\",";
-  }
   if (!info.requested_pages.empty()) {
     out << "\"requested_pages\":\"" << EscapeJson(info.requested_pages) << "\",";
   }
@@ -30053,7 +30207,6 @@ void AppendCatalogDescriptorMutationJson(std::ostream& out,
       << "\"catalog_descriptor_read_only\":" << (!info.mutating ? "true" : "false") << ','
       << "\"ddl_operation_id\":\"" << EscapeJson(info.operation_id) << "\","
       << "\"target_object_kind\":\"" << EscapeJson(info.object_kind) << "\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"target_name_parts\":" << info.name_parts << ','
       << "\"name\":\"" << EscapeJson(info.object_name) << "\","
       << "\"schema_parent_path\":\"" << EscapeJson(info.schema_parent_path) << "\","
@@ -30112,7 +30265,6 @@ void AppendVectorCollectionOperationJson(std::ostream& out,
       << "\"vector_operation_id\":\"nosql.vector_collection_op\","
       << "\"vector_collection_operation\":\"" << EscapeJson(info.operation) << "\","
       << "\"target_object_kind\":\"vector_collection\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"collection_name_parts\":" << info.collection_name_parts << ','
       << "\"with_options_present\":"
       << (info.with_options_present ? "true" : "false") << ','
@@ -30135,13 +30287,7 @@ void AppendConstraintDdlJson(std::ostream& out, const ConstraintDdlInfo& info) {
       << "\"catalog_action\":\"" << EscapeJson(info.catalog_action) << "\","
       << "\"constraint_operation_id\":\"" << EscapeJson(info.operation_id) << "\","
       << "\"constraint_sblr_operation\":\"" << EscapeJson(ConstraintDdlOpcodeForOperation(info.operation_id)) << "\",";
-  if (!info.target_object_uuid.empty()) {
-    out << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
-        << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\",";
-  }
-  if (!info.owner_object_uuid.empty()) {
-    out << "\"owner_object_uuid\":\"" << EscapeJson(info.owner_object_uuid) << "\",";
-  }
+  out << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\",";
   if (!info.constraint_name.empty()) {
     out << "\"constraint_name\":\"" << EscapeJson(info.constraint_name) << "\",";
   }
@@ -30287,9 +30433,8 @@ void AppendSimpleCreateStatisticsJson(std::ostream& out, const SimpleCreateStati
       << "\"catalog_authority\":\"sys.optimizer.statistics_descriptor\","
       << "\"catalog_action\":\"create_statistics_descriptor\","
       << "\"ddl_operation_id\":\"ddl.create_statistics\","
-      << "\"target_object_kind\":\"statistics\","
+      << "\"target_object_kind\":\"table\","
       << "\"statistics_target_kind\":\"table\","
-      << "\"statistics_target_uuid\":\"" << EscapeJson(info.statistics_target_uuid) << "\","
       << "\"statistics_kind\":\"" << EscapeJson(info.statistics_kind) << "\","
       << "\"statistics_name_parts\":" << info.statistics_name_parts << ','
       << "\"statistics_kind_count\":" << info.statistics_kind_count << ','
@@ -30341,9 +30486,8 @@ void AppendSimpleCreateIndexJson(std::ostream& out, const SimpleCreateIndexInfo&
       << "\"catalog_authority\":\"sys.catalog.index\","
       << "\"catalog_action\":\"create_index_descriptor\","
       << "\"ddl_operation_id\":\"ddl.create_index\","
-      << "\"target_object_kind\":\"index\","
+      << "\"target_object_kind\":\"table\","
       << "\"index_target_kind\":\"table\","
-      << "\"index_target_uuid\":\"" << EscapeJson(info.index_target_uuid) << "\","
       << "\"index_name\":\"" << EscapeJson(info.index_name) << "\","
       << "\"index_name_parts\":" << info.index_name_parts << ','
       << "\"index_target_name_parts\":" << info.target_table_name_parts << ','
@@ -30390,9 +30534,6 @@ void AppendIndexTemplateDdlJson(std::ostream& out, const IndexTemplateDdlInfo& i
       << "\"version_present\":" << (info.version_present ? "true" : "false") << ','
       << "\"meta_document_present\":" << (info.meta_document_present ? "true" : "false") << ','
       << "\"template_document_present\":" << (info.template_document_present ? "true" : "false") << ',';
-  if (!info.target_object_uuid.empty()) {
-    out << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\",";
-  }
   AppendJsonStringArray(out, "row_surface_ids", {"SBSQL-07D017E18394"});
   out << ','
       << "\"target_uuid_resolution\":\"server_name_registry_required\","
@@ -30411,8 +30552,6 @@ void AppendCommentOnDdlJson(std::ostream& out, const CommentOnDdlInfo& info) {
       << "\"ddl_operation_id\":\"ddl.comment_on_object\","
       << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\","
       << "\"comment_target_kind\":\"" << EscapeJson(info.target_object_kind) << "\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
-      << "\"comment_target_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"comment_target_name_parts\":" << info.target_name_parts << ','
       << "\"comment_literal_present\":" << (info.comment_is_null ? "false" : "true") << ','
       << "\"comment_is_null\":" << (info.comment_is_null ? "true" : "false") << ','
@@ -30441,18 +30580,12 @@ void AppendAlterRenameDdlJson(std::ostream& out, const AlterRenameDdlInfo& info)
       << "\"ddl_operation_id\":\"ddl.alter_object\","
       << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\","
       << "\"rename_target_kind\":\"" << EscapeJson(info.target_object_kind) << "\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
-      << "\"rename_target_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"rename_target_name_parts\":" << info.target_name_parts << ','
       << "\"new_name\":\"" << EscapeJson(info.new_name) << "\","
       << "\"rename_new_name\":\"" << EscapeJson(info.new_name) << "\","
       << "\"new_name_text_is_user_payload\":true,"
       << "\"rename_statement_variant\":\""
       << (info.standalone_rename ? "rename_object_stmt" : "alter_object_stmt") << "\",";
-  if (!info.target_schema_uuid.empty()) {
-    out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\","
-        << "\"schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
-  }
   if (info.standalone_rename) {
     AppendJsonStringArray(out,
                           "row_surface_ids",
@@ -30485,7 +30618,6 @@ void AppendAlterTableColumnDdlJson(std::ostream& out, const AlterTableColumnDdlI
       << "\"catalog_action\":\"alter_table_column\","
       << "\"ddl_operation_id\":\"ddl.alter_object\","
       << "\"target_object_kind\":\"table\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"table_alter_action\":\"" << EscapeJson(info.action) << "\","
       << "\"column_name\":\"" << EscapeJson(info.column_name) << "\",";
   if (!info.new_column_name.empty()) {
@@ -30496,10 +30628,6 @@ void AppendAlterTableColumnDdlJson(std::ostream& out, const AlterTableColumnDdlI
   }
   if (!info.default_expression.empty()) {
     out << "\"default_expression\":\"" << EscapeJson(info.default_expression) << "\",";
-  }
-  if (!info.target_schema_uuid.empty()) {
-    out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\","
-        << "\"schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
   }
   AppendJsonStringArray(out,
                         "row_surface_ids",
@@ -30519,13 +30647,7 @@ void AppendAlterDomainDdlJson(std::ostream& out, const AlterDomainDdlInfo& info)
       << "\"catalog_action\":\"alter_domain_descriptor\","
       << "\"ddl_operation_id\":\"ddl.alter_object\","
       << "\"target_object_kind\":\"domain\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
-      << "\"domain_target_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"domain_name_parts\":" << info.domain_name_parts << ',';
-  if (!info.target_schema_uuid.empty()) {
-    out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\","
-        << "\"schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
-  }
   if (!info.default_expression_envelope.empty()) {
     out << "\"default_expression\":\"" << EscapeJson(info.default_expression_envelope) << "\",";
   }
@@ -30555,14 +30677,8 @@ void AppendAlterSequenceDdlJson(std::ostream& out, const AlterSequenceDdlInfo& i
       << "\"catalog_action\":\"alter_sequence_descriptor\","
       << "\"ddl_operation_id\":\"ddl.alter_object\","
       << "\"target_object_kind\":\"sequence\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
-      << "\"sequence_target_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"sequence_name_parts\":" << info.sequence_name_parts << ','
       << "\"sequence_lookup_key\":\"" << EscapeJson(info.sequence_lookup_key) << "\",";
-  if (!info.target_schema_uuid.empty()) {
-    out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\","
-        << "\"schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
-  }
   if (info.cache_present) {
     out << "\"sequence_cache\":\"" << EscapeJson(info.cache_value) << "\",";
   }
@@ -30589,14 +30705,8 @@ void AppendSimpleDropObjectJson(std::ostream& out, const SimpleDropObjectDdlInfo
       << "\"ddl_operation_id\":\"ddl.drop_object\","
       << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\","
       << "\"drop_target_kind\":\"" << EscapeJson(info.target_object_kind) << "\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
-      << "\"drop_target_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
       << "\"drop_target_name_parts\":" << info.target_name_parts << ','
       << "\"if_exists\":" << (info.if_exists ? "true" : "false") << ',';
-  if (!info.target_schema_uuid.empty()) {
-    out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\","
-        << "\"schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
-  }
   std::vector<std::string> row_surface_ids = {
       "SBSQL-40CAFAB37942",
       "SBSQL-CFFCCDEF6AC4",
@@ -30803,10 +30913,6 @@ void AppendSimpleCreateExecutableObjectJson(std::ostream& out,
     out << "\"" << EscapeJson(info.object_kind) << "_name\":\""
         << EscapeJson(info.object_name) << "\",";
   }
-  if (!info.target_object_uuid.empty()) {
-    out << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
-        << "\"object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\",";
-  }
   if (!info.schema_parent_path.empty()) {
     out << "\"schema_parent_path\":\"" << EscapeJson(info.schema_parent_path) << "\",";
   }
@@ -30887,15 +30993,7 @@ void AppendSimpleCreateExecutableObjectJson(std::ostream& out,
         << "\"compiled_body_provenance\":\"sbsql_udr_lowering\","
         << "\"compiled_body_descriptor\":\""
         << EscapeJson(info.compiled_body_descriptor) << "\",";
-    std::size_t dependency_index = 0;
-    for (const auto& dependency_uuid : info.body_dependency_uuids) {
-      if (dependency_uuid.empty()) continue;
-      out << "\"related_object_" << dependency_index << "_uuid\":\""
-          << EscapeJson(dependency_uuid) << "\","
-          << "\"related_object_" << dependency_index << "_kind\":\"table\",";
-      ++dependency_index;
-    }
-    out << "\"related_object_count\":" << dependency_index << ',';
+    out << "\"related_object_count\":" << info.body_dependency_uuids.size() << ',';
   } else {
     out << "\"body_compilation_included\":false,";
   }
@@ -30915,13 +31013,7 @@ void AppendRoutineInvocationJson(std::ostream& out,
       << "\"routine_invocation_operation\":\"" << EscapeJson(info.operation_id) << "\","
       << "\"target_object_kind\":\"" << EscapeJson(info.invocation_kind) << "\","
       << "\"routine_name\":\"" << EscapeJson(info.routine_name) << "\","
-      << "\"routine_name_parts\":" << info.routine_name_parts << ','
-      << "\"routine_object_uuid\":\"" << EscapeJson(info.routine_object_uuid) << "\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.routine_object_uuid) << "\","
-      << "\"object_uuid\":\"" << EscapeJson(info.routine_object_uuid) << "\",";
-  if (!info.target_schema_uuid.empty()) {
-    out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
-  }
+      << "\"routine_name_parts\":" << info.routine_name_parts << ',';
   AppendJsonStringArray(out, "row_surface_ids", info.row_surface_ids);
   out << ','
       << "\"routine_argument_count\":" << info.arguments.size() << ',';
@@ -30954,8 +31046,7 @@ void AppendShowCreateJson(std::ostream& out, const ShowCreateRouteInfo& info) {
       << "\"descriptor_rendering\":\"create_statement\","
       << "\"target_object_kind\":\"" << EscapeJson(info.target_kind) << "\","
       << "\"show_create_target_kind\":\"" << EscapeJson(info.target_kind) << "\","
-      << "\"target_name_parts\":" << info.target_name_parts << ','
-      << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\",";
+      << "\"target_name_parts\":" << info.target_name_parts << ',';
   AppendJsonStringArray(out, "show_create_surface_ids", info.row_surface_ids);
   out << ','
       << "\"target_uuid_resolution\":\"server_name_registry_required\","
@@ -31100,16 +31191,11 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
         << "\"SBSQL-41BE7F0451CF\""
         << "],";
   }
-  if (!info.target_object_uuid.empty()) {
-    out << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\",";
-  }
-  if (!info.source_object_uuid.empty()) {
+  if (!info.source_object_uuid.is_nil()) {
     out << "\"source_kind\":\""
-        << EscapeJson(info.source_kind.empty() ? "table" : info.source_kind) << "\","
-        << "\"source_uuid\":\"" << EscapeJson(info.source_object_uuid) << "\",";
+        << EscapeJson(info.source_kind.empty() ? "table" : info.source_kind) << "\",";
     if (info.selectable_procedure_source) {
-      out << "\"routine_object_uuid\":\"" << EscapeJson(info.source_object_uuid) << "\","
-          << "\"routine_argument_count\":" << info.routine_arguments.size() << ',';
+      out << "\"routine_argument_count\":" << info.routine_arguments.size() << ',';
       for (std::size_t index = 0; index < info.routine_arguments.size(); ++index) {
         const auto& argument = info.routine_arguments[index];
         out << "\"routine_argument_" << index << "_type\":\""
@@ -31303,14 +31389,6 @@ void AppendDmlRouteJson(std::ostream& out, const DmlRouteInfo& info) {
         << info.insert_select_projections.size() << "\","
         << "\"insert_select_descriptor_bound\":true,"
         << "\"insert_select_parser_executes_sql\":false,";
-    if (!info.insert_select_source_uuid_0.empty()) {
-      out << "\"insert_select_source_uuid_0\":\""
-          << EscapeJson(info.insert_select_source_uuid_0) << "\",";
-    }
-    if (!info.insert_select_source_uuid_1.empty()) {
-      out << "\"insert_select_source_uuid_1\":\""
-          << EscapeJson(info.insert_select_source_uuid_1) << "\",";
-    }
     for (std::size_t index = 0; index < info.insert_select_projections.size(); ++index) {
       out << "\"insert_select_projection_" << index << "\":\""
           << EscapeJson(info.insert_select_projections[index]) << "\",";
@@ -31771,15 +31849,11 @@ void AppendSecurityDclJson(std::ostream& out, const SecurityDclInfo& info) {
       << (info.membership ? "membership" : "privilege") << "\","
       << "\"security_operation_id\":\"" << EscapeJson(info.operation_id) << "\",";
   if (info.membership) {
-    out << "\"member_principal_uuid\":\"" << EscapeJson(info.member_principal_uuid) << "\","
-        << "\"container_uuid\":\"" << EscapeJson(info.container_uuid) << "\","
-        << "\"container_kind\":\"" << EscapeJson(info.container_kind) << "\",";
+    out << "\"container_kind\":\"" << EscapeJson(info.container_kind) << "\",";
   } else {
     out << "\"privilege\":\"" << EscapeJson(info.privilege) << "\","
         << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\","
-        << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\","
         << "\"grantee_kind\":\"" << EscapeJson(info.grantee_kind) << "\","
-        << "\"grantee_uuid\":\"" << EscapeJson(info.grantee_uuid) << "\","
         << "\"grant_effect\":\"" << EscapeJson(info.grant_effect) << "\",";
   }
   out << "\"grant_option\":" << (info.grant_option ? "true" : "false") << ','
@@ -31816,9 +31890,6 @@ void AppendSecurityPolicyRouteJson(std::ostream& out,
       << "\"security_mutation\":" << (info.mutating ? "true" : "false") << ','
       << "\"policy_scope\":\"" << EscapeJson(info.policy_scope) << "\","
       << "\"target_object_kind\":\"" << EscapeJson(info.target_object_kind) << "\",";
-  if (!info.principal_uuid.empty()) {
-    out << "\"principal_uuid\":\"" << EscapeJson(info.principal_uuid) << "\",";
-  }
   if (info.operation_id == "security.role.create" && !info.principal_name.empty()) {
     out << "\"role_name\":\"" << EscapeJson(info.principal_name) << "\",";
   }
@@ -31841,21 +31912,8 @@ void AppendSecurityPolicyRouteJson(std::ostream& out,
   if (!info.lifecycle_state.empty()) {
     out << "\"lifecycle_state\":\"" << EscapeJson(info.lifecycle_state) << "\",";
   }
-  if (!info.policy_uuid.empty()) {
-    out << "\"policy_uuid\":\"" << EscapeJson(info.policy_uuid) << "\",";
-  }
   if (!info.policy_name.empty()) {
     out << "\"policy_name\":\"" << EscapeJson(info.policy_name) << "\",";
-  }
-  if (!info.target_schema_uuid.empty()) {
-    out << "\"target_schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\","
-        << "\"schema_uuid\":\"" << EscapeJson(info.target_schema_uuid) << "\",";
-  }
-  if (!info.target_object_uuid.empty()) {
-    out << "\"target_object_uuid\":\"" << EscapeJson(info.target_object_uuid) << "\",";
-  }
-  if (!info.role_uuid.empty()) {
-    out << "\"role_uuid\":\"" << EscapeJson(info.role_uuid) << "\",";
   }
   if (!info.role_mode.empty()) {
     out << "\"role_mode\":\"" << EscapeJson(info.role_mode) << "\",";
@@ -31865,9 +31923,6 @@ void AppendSecurityPolicyRouteJson(std::ostream& out,
   }
   if (!info.predicate_envelope.empty()) {
     out << "\"predicate_envelope\":\"" << EscapeJson(info.predicate_envelope) << "\",";
-  }
-  if (!info.definer_principal_uuid.empty()) {
-    out << "\"definer_principal_uuid\":\"" << EscapeJson(info.definer_principal_uuid) << "\",";
   }
   out << "\"principal_name_parts\":\"" << info.principal_name_parts << "\","
       << "\"policy_name_parts\":\"" << info.policy_name_parts << "\","
@@ -31879,7 +31934,6 @@ void AppendSecurityPolicyRouteJson(std::ostream& out,
   AppendJsonStringArray(out, "security_row_surface_ids", info.row_surface_ids);
   out << ',';
 }
-
 void AppendAgentRuntimeJson(std::ostream& out, const AgentRuntimeRouteInfo& info) {
   if (!info.active || !info.valid) return;
   out << "\"management_envelope_kind\":\"agent_runtime\","
@@ -31951,10 +32005,6 @@ void AppendEventNotificationJson(std::ostream& out,
       << "\"event_sblr_operation\":\"" << EscapeJson(info.opcode) << "\","
       << "\"target_object_kind\":\"event_channel\","
       << "\"channel_name_parts\":\"" << info.channel_name_parts << "\",";
-  if (!info.channel_uuid.empty()) {
-    out << "\"channel_uuid\":\"" << EscapeJson(info.channel_uuid) << "\","
-        << "\"target_object_uuid\":\"" << EscapeJson(info.channel_uuid) << "\",";
-  }
   if (!info.channel_name.empty() && info.name_text_user_payload) {
     out << "\"channel\":\"" << EscapeJson(info.channel_name) << "\","
         << "\"channel_name\":\"" << EscapeJson(info.channel_name) << "\",";
@@ -32079,9 +32129,7 @@ void AppendTableJoinJson(std::ostream& out, const TableJoinInfo& info) {
       << "\"query_operation\":\"" << EscapeJson(info.operation) << "\","
       << "\"query_execute\":\"true\","
       << "\"target_object_kind\":\"table\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.left_object_uuid) << "\","
-      << "\"related_object_0_kind\":\"table\","
-      << "\"related_object_0_uuid\":\"" << EscapeJson(info.right_object_uuid) << "\",";
+      << "\"related_object_0_kind\":\"table\",";
   if (!info.catalog_projection_path.empty()) {
     out << "\"projection\":\"" << EscapeJson(info.catalog_projection_path) << "\","
         << "\"catalog_projection\":\"" << EscapeJson(info.catalog_projection_path) << "\",";
@@ -32170,20 +32218,17 @@ void AppendTableJoinJson(std::ostream& out, const TableJoinInfo& info) {
 void AppendTableSetOperationJson(std::ostream& out,
                                  const TableSetOperationInfo& info) {
   if (!info.active || !info.valid) return;
-  const std::vector<std::string> relation_object_uuids =
+  const std::vector<core::platform::Uuid> relation_object_uuids =
       info.relation_object_uuids.empty()
-          ? std::vector<std::string>{info.left_object_uuid, info.right_object_uuid}
+          ? std::vector<core::platform::Uuid>{info.left_object_uuid, info.right_object_uuid}
           : info.relation_object_uuids;
   out << "\"query_envelope_kind\":\"table_set_operation\","
       << "\"query_operation\":\"" << EscapeJson(info.operation) << "\","
       << "\"set_operation\":\"" << EscapeJson(info.operation) << "\","
       << "\"query_execute\":\"true\","
-      << "\"target_object_kind\":\"table\","
-      << "\"target_object_uuid\":\"" << EscapeJson(relation_object_uuids.front()) << "\",";
+      << "\"target_object_kind\":\"table\",";
   for (std::size_t relation = 1; relation < relation_object_uuids.size(); ++relation) {
-    out << "\"related_object_" << (relation - 1) << "_kind\":\"table\","
-        << "\"related_object_" << (relation - 1) << "_uuid\":\""
-        << EscapeJson(relation_object_uuids[relation]) << "\",";
+    out << "\"related_object_" << (relation - 1) << "_kind\":\"table\",";
   }
   out << "\"relation_count\":\"" << relation_object_uuids.size() << "\","
       << "\"set_by_name\":" << (info.by_name ? "true" : "false") << ','
@@ -32238,7 +32283,6 @@ void AppendTableSampleJson(std::ostream& out, const TableSampleInfo& info) {
       << "\"query_operation\":\"sample\","
       << "\"query_execute\":\"true\","
       << "\"target_object_kind\":\"table\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.object_uuid) << "\","
       << "\"sample_clause_present\":true,"
       << "\"sample_method\":\"" << EscapeJson(info.sample_method) << "\","
       << "\"sample_percent\":\"" << EscapeJson(info.sample_percent) << "\",";
@@ -32261,7 +32305,6 @@ void AppendPivotJson(std::ostream& out, const PivotRouteInfo& info) {
       << "\"query_operation\":\"pivot\","
       << "\"query_execute\":\"true\","
       << "\"target_object_kind\":\"table\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.object_uuid) << "\","
       << "\"pivot_clause_present\":true,"
       << "\"pivot_aggregate_list_count\":" << info.aggregate_count << ','
       << "\"pivot_aggregate_function\":\"" << EscapeJson(info.aggregate_function) << "\","
@@ -32288,7 +32331,6 @@ void AppendUnpivotJson(std::ostream& out, const UnpivotRouteInfo& info) {
       << "\"query_operation\":\"unpivot\","
       << "\"query_execute\":\"true\","
       << "\"target_object_kind\":\"table\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.object_uuid) << "\","
       << "\"unpivot_clause_present\":true,"
       << "\"unpivot_value_column_count\":" << info.value_column_count << ','
       << "\"unpivot_value_field\":\"" << EscapeJson(info.value_field) << "\","
@@ -32331,8 +32373,7 @@ void AppendRowNumberWindowJson(std::ostream& out,
                           : (row_number ? "row_number_window" : "window"))
       << "\","
       << "\"query_execute\":\"true\","
-      << "\"target_object_kind\":\"table\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.object_uuid) << "\",";
+      << "\"target_object_kind\":\"table\",";
   if (partition_count) {
     out << "\"partition_by\":\"" << EscapeJson(info.partition_field) << "\","
         << "\"partition_column\":\"0\","
@@ -32440,7 +32481,6 @@ void AppendGroupByAggregateJson(std::ostream& out,
       << "],"
       << "\"query_execute\":\"true\","
       << "\"target_object_kind\":\"table\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.object_uuid) << "\","
       << "\"group_key_field\":\"" << EscapeJson(info.group_field) << "\","
       << "\"aggregate_function\":\"" << EscapeJson(info.aggregate_function) << "\","
       << "\"aggregate_value_field\":\"" << EscapeJson(info.aggregate_field) << "\","
@@ -32570,7 +32610,6 @@ void AppendTableCountJson(std::ostream& out, const TableCountInfo& info) {
       << "\"query_keyword_surface_ids\":[\"SBSQL-2C97BBAE2A81\",\"SBSQL-92A32408C70E\"],"
       << "\"query_execute\":\"true\","
       << "\"target_object_kind\":\"table\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.object_uuid) << "\","
       << "\"aggregate_function\":\"sb.aggregate.count\","
       << "\"aggregate_binding_model\":\"engine_row_descriptor_field_int64_result_route\",";
   if (!info.order_field.empty()) {
@@ -32668,7 +32707,7 @@ void AppendMaterializedCteJson(std::ostream& out,
     append_relation(1, info.recursive_rows);
     return;
   }
-  if (info.object_uuid.empty()) {
+  if (!info.table_backed) {
     out << "\"query_envelope_kind\":\"values_materialized_cte\","
         << "\"query_operation\":\"materialized_cte\","
         << "\"query_execute\":\"true\","
@@ -32704,7 +32743,6 @@ void AppendMaterializedCteJson(std::ostream& out,
       << "\"query_operation\":\"materialized_cte\","
       << "\"query_execute\":\"true\","
       << "\"target_object_kind\":\"table\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.object_uuid) << "\","
       << "\"cte_strategy\":\"materialized\","
       << "\"cte_binding_model\":\"single_nonrecursive_cte_uuid_source_current_route\","
       << "\"source_relation_required\":true,"
@@ -32721,7 +32759,6 @@ void AppendScalarSubqueryJson(std::ostream& out,
       << "\"query_operation\":\"scalar_subquery\","
       << "\"query_execute\":\"true\","
       << "\"target_object_kind\":\"table\","
-      << "\"target_object_uuid\":\"" << EscapeJson(info.object_uuid) << "\","
       << "\"projected_field\":\"" << EscapeJson(info.projected_field) << "\","
       << "\"project_columns\":\"0\","
       << "\"subquery_cardinality_model\":\"first_value_current_route\","
@@ -32881,8 +32918,6 @@ SblrEnvelope LowerLifecycleMapping(const LifecycleMappingDescriptor& mapping,
   }
   AppendJsonStringArray(out, "row_surface_ids", lifecycle_surface_ids);
   out << ',';
-  AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-  out << ',';
   AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
   out << ',';
   AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -33006,8 +33041,6 @@ std::string LanguageControlPayload(const SblrEnvelope& envelope,
   if (!info.bundle_uuid.empty()) {
     out << "\"bundle_uuid\":\"" << EscapeJson(info.bundle_uuid) << "\",";
   }
-  AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-  out << ',';
   AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
   out << ',';
   AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -33132,35 +33165,6 @@ std::string EncodeOptionalCanonicalU32(
   return value.has_value() ? std::to_string(*value) : "-";
 }
 
-std::string DerivedNativeRelationalUuid(const std::string_view scope,
-                                        const std::string_view purpose) {
-  const auto seeded_fnv1a64 = [](const std::string_view value,
-                                 std::uint64_t hash) {
-    for (const auto byte : value) {
-      hash ^= static_cast<std::uint8_t>(byte);
-      hash *= 1099511628211ull;
-    }
-    return hash;
-  };
-  const auto first = seeded_fnv1a64(purpose, Fnv1a64(scope));
-  const auto second = seeded_fnv1a64(scope, Fnv1a64(purpose));
-  std::array<std::uint8_t, 16> bytes{};
-  for (std::size_t index = 0; index < 8; ++index) {
-    bytes[index] =
-        static_cast<std::uint8_t>(first >> ((7 - index) * 8));
-    bytes[8 + index] =
-        static_cast<std::uint8_t>(second >> ((7 - index) * 8));
-  }
-  bytes[6] = static_cast<std::uint8_t>((bytes[6] & 0x0f) | 0x50);
-  bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3f) | 0x80);
-  std::ostringstream out;
-  out << std::hex << std::setfill('0');
-  for (std::size_t index = 0; index < bytes.size(); ++index) {
-    if (index == 4 || index == 6 || index == 8 || index == 10) out << '-';
-    out << std::setw(2) << static_cast<unsigned>(bytes[index]);
-  }
-  return out.str();
-}
 
 std::string_view ExpectedNativeAggregateSemanticVariant(
     const NativeAggregateGroupingForm grouping_form,
@@ -33283,6 +33287,44 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     return true;
   };
 
+  const auto emit_expression = [&](const BoundExpressionAstRecord& expression) {
+    auto operand = MakeRelationalExpressionOperand(expression);
+    if (!operand) {
+      AddNativeRelationalLoweringError(&envelope, "SBLR.OPERAND_INVALID",
+                                      "relational expression requires its canonical binary identity carrier");
+      return false;
+    }
+    envelope.operands.push_back(std::move(*operand));
+    return true;
+  };
+
+  const auto emit_node_binding = [&](const engine::sblr::RelationalNodeBindingRecord& binding) {
+    auto operand = MakeRelationalNodeBindingOperand(binding);
+    if (!operand) {
+      AddNativeRelationalLoweringError(&envelope, "SBLR.OPERAND_INVALID",
+                                      "relational node binding requires binary system identities");
+      return false;
+    }
+    envelope.operands.push_back(std::move(*operand));
+    return true;
+  };
+
+  if (!ValidateRelationalPropertyIdentities(native)) {
+    AddNativeRelationalLoweringError(&envelope, "QOW-DIAG-BOUNDAST-SCOPE",
+                                    "relational property identity map is incomplete or invalid");
+    return envelope;
+  }
+  using PropertyRole = BoundRelationalPropertyRole;
+  const auto emit_property = [&](const engine::internal_api::RelationalPropertyRecord& property) {
+    auto operand = MakeRelationalPropertyOperand(property);
+    if (!operand) {
+      AddNativeRelationalLoweringError(&envelope, "SBLR.OPERAND_INVALID", "relational property requires exact binary identities");
+      return false;
+    }
+    envelope.operands.push_back(std::move(*operand));
+    return true;
+  };
+
   if (std::ranges::any_of(native.relations, [](const auto& relation) {
         return relation.relation_kind == NativeRelationAstKind::kCte;
       })) {
@@ -33381,9 +33423,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         {"relational_node_v1", std::to_string(cte.relation_id),
          "11|0|" + std::to_string(source.relation_id) + "|" +
              JoinCanonicalHandleList(descriptor_ids) + "|-"});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", std::to_string(cte.relation_id),
-         EncodeCanonicalHex(cte.semantic_variant_id) + "|-|-|-|-"});
+    if (!emit_node_binding({cte.relation_id, cte.semantic_variant_id, {}, {}, {}, {}})) return envelope;
     return envelope;
   }
 
@@ -33573,10 +33613,6 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                NativeRelationAstKind::kMatchRecognize;
       });
   if (match_recognize_relation != native.relations.end()) {
-    constexpr std::string_view kMatchPartitionPropertyUuid =
-        "019dffbb-f000-7e2c-b437-ebbbc2d4f360";
-    constexpr std::string_view kMatchOrderingPropertyUuid =
-        "019dffbb-f000-7e2c-b437-ebbbc2d4f361";
     if (table_function_relation == native.relations.end() ||
         native.row_patterns.size() != 1) {
       AddNativeRelationalLoweringError(
@@ -33587,6 +33623,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     const auto& source = *table_function_relation;
     const auto& match = *match_recognize_relation;
     const auto& pattern = native.row_patterns.front();
+    const auto partition_identity = FindRelationalPropertyIdentity(native, {match.relation_id, pattern.pattern_id, PropertyRole::kPatternPartition});
+    const auto ordering_identity = FindRelationalPropertyIdentity(native, {match.relation_id, pattern.pattern_id, PropertyRole::kPatternOrdering});
+    if (!partition_identity || !ordering_identity) {
+      AddNativeRelationalLoweringError(&envelope, "QOW-DIAG-BOUNDAST-SCOPE", "row pattern has no retained property identity");
+      return envelope;
+    }
     const auto argument_count =
         source.table_function_argument_expression_ids.size();
     const auto output_expression_id =
@@ -33640,7 +33682,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             source.table_function_argument_expression_ids &&
         output_expression->second->result_descriptor_id == 1 &&
         output_expression->second->bound_function_uuid ==
-            std::string(kGenerateSeriesFunctionUuid) &&
+            kGenerateSeriesFunctionUuid &&
         !output_expression->second->bound_name_uuid.has_value() &&
         !output_expression->second->literal_kind.has_value() &&
         !output_expression->second->canonical_operator_name.has_value() &&
@@ -33687,7 +33729,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         source.semantic_variant_id !=
             "table-function.generate-series.v1" ||
         source.bound_object_uuid !=
-            std::string(kGenerateSeriesFunctionUuid) ||
+            kGenerateSeriesFunctionUuid ||
         match.input_relation_ids != std::vector<std::uint32_t>{1} ||
         match.output_expression_ids != source.output_expression_ids ||
         match.bound_expression_ids != source.bound_expression_ids ||
@@ -33743,16 +33785,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back({"uint32", "relational_root_node_id", "2"});
     if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
-      envelope.operands.push_back(
-          {"relational_expression_v1",
-           std::to_string(expression.expression_id),
-           std::to_string(static_cast<std::uint8_t>(
-                              expression.expression_kind) +
-                          1) +
-               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
-               "|" + std::to_string(expression.result_descriptor_id) + "|" +
-               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
-               "|-|-|-|-"});
+      if (!emit_expression(expression)) return envelope;
     }
     envelope.operands.push_back(
         {"relational_output_v1", "1",
@@ -33764,40 +33797,45 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              "|1|1|0|" + EncodeCanonicalHex("generate_series")});
     envelope.operands.push_back(
         {"relational_node_v1", "1", "17|0|-|1|-"});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", "1",
-         EncodeCanonicalHex("table-function.generate-series.v1") + "|" +
-             std::to_string(output_expression_id) + "|" +
-             std::string(kGenerateSeriesFunctionUuid) + "|-|-"});
+    if (!emit_node_binding({1, "table-function.generate-series.v1",
+                           {output_expression_id}, {kGenerateSeriesFunctionUuid}, {}, {}})) return envelope;
     envelope.operands.push_back(
         {"relational_table_function_v1", "1",
          JoinCanonicalHandleList(
              source.table_function_argument_expression_ids)});
     envelope.operands.push_back(
         {"relational_node_v1", "2", "16|0|1|1|-"});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", "2",
-         EncodeCanonicalHex(
-             "match-recognize.a-plus.true.all-rows.v1") +
-             "|" + std::to_string(output_expression_id) + "|-|" +
-             std::string(kMatchPartitionPropertyUuid) + "," +
-             std::string(kMatchOrderingPropertyUuid) + "|" +
-             std::string(kMatchPartitionPropertyUuid) + "," +
-             std::string(kMatchOrderingPropertyUuid)});
-    envelope.operands.push_back(
-        {"relational_row_pattern_v1", "2",
-         "1|" + std::to_string(output_expression_id) + "|" +
-             std::to_string(output_expression_id) +
-             ":1:2:-|61:1:-:0:-:1|-|2|1|-|10000|2|10000|1"});
-    envelope.operands.push_back(
-        {"relational_property_v1",
-         std::string(kMatchPartitionPropertyUuid),
-         "3|2|" + std::to_string(output_expression_id) + "|-|-|-"});
-    envelope.operands.push_back(
-        {"relational_property_v1",
-         std::string(kMatchOrderingPropertyUuid),
-         "1|2|-|" + std::to_string(output_expression_id) +
-             ":1:2:-|-|-"});
+    if (!emit_node_binding({2, "match-recognize.a-plus.true.all-rows.v1", {output_expression_id}, {},
+                           {*partition_identity, *ordering_identity}, {*partition_identity, *ordering_identity}})) return envelope;
+    std::vector<engine::internal_api::RelationalPropertyOrderingTerm> pattern_ordering;
+    for (const auto& term : pattern.ordering_terms) {
+      const auto expression = expressions_by_id.find(term.expression_id);
+      const auto descriptor = expression == expressions_by_id.end() ? descriptors_by_id.end()
+          : descriptors_by_id.find(expression->second->result_descriptor_id);
+      if (descriptor == descriptors_by_id.end()) {
+        AddNativeRelationalLoweringError(&envelope, "DATATYPE.DESCRIPTOR.INVALID", "row-pattern ordering descriptor is missing");
+        return envelope;
+      }
+      pattern_ordering.push_back({term.expression_id,
+          static_cast<engine::internal_api::RelationalPropertySortDirection>(static_cast<unsigned>(term.direction) + 1),
+          static_cast<engine::internal_api::RelationalPropertyNullPlacement>(static_cast<unsigned>(term.null_placement) + 1),
+          descriptor->second->collation_uuid.value_or(core::platform::Uuid{})});
+    }
+    auto pattern_operand = MakeRelationalRowPatternOperand(pattern, pattern_ordering);
+    if (!pattern_operand) {
+      AddNativeRelationalLoweringError(&envelope, "SBLR.OPERAND_INVALID", "row pattern requires its exact binary carrier");
+      return envelope;
+    }
+    envelope.operands.push_back(std::move(*pattern_operand));
+    engine::internal_api::RelationalPropertyRecord partition;
+    partition.property_uuid = *partition_identity;
+    partition.property_kind = engine::internal_api::RelationalPropertyKind::kPartitioning;
+    partition.origin_node_id = match.relation_id; partition.expression_ids = {output_expression_id};
+    if (!emit_property(partition)) return envelope;
+    engine::internal_api::RelationalPropertyRecord ordering;
+    ordering.property_uuid = *ordering_identity; ordering.origin_node_id = match.relation_id;
+    ordering.ordering_terms = std::move(pattern_ordering);
+    if (!emit_property(ordering)) return envelope;
     return envelope;
   }
   if (table_function_relation != native.relations.end()) {
@@ -33858,7 +33896,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             relation.table_function_argument_expression_ids &&
         output_expression->second->result_descriptor_id == 1 &&
         output_expression->second->bound_function_uuid ==
-            std::string(kGenerateSeriesFunctionUuid) &&
+            kGenerateSeriesFunctionUuid &&
         !output_expression->second->bound_name_uuid.has_value() &&
         !output_expression->second->literal_kind.has_value() &&
         !output_expression->second->canonical_operator_name.has_value() &&
@@ -33885,7 +33923,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         relation.semantic_variant_id !=
             "table-function.generate-series.v1" ||
         relation.bound_object_uuid !=
-            std::string(kGenerateSeriesFunctionUuid) ||
+            kGenerateSeriesFunctionUuid ||
         !relation.grouping_key_expression_ids.empty() ||
         !relation.aggregate_expression_ids.empty() ||
         !relation.predicate_expression_ids.empty() ||
@@ -33910,7 +33948,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
             std::vector<std::uint32_t>{1} ||
         native.scopes.front().visible_projection_ids !=
             std::vector<std::uint32_t>{1} ||
-        native.scopes.front().catalog_epoch_uuid.empty()) {
+        !core::uuid::IsEngineIdentityUuid(native.scopes.front().catalog_epoch_uuid)) {
       AddNativeRelationalLoweringError(
           &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
           "table function BoundAST is not the exact generate_series descriptor");
@@ -33935,16 +33973,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back({"uint32", "relational_root_node_id", "1"});
     if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
-      envelope.operands.push_back(
-          {"relational_expression_v1",
-           std::to_string(expression.expression_id),
-           std::to_string(static_cast<std::uint8_t>(
-                              expression.expression_kind) +
-                          1) +
-               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
-               "|" + std::to_string(expression.result_descriptor_id) + "|" +
-               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
-               "|-|-|-|-"});
+      if (!emit_expression(expression)) return envelope;
     }
     envelope.operands.push_back(
         {"relational_output_v1", "1",
@@ -33952,11 +33981,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              "|1|1|0|" + EncodeCanonicalHex("generate_series")});
     envelope.operands.push_back(
         {"relational_node_v1", "1", "17|0|-|1|-"});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", "1",
-         EncodeCanonicalHex("table-function.generate-series.v1") + "|" +
-             std::to_string(output_expression_id) + "|" +
-             std::string(kGenerateSeriesFunctionUuid) + "|-|-"});
+    if (!emit_node_binding({1, "table-function.generate-series.v1",
+                           {output_expression_id}, {kGenerateSeriesFunctionUuid}, {}, {}})) return envelope;
     envelope.operands.push_back(
         {"relational_table_function_v1", "1",
          JoinCanonicalHandleList(
@@ -34186,25 +34212,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(native.root_relation_id)});
     if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
-      const auto literal_kind =
-          expression.literal_kind.has_value()
-              ? std::to_string(static_cast<std::uint8_t>(*expression.literal_kind) + 1)
-              : "-";
-      envelope.operands.push_back(
-          {"relational_expression_v1", std::to_string(expression.expression_id),
-           std::to_string(static_cast<std::uint8_t>(expression.expression_kind) + 1) +
-               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
-               "|" + std::to_string(expression.result_descriptor_id) + "|" +
-               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
-               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
-               "|" + literal_kind + "|" +
-               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
-               "|" + EncodeOptionalCanonicalHex(
-                           expression.literal_or_parameter_ref)});
+      if (!emit_expression(expression)) return envelope;
     }
     // Every model stage is already one ordinary functionless
-    // relational_expression_v1 root attached, in semantic order, through the
-    // node's relational_node_binding_v1 bound-expression vector.  Do not add
+    // Binary expression root attached, in semantic order, through the
+    // node's binary relational_node_binding_v2 bound-expression vector. Do not add
     // a parser-private transport record: the production query.execute decoder
     // accepts only canonical relational operands and must see exactly the same
     // typed DAG that the parser verifier admits.
@@ -34248,11 +34260,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          "1|0|-|" + JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", std::to_string(relation.relation_id),
-         EncodeCanonicalHex("SBLR_MODEL_SOURCE_V1") + "|" +
-             JoinCanonicalHandleList(relation.bound_expression_ids) + "|" +
-             source.object_uuid + "|-|-"});
+    if (!emit_node_binding({relation.relation_id, "SBLR_MODEL_SOURCE_V1",
+                           relation.bound_expression_ids, {source.object_uuid}, {}, {}})) return envelope;
     return envelope;
   }
 
@@ -34544,21 +34553,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(native.root_relation_id)});
     if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
-      const auto literal_kind =
-          expression.literal_kind.has_value()
-              ? std::to_string(static_cast<std::uint8_t>(*expression.literal_kind) + 1)
-              : "-";
-      envelope.operands.push_back(
-          {"relational_expression_v1", std::to_string(expression.expression_id),
-           std::to_string(static_cast<std::uint8_t>(expression.expression_kind) + 1) +
-               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
-               "|" + std::to_string(expression.result_descriptor_id) + "|" +
-               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
-               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
-               "|" + literal_kind + "|" +
-               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
-               "|" + EncodeOptionalCanonicalHex(
-                           expression.literal_or_parameter_ref)});
+      if (!emit_expression(expression)) return envelope;
     }
     static constexpr std::array<std::string_view, 5> kOutputNames{
         "document_uuid", "analyzer_uuid", "analyzer_generation", "score",
@@ -34596,11 +34591,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          "1|0|-|" + JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", std::to_string(relation.relation_id),
-         EncodeCanonicalHex("SBLR_MODEL_SOURCE_V1") + "|" +
-             JoinCanonicalHandleList(relation.bound_expression_ids) + "|" +
-             search_source->object_uuid + "|-|-"});
+    if (!emit_node_binding({relation.relation_id, "SBLR_MODEL_SOURCE_V1",
+                           relation.bound_expression_ids, {search_source->object_uuid}, {}, {}})) return envelope;
     return envelope;
   }
 
@@ -34840,21 +34832,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(native.root_relation_id)});
     if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
-      const auto literal_kind =
-          expression.literal_kind.has_value()
-              ? std::to_string(static_cast<std::uint8_t>(*expression.literal_kind) + 1)
-              : "-";
-      envelope.operands.push_back(
-          {"relational_expression_v1", std::to_string(expression.expression_id),
-           std::to_string(static_cast<std::uint8_t>(expression.expression_kind) + 1) +
-               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
-               "|" + std::to_string(expression.result_descriptor_id) + "|" +
-               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
-               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
-               "|" + literal_kind + "|" +
-               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
-               "|" + EncodeOptionalCanonicalHex(
-                           expression.literal_or_parameter_ref)});
+      if (!emit_expression(expression)) return envelope;
     }
     static constexpr std::array<std::string_view, 3> kOutputNames{
         "row_uuid", "distance", "score"};
@@ -34891,11 +34869,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          "1|0|-|" + JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", std::to_string(relation.relation_id),
-         EncodeCanonicalHex("SBLR_MODEL_SOURCE_V1") + "|" +
-             JoinCanonicalHandleList(relation.bound_expression_ids) + "|" +
-             vector_source->object_uuid + "|-|-"});
+    if (!emit_node_binding({relation.relation_id, "SBLR_MODEL_SOURCE_V1",
+                           relation.bound_expression_ids, {vector_source->object_uuid}, {}, {}})) return envelope;
     return envelope;
   }
 
@@ -34991,7 +34966,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
     std::unordered_map<std::uint32_t, const BoundDescriptorAstRecord*>
         descriptors_by_id;
-    std::unordered_set<std::string> descriptor_instance_uuids;
+    std::unordered_set<core::platform::Uuid,
+                       engine::internal_api::EngineUuidHash> descriptor_instance_uuids;
     for (const auto& descriptor : native.descriptors) {
       if (descriptor.descriptor_id == 0 ||
           !descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor).second ||
@@ -35310,24 +35286,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(native.root_relation_id)});
     if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
-      const auto literal_kind =
-          expression.literal_kind.has_value()
-              ? std::to_string(static_cast<std::uint8_t>(
-                                   *expression.literal_kind) +
-                               1)
-              : "-";
-      envelope.operands.push_back(
-          {"relational_expression_v1", std::to_string(expression.expression_id),
-           std::to_string(static_cast<std::uint8_t>(expression.expression_kind) +
-                          1) +
-               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
-               "|" + std::to_string(expression.result_descriptor_id) + "|" +
-               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
-               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
-               "|" + literal_kind + "|" +
-               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
-               "|" + EncodeOptionalCanonicalHex(
-                           expression.literal_or_parameter_ref)});
+      if (!emit_expression(expression)) return envelope;
     }
     std::vector<std::uint32_t> output_descriptor_ids;
     for (std::size_t ordinal = 0; ordinal < native.outputs.size(); ++ordinal) {
@@ -35358,12 +35317,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
         {"relational_node_v1", std::to_string(relation.relation_id),
          std::string(downsample ? "5" : "1") + "|0|-|" +
              JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", std::to_string(relation.relation_id),
-         EncodeCanonicalHex(downsample ? "SBLR_MODEL_AGGREGATE_V1"
-                                       : "SBLR_MODEL_SOURCE_V1") +
-             "|" + JoinCanonicalHandleList(relation.bound_expression_ids) +
-             "|" + time_series_source->object_uuid + "|-|-"});
+    if (!emit_node_binding({relation.relation_id,
+                           downsample ? "SBLR_MODEL_AGGREGATE_V1" : "SBLR_MODEL_SOURCE_V1",
+                           relation.bound_expression_ids, {time_series_source->object_uuid}, {}, {}})) return envelope;
     return envelope;
   }
 
@@ -35594,21 +35550,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(native.root_relation_id)});
     if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
-      const auto literal_kind =
-          expression.literal_kind.has_value()
-              ? std::to_string(static_cast<std::uint8_t>(*expression.literal_kind) + 1)
-              : "-";
-      envelope.operands.push_back(
-          {"relational_expression_v1", std::to_string(expression.expression_id),
-           std::to_string(static_cast<std::uint8_t>(expression.expression_kind) + 1) +
-               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
-               "|" + std::to_string(expression.result_descriptor_id) + "|" +
-               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
-               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
-               "|" + literal_kind + "|" +
-               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
-               "|" + EncodeOptionalCanonicalHex(
-                           expression.literal_or_parameter_ref)});
+      if (!emit_expression(expression)) return envelope;
     }
     std::vector<std::uint32_t> output_descriptor_ids;
     for (std::size_t ordinal = 0; ordinal < native.outputs.size(); ++ordinal) {
@@ -35638,11 +35580,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          "1|0|-|" + JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", std::to_string(relation.relation_id),
-         EncodeCanonicalHex("SBLR_MODEL_SOURCE_V1") + "|" +
-             JoinCanonicalHandleList(relation.bound_expression_ids) + "|" +
-             key_value_source->object_uuid + "|-|-"});
+    if (!emit_node_binding({relation.relation_id, "SBLR_MODEL_SOURCE_V1",
+                           relation.bound_expression_ids, {key_value_source->object_uuid}, {}, {}})) return envelope;
     return envelope;
   }
 
@@ -35876,26 +35815,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(native.root_relation_id)});
     if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
-      const auto literal_kind =
-          expression.literal_kind.has_value()
-              ? std::to_string(static_cast<std::uint8_t>(
-                                   *expression.literal_kind) +
-                               1)
-              : "-";
-      envelope.operands.push_back(
-          {"relational_expression_v1",
-           std::to_string(expression.expression_id),
-           std::to_string(static_cast<std::uint8_t>(
-                              expression.expression_kind) +
-                          1) +
-               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
-               "|" + std::to_string(expression.result_descriptor_id) + "|" +
-               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
-               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
-               "|" + literal_kind + "|" +
-               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
-               "|" + EncodeOptionalCanonicalHex(
-                           expression.literal_or_parameter_ref)});
+      if (!emit_expression(expression)) return envelope;
     }
     std::vector<std::uint32_t> output_descriptor_ids;
     for (std::size_t ordinal = 0; ordinal < native.outputs.size(); ++ordinal) {
@@ -35925,12 +35845,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          "1|0|-|" + JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", std::to_string(relation.relation_id),
-         EncodeCanonicalHex(graph_expand ? "SBLR_MODEL_EXPAND_V1"
-                                         : "SBLR_MODEL_SOURCE_V1") +
-             "|" + JoinCanonicalHandleList(relation.bound_expression_ids) +
-             "|" + graph_source->object_uuid + "|-|-"});
+    if (!emit_node_binding({relation.relation_id,
+                           graph_expand ? "SBLR_MODEL_EXPAND_V1" : "SBLR_MODEL_SOURCE_V1",
+                           relation.bound_expression_ids, {graph_source->object_uuid}, {}, {}})) return envelope;
     return envelope;
   }
 
@@ -36148,26 +36065,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
          std::to_string(native.root_relation_id)});
     if (!emit_relational_descriptors()) return envelope;
     for (const auto& expression : native.expressions) {
-      const auto literal_kind =
-          expression.literal_kind.has_value()
-              ? std::to_string(static_cast<std::uint8_t>(
-                                   *expression.literal_kind) +
-                               1)
-              : "-";
-      envelope.operands.push_back(
-          {"relational_expression_v1",
-           std::to_string(expression.expression_id),
-           std::to_string(static_cast<std::uint8_t>(
-                              expression.expression_kind) +
-                          1) +
-               "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
-               "|" + std::to_string(expression.result_descriptor_id) + "|" +
-               EncodeOptionalCanonicalText(expression.bound_function_uuid) +
-               "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
-               "|" + literal_kind + "|" +
-               EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
-               "|" + EncodeOptionalCanonicalHex(
-                           expression.literal_or_parameter_ref)});
+      if (!emit_expression(expression)) return envelope;
     }
     for (std::size_t ordinal = 0; ordinal < native.outputs.size(); ++ordinal) {
       const auto& output = native.outputs[ordinal];
@@ -36199,16 +36097,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     envelope.operands.push_back(
         {"relational_node_v1", std::to_string(relation.relation_id),
          "1|0|-|" + JoinCanonicalHandleList(output_descriptor_ids) + "|-"});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", std::to_string(relation.relation_id),
-         EncodeCanonicalHex(unnest ? "SBLR_MODEL_EXPAND_V1"
-                                   : "SBLR_MODEL_SOURCE_V1") +
-             "|" + JoinCanonicalHandleList(relation.bound_expression_ids) +
-             "|" +
-             (relation.bound_object_uuid.has_value()
-                  ? *relation.bound_object_uuid
-                  : "-") +
-             "|-|-"});
+    if (!emit_node_binding({relation.relation_id,
+                           unnest ? "SBLR_MODEL_EXPAND_V1" : "SBLR_MODEL_SOURCE_V1",
+                           relation.bound_expression_ids,
+                           relation.bound_object_uuid ? std::vector<core::platform::Uuid>{*relation.bound_object_uuid}
+                                                      : std::vector<core::platform::Uuid>{}, {}, {}})) return envelope;
     return envelope;
   }
 
@@ -36230,10 +36123,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       native.descriptors.empty() || native.expressions.empty() ||
       native.outputs.empty() ||
       (!catalog_source_candidate && native.values_rows.empty()) ||
-      native.bound_ast_uuid.empty() || native.security_context_uuid.empty() ||
+      !core::uuid::IsEngineIdentityUuid(native.bound_ast_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(native.security_context_uuid) ||
       native.scopes.size() != 1 ||
       native.scopes.front().scope_id != native.root_scope_id ||
-      native.scopes.front().catalog_epoch_uuid.empty()) {
+      !core::uuid::IsEngineIdentityUuid(native.scopes.front().catalog_epoch_uuid)) {
     AddNativeRelationalLoweringError(
         &envelope, "SBLR.PLAN_TREE.INVALID_HANDLE",
         "typed relational lowering requires one complete reachable relation root");
@@ -37143,28 +37037,39 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     }
   }
   if (window_relation != nullptr) {
-    constexpr std::string_view kRowNumberFunctionUuid =
-        "019de5fc-2400-7539-bcce-00eef3ae7220";
-    constexpr std::string_view kRankFunctionUuid =
-        "019de5fc-2400-7b94-870d-0dd789ca70ab";
-    constexpr std::string_view kDenseRankFunctionUuid =
-        "019de5fc-2400-741d-bef0-f079fd3ba494";
-    constexpr std::string_view kPercentRankFunctionUuid =
-        "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
-    constexpr std::string_view kCumeDistFunctionUuid =
-        "019de5fc-2400-721c-be64-2568b64a02b9";
-    constexpr std::string_view kNtileFunctionUuid =
-        "019de5fc-2400-7047-9474-232ca488c094";
-    constexpr std::string_view kLagFunctionUuid =
-        "019de5fc-2400-782c-8436-9ac310301738";
-    constexpr std::string_view kLeadFunctionUuid =
-        "019de5fc-2400-7a06-bc3c-6747cf5be66f";
-    constexpr std::string_view kFirstValueFunctionUuid =
-        "019de5fc-2400-7264-90fb-d25bd0f806f2";
-    constexpr std::string_view kLastValueFunctionUuid =
-        "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
-    constexpr std::string_view kNthValueFunctionUuid =
-        "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
+    constexpr core::platform::Uuid kRowNumberFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x75, 0x39,
+        0xbc, 0xce, 0x00, 0xee, 0xf3, 0xae, 0x72, 0x20}};
+    constexpr core::platform::Uuid kRankFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7b, 0x94,
+        0x87, 0x0d, 0x0d, 0xd7, 0x89, 0xca, 0x70, 0xab}};
+    constexpr core::platform::Uuid kDenseRankFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x74, 0x1d,
+        0xbe, 0xf0, 0xf0, 0x79, 0xfd, 0x3b, 0xa4, 0x94}};
+    constexpr core::platform::Uuid kPercentRankFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0x86,
+        0x86, 0xfe, 0x96, 0xf3, 0xf2, 0x7b, 0x5d, 0xd6}};
+    constexpr core::platform::Uuid kCumeDistFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x72, 0x1c,
+        0xbe, 0x64, 0x25, 0x68, 0xb6, 0x4a, 0x02, 0xb9}};
+    constexpr core::platform::Uuid kNtileFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x70, 0x47,
+        0x94, 0x74, 0x23, 0x2c, 0xa4, 0x88, 0xc0, 0x94}};
+    constexpr core::platform::Uuid kLagFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x78, 0x2c,
+        0x84, 0x36, 0x9a, 0xc3, 0x10, 0x30, 0x17, 0x38}};
+    constexpr core::platform::Uuid kLeadFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7a, 0x06,
+        0xbc, 0x3c, 0x67, 0x47, 0xcf, 0x5b, 0xe6, 0x6f}};
+    constexpr core::platform::Uuid kFirstValueFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x72, 0x64,
+        0x90, 0xfb, 0xd2, 0x5b, 0xd0, 0xf8, 0x06, 0xf2}};
+    constexpr core::platform::Uuid kLastValueFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0x23,
+        0xa5, 0xbe, 0x7e, 0xd3, 0xf1, 0xa5, 0xc3, 0xec}};
+    constexpr core::platform::Uuid kNthValueFunctionUuid{{
+        0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0xc9,
+        0x80, 0xe6, 0x9f, 0x2c, 0xcf, 0x08, 0x07, 0x6f}};
     const bool rank_window =
         window_relation->semantic_variant_id == "window.rank.v1";
     const bool dense_rank_window =
@@ -37248,9 +37153,9 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                           ? "sb.window.dense_rank"
                           : (rank_window ? "sb.window.rank"
                                          : "sb.window.row_number"))))));
-    const std::string_view expected_window_function_uuid =
+    const core::platform::Uuid expected_window_function_uuid =
         aggregate_window
-            ? std::string_view{invocation.bound_function_uuid}
+            ? invocation.bound_function_uuid
             : (value_window
             ? (first_value_window
                    ? kFirstValueFunctionUuid
@@ -38334,7 +38239,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
     std::size_t descriptor_offset = 0;
     std::size_t source_projection_count = 0;
     std::vector<std::uint32_t> expected_join_projection_ids;
-    std::unordered_map<std::string, bool> object_occurrences;
+    std::unordered_map<core::platform::Uuid, bool,
+                       engine::internal_api::EngineUuidHash> object_occurrences;
     std::unordered_map<std::string, bool> ordinary_source_binding_names;
     std::unordered_set<std::uint32_t> source_ids;
     std::unordered_set<std::uint32_t> owned_model_expression_ids;
@@ -38590,8 +38496,8 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                 expected_attached_root ||
             operation->second->bound_name_uuid !=
                 ((spatial || columnar)
-                     ? std::optional<std::string>{source.object_uuid}
-                     : std::optional<std::string>{})) {
+                     ? std::optional<core::platform::Uuid>{source.object_uuid}
+                     : std::optional<core::platform::Uuid>{})) {
           AddNativeRelationalLoweringError(
               &envelope, "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
               "model JOIN source operation root is not attached to its leaf");
@@ -38751,7 +38657,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           return envelope;
         }
       }
-      std::unordered_set<std::string> column_uuids;
+      std::set<core::platform::Uuid> column_uuids;
       for (std::size_t ordinal = 0; ordinal < source.columns.size();
            ++ordinal) {
         const auto& column = source.columns[ordinal];
@@ -38787,12 +38693,12 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                                      source.columns[ordinal].canonical_name_key};
         const auto expected_bound_name =
             derived_projection
-                ? std::optional<std::string>{
+                ? std::optional<core::platform::Uuid>{
                       source.source_kind == NativeRelationSourceAstKind::kSearch &&
                               (ordinal == 1 || ordinal == 2)
                           ? source.model_search_analyzer_uuid
                           : source.object_uuid}
-                : std::optional<std::string>{source.columns[ordinal].column_uuid};
+                : std::optional<core::platform::Uuid>{source.columns[ordinal].column_uuid};
         if (expression == expressions_by_id.end() ||
             descriptor == native.descriptors.end() ||
             output.ordinal != ordinal || !output.visible ||
@@ -39340,7 +39246,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       return envelope;
     }
 
-    std::unordered_set<std::string> column_uuids;
+    std::set<core::platform::Uuid> column_uuids;
     std::unordered_set<std::string> output_names;
     std::uint32_t previous_descriptor_id = 0;
     std::uint32_t previous_expression_id = 0;
@@ -39455,23 +39361,27 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           aggregate_relation->aggregate_projection_form ==
               NativeAggregateProjectionForm::kKeySumInt128;
       if (grouped_sum_int128) {
-        constexpr std::string_view kBigintTypeUuid =
-            "019d0000-0000-7000-8000-00000000d712";
-        constexpr std::string_view kInt128DescriptorUuid =
-            "019d0000-0000-7000-8000-00000000d714";
-        constexpr std::string_view kInt128TypeUuid =
-            "019d0000-0000-7000-8000-00000000d715";
-        constexpr std::string_view kSumFunctionUuid =
-            "019de5fc-2400-72e4-8549-82b2eef5a777";
+        constexpr core::platform::Uuid kBigintTypeUuid{{
+            0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00,
+            0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x12}};
+        constexpr core::platform::Uuid kInt128DescriptorUuid{{
+            0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00,
+            0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x14}};
+        constexpr core::platform::Uuid kInt128TypeUuid{{
+            0x01, 0x9d, 0x00, 0x00, 0x00, 0x00, 0x70, 0x00,
+            0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd7, 0x15}};
+        constexpr core::platform::Uuid kSumFunctionUuid{{
+            0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x72, 0xe4,
+            0x85, 0x49, 0x82, 0xb2, 0xee, 0xf5, 0xa7, 0x77}};
         const auto& grouped_key_descriptor = native.descriptors[0];
         const auto& grouped_value_descriptor = native.descriptors[1];
         const auto grouped_receipt_identity_exact =
-            !aggregate_descriptor.statement_receipt_uuid.empty() &&
+            core::uuid::IsEngineIdentityUuid(aggregate_descriptor.statement_receipt_uuid) &&
             grouped_key_descriptor.statement_receipt_uuid ==
                 aggregate_descriptor.statement_receipt_uuid &&
             grouped_value_descriptor.statement_receipt_uuid ==
                 aggregate_descriptor.statement_receipt_uuid &&
-            !aggregate_descriptor.datatype_catalog_snapshot_uuid.empty() &&
+            core::uuid::IsEngineIdentityUuid(aggregate_descriptor.datatype_catalog_snapshot_uuid) &&
             grouped_key_descriptor.datatype_catalog_snapshot_uuid ==
                 aggregate_descriptor.datatype_catalog_snapshot_uuid &&
             grouped_value_descriptor.datatype_catalog_snapshot_uuid ==
@@ -41033,7 +40943,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           having_sum->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           having_sum->bound_function_uuid !=
-              "019de5fc-2400-72e4-8549-82b2eef5a777" ||
+              kBuiltinSumFunctionUuid ||
           having_sum->child_expression_ids.size() != 1 ||
           having_argument == nullptr || projected_sum == nullptr ||
           projected_argument == nullptr ||
@@ -41110,7 +41020,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           having_count->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           having_count->bound_function_uuid !=
-              "019de5fc-2400-784a-9aec-371f8b95b7ea" ||
+              kBuiltinCountStarFunctionUuid ||
           !having_count->child_expression_ids.empty() ||
           projected_count->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
@@ -41154,7 +41064,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           having_count->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           having_count->bound_function_uuid !=
-              "019de5fc-2400-784a-9aec-371f8b95b7ea" ||
+              kBuiltinCountStarFunctionUuid ||
           !having_count->child_expression_ids.empty() ||
           projected_count->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
@@ -41199,7 +41109,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
           having_count->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
           having_count->bound_function_uuid !=
-              "019de5fc-2400-784a-9aec-371f8b95b7ea" ||
+              kBuiltinCountStarFunctionUuid ||
           !having_count->child_expression_ids.empty() ||
           projected_count->expression_kind !=
               NativeExpressionAstKind::kFunctionCall ||
@@ -41246,30 +41156,39 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   // executable ROW_NUMBER/RANK/DENSE_RANK/PERCENT_RANK/CUME_DIST/NTILE/LAG/
   // LEAD/FIRST_VALUE/LAST_VALUE/NTH_VALUE and exact aggregate
   // SUM/MIN/MAX/COUNT(identifier) and COUNT(*) cohort.
-  constexpr std::string_view kCatalogOrderingPropertyUuid =
-      "019f0000-0000-7200-8000-00000000c701";
-  constexpr std::string_view kRowNumberFunctionUuid =
-      "019de5fc-2400-7539-bcce-00eef3ae7220";
-  constexpr std::string_view kRankFunctionUuid =
-      "019de5fc-2400-7b94-870d-0dd789ca70ab";
-  constexpr std::string_view kDenseRankFunctionUuid =
-      "019de5fc-2400-741d-bef0-f079fd3ba494";
-  constexpr std::string_view kPercentRankFunctionUuid =
-      "019de5fc-2400-7d86-86fe-96f3f27b5dd6";
-  constexpr std::string_view kCumeDistFunctionUuid =
-      "019de5fc-2400-721c-be64-2568b64a02b9";
-  constexpr std::string_view kNtileFunctionUuid =
-      "019de5fc-2400-7047-9474-232ca488c094";
-  constexpr std::string_view kLagFunctionUuid =
-      "019de5fc-2400-782c-8436-9ac310301738";
-  constexpr std::string_view kLeadFunctionUuid =
-      "019de5fc-2400-7a06-bc3c-6747cf5be66f";
-  constexpr std::string_view kFirstValueFunctionUuid =
-      "019de5fc-2400-7264-90fb-d25bd0f806f2";
-  constexpr std::string_view kLastValueFunctionUuid =
-      "019de5fc-2400-7d23-a5be-7ed3f1a5c3ec";
-  constexpr std::string_view kNthValueFunctionUuid =
-      "019de5fc-2400-7dc9-80e6-9f2ccf08076f";
+  constexpr core::platform::Uuid kRowNumberFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x75, 0x39,
+      0xbc, 0xce, 0x00, 0xee, 0xf3, 0xae, 0x72, 0x20}};
+  constexpr core::platform::Uuid kRankFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7b, 0x94,
+      0x87, 0x0d, 0x0d, 0xd7, 0x89, 0xca, 0x70, 0xab}};
+  constexpr core::platform::Uuid kDenseRankFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x74, 0x1d,
+      0xbe, 0xf0, 0xf0, 0x79, 0xfd, 0x3b, 0xa4, 0x94}};
+  constexpr core::platform::Uuid kPercentRankFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0x86,
+      0x86, 0xfe, 0x96, 0xf3, 0xf2, 0x7b, 0x5d, 0xd6}};
+  constexpr core::platform::Uuid kCumeDistFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x72, 0x1c,
+      0xbe, 0x64, 0x25, 0x68, 0xb6, 0x4a, 0x02, 0xb9}};
+  constexpr core::platform::Uuid kNtileFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x70, 0x47,
+      0x94, 0x74, 0x23, 0x2c, 0xa4, 0x88, 0xc0, 0x94}};
+  constexpr core::platform::Uuid kLagFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x78, 0x2c,
+      0x84, 0x36, 0x9a, 0xc3, 0x10, 0x30, 0x17, 0x38}};
+  constexpr core::platform::Uuid kLeadFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7a, 0x06,
+      0xbc, 0x3c, 0x67, 0x47, 0xcf, 0x5b, 0xe6, 0x6f}};
+  constexpr core::platform::Uuid kFirstValueFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x72, 0x64,
+      0x90, 0xfb, 0xd2, 0x5b, 0xd0, 0xf8, 0x06, 0xf2}};
+  constexpr core::platform::Uuid kLastValueFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0x23,
+      0xa5, 0xbe, 0x7e, 0xd3, 0xf1, 0xa5, 0xc3, 0xec}};
+  constexpr core::platform::Uuid kNthValueFunctionUuid{{
+      0x01, 0x9d, 0xe5, 0xfc, 0x24, 0x00, 0x7d, 0xc9,
+      0x80, 0xe6, 0x9f, 0x2c, 0xcf, 0x08, 0x07, 0x6f}};
   const bool normalize_rank_semantic =
       window_relation != nullptr &&
       window_relation->semantic_variant_id == "window.rank.v1";
@@ -41363,12 +41282,11 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                         ? "sb.window.dense_rank"
                         : (normalize_rank_semantic ? "sb.window.rank"
                                                    : "sb.window.row_number"))))));
-  const std::string_view normalized_ranking_function_uuid =
+  const core::platform::Uuid normalized_ranking_function_uuid =
       normalize_aggregate_window_semantic
           ? (normalized_unary_aggregate_builtin
-                 ? std::string_view{
-                       normalized_aggregate_invocation->bound_function_uuid}
-                 : std::string_view{})
+                 ? normalized_aggregate_invocation->bound_function_uuid
+                 : core::platform::Uuid{})
           : (normalize_value_semantic
           ? (normalize_first_value_semantic
                  ? kFirstValueFunctionUuid
@@ -41771,26 +41689,7 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
        std::to_string(emitted_root_relation_id)});
   if (!emit_relational_descriptors()) return envelope;
   for (const auto& expression : native.expressions) {
-    const auto literal_kind = expression.literal_kind.has_value()
-                                  ? std::to_string(
-                                        static_cast<std::uint8_t>(
-                                            *expression.literal_kind) +
-                                        1)
-                                  : "-";
-    envelope.operands.push_back(
-        {"relational_expression_v1",
-         std::to_string(expression.expression_id),
-         std::to_string(static_cast<std::uint8_t>(
-                            expression.expression_kind) +
-                        1) +
-             "|" + JoinCanonicalHandleList(expression.child_expression_ids) +
-             "|" + std::to_string(expression.result_descriptor_id) + "|" +
-             EncodeOptionalCanonicalText(expression.bound_function_uuid) +
-             "|" + EncodeOptionalCanonicalText(expression.bound_name_uuid) +
-             "|" + literal_kind + "|" +
-             EncodeOptionalCanonicalHex(expression.canonical_operator_name) +
-             "|" +
-             EncodeOptionalCanonicalHex(expression.literal_or_parameter_ref)});
+    if (!emit_expression(expression)) return envelope;
   }
   for (const auto& output : emitted_outputs) {
     envelope.operands.push_back(
@@ -41828,73 +41727,45 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
       definition.frame_end.reset();
       definition.exclusion = NativeWindowFrameExclusion::kNoOthers;
     }
-    std::string encoded_ordering_terms;
-    for (std::size_t ordinal = 0; ordinal < definition.ordering_terms.size();
-         ++ordinal) {
-      const auto& term = definition.ordering_terms[ordinal];
-      const auto expression = expressions_by_id.at(term.expression_id);
-      const auto descriptor = std::ranges::find_if(
-          native.descriptors, [&](const auto& candidate) {
-            return candidate.descriptor_id == expression->result_descriptor_id;
+    std::vector<engine::internal_api::RelationalPropertyOrderingTerm> ordering_terms;
+    ordering_terms.reserve(definition.ordering_terms.size());
+    for (const auto& term : definition.ordering_terms) {
+      const auto expression = expressions_by_id.find(term.expression_id);
+      const auto descriptor = expression == expressions_by_id.end() ? native.descriptors.end() :
+          std::ranges::find_if(native.descriptors, [&](const auto& candidate) {
+            return candidate.descriptor_id == expression->second->result_descriptor_id;
           });
-      if (ordinal != 0) encoded_ordering_terms.push_back(',');
-      encoded_ordering_terms +=
-          std::to_string(term.expression_id) + ":" +
-          std::to_string(term.direction == NativeSortDirection::kAscending
-                             ? 1
-                             : 2) +
-          ":" +
-          std::to_string(term.null_placement ==
-                                 NativeNullPlacement::kNullsFirst
-                             ? 1
-                             : 2) +
-          ":" +
-          (descriptor->collation_uuid.has_value()
-               ? *descriptor->collation_uuid
-               : "-");
+      if (descriptor == native.descriptors.end()) {
+        AddNativeRelationalLoweringError(&envelope, "DATATYPE.DESCRIPTOR.INVALID",
+                                        "window ordering has no exact bound expression descriptor");
+        return envelope;
+      }
+      engine::internal_api::RelationalPropertyOrderingTerm wire;
+      wire.expression_id = term.expression_id;
+      wire.direction = static_cast<engine::internal_api::RelationalPropertySortDirection>(
+          static_cast<unsigned>(term.direction) + 1);
+      wire.null_placement = static_cast<engine::internal_api::RelationalPropertyNullPlacement>(
+          static_cast<unsigned>(term.null_placement) + 1);
+      wire.collation_uuid = descriptor->collation_uuid.value_or(core::platform::Uuid{});
+      ordering_terms.push_back(wire);
     }
-    const auto encode_frame_bound = [](const auto& bound) {
-      if (!bound.has_value()) return std::string("-");
-      return std::to_string(
-                 static_cast<std::uint8_t>(bound->bound_kind) + 1) +
-             ":" +
-             (bound->offset_expression_id.has_value()
-                  ? std::to_string(*bound->offset_expression_id)
-                  : "-");
-    };
-    envelope.operands.push_back(
-        {"relational_window_definition_v1",
-         std::to_string(definition.window_id),
-         std::to_string(window_relation->relation_id) + "|" +
-             EncodeOptionalCanonicalHex(definition.canonical_name_key) + "|" +
-             EncodeOptionalCanonicalU32(definition.inherited_window_id) + "|" +
-             JoinCanonicalHandleList(definition.partition_expression_ids) +
-             "|" +
-             (encoded_ordering_terms.empty() ? "-" : encoded_ordering_terms) +
-             "|" +
-             (definition.frame_unit.has_value()
-                  ? std::to_string(
-                        static_cast<std::uint8_t>(*definition.frame_unit) + 1)
-                  : "-") +
-             "|" + encode_frame_bound(definition.frame_start) + "|" +
-             encode_frame_bound(definition.frame_end) + "|" +
-             std::to_string(
-                 static_cast<std::uint8_t>(definition.exclusion) + 1)});
+    auto operand = MakeRelationalWindowDefinitionOperand(
+        definition, window_relation->relation_id, std::move(ordering_terms));
+    if (!operand) {
+      AddNativeRelationalLoweringError(&envelope, "SBLR.OPERAND_INVALID",
+                                      "window definition requires exact typed states and binary collation identities");
+      return envelope;
+    }
+    envelope.operands.push_back(std::move(*operand));
   }
   for (const auto& invocation : native.window_invocations) {
-    envelope.operands.push_back(
-        {"relational_window_invocation_v1",
-         std::to_string(invocation.invocation_id),
-         std::to_string(window_relation->relation_id) + "|" +
-             std::to_string(invocation.function_expression_id) + "|" +
-             std::to_string(invocation.window_definition_id) + "|" +
-             std::to_string(invocation.function_abi_version) + "|" +
-             EncodeCanonicalHex(invocation.builtin_id) + "|" +
-             invocation.bound_function_uuid + "|" +
-             std::to_string(invocation.result_descriptor_id) + "|" +
-             EncodeCanonicalHex(invocation.output_name_utf8.value_or("")) +
-             "|" +
-             JoinCanonicalHandleList(invocation.argument_expression_ids)});
+    auto operand = MakeRelationalWindowInvocationOperand(invocation, window_relation->relation_id);
+    if (!operand) {
+      AddNativeRelationalLoweringError(&envelope, "SBLR.OPERAND_INVALID",
+                                      "window invocation requires binary function identity and exact typed handles");
+      return envelope;
+    }
+    envelope.operands.push_back(std::move(*operand));
   }
   // QOW-SOURCE-RCP-051-WINDOW-PROPERTY-PUBLICATION-V1
   // Publish the effective inherited PARTITION/ORDER state as canonical
@@ -41903,131 +41774,85 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
   // in the typed definition records and are not executed by the parser.
   std::vector<std::uint32_t> effective_window_partition_expression_ids;
   std::vector<BoundOrderingAstTerm> effective_window_ordering_terms;
-  std::string window_partition_property_uuid;
-  std::string window_ordering_property_uuid;
-  std::string window_property_uuid;
-  std::string window_frame_descriptor_uuid;
-  std::vector<std::string> window_dependency_property_uuids;
-  std::vector<std::string> window_delivered_property_uuids;
-  std::string encoded_window_ordering_terms;
-  if (window_relation != nullptr) {
-    std::unordered_map<std::uint32_t,
-                       const BoundWindowDefinitionAstRecord*>
-        definitions_by_id;
-    for (const auto& definition : native.window_definitions) {
-      definitions_by_id.emplace(definition.window_id, &definition);
+  core::platform::Uuid window_partition_property_uuid, window_ordering_property_uuid;
+  core::platform::Uuid window_property_uuid, window_frame_descriptor_uuid, catalog_ordering_property_uuid;
+  std::vector<core::platform::Uuid> window_dependency_property_uuids, window_delivered_property_uuids;
+  std::vector<engine::internal_api::RelationalPropertyOrderingTerm> window_ordering_terms, catalog_ordering_terms;
+  const auto resolve_ordering = [&](const std::vector<BoundOrderingAstTerm>& source,
+                                    std::vector<engine::internal_api::RelationalPropertyOrderingTerm>* target) {
+    for (const auto& term : source) {
+      const auto expression = expressions_by_id.find(term.expression_id);
+      if (expression == expressions_by_id.end()) return false;
+      const auto descriptor = std::ranges::find_if(native.descriptors, [&](const auto& candidate) {
+        return candidate.descriptor_id == expression->second->result_descriptor_id;
+      });
+      if (descriptor == native.descriptors.end()) return false;
+      engine::internal_api::RelationalPropertyOrderingTerm resolved;
+      resolved.expression_id = term.expression_id;
+      resolved.direction = static_cast<engine::internal_api::RelationalPropertySortDirection>(static_cast<unsigned>(term.direction) + 1);
+      resolved.null_placement = static_cast<engine::internal_api::RelationalPropertyNullPlacement>(static_cast<unsigned>(term.null_placement) + 1);
+      resolved.collation_uuid = descriptor->collation_uuid.value_or(core::platform::Uuid{});
+      target->push_back(resolved);
     }
-    const auto selected_definition_id =
-        native.window_invocations.front().window_definition_id;
+    return true;
+  };
+  const auto retained_identity = [&](BoundRelationalPropertyKey key, core::platform::Uuid* output) {
+    const auto identity = FindRelationalPropertyIdentity(native, key);
+    if (!identity) {
+      AddNativeRelationalLoweringError(&envelope, "QOW-DIAG-BOUNDAST-SCOPE", "missing retained plan-local property identity");
+      return false;
+    }
+    *output = *identity;
+    return true;
+  };
+  std::uint32_t selected_definition_id = 0;
+  if (window_relation != nullptr) {
+    std::unordered_map<std::uint32_t, const BoundWindowDefinitionAstRecord*> definitions_by_id;
+    for (const auto& definition : native.window_definitions) definitions_by_id.emplace(definition.window_id, &definition);
+    selected_definition_id = native.window_invocations.front().window_definition_id;
     auto definition = definitions_by_id.at(selected_definition_id);
     while (definition != nullptr) {
-      if (effective_window_partition_expression_ids.empty() &&
-          !definition->partition_expression_ids.empty()) {
-        effective_window_partition_expression_ids =
-            definition->partition_expression_ids;
-      }
-      if (effective_window_ordering_terms.empty() &&
-          !definition->ordering_terms.empty()) {
+      if (effective_window_partition_expression_ids.empty() && !definition->partition_expression_ids.empty())
+        effective_window_partition_expression_ids = definition->partition_expression_ids;
+      if (effective_window_ordering_terms.empty() && !definition->ordering_terms.empty())
         effective_window_ordering_terms = definition->ordering_terms;
-      }
-      definition = definition->inherited_window_id.has_value()
-                       ? definitions_by_id.at(*definition->inherited_window_id)
-                       : nullptr;
+      definition = definition->inherited_window_id ? definitions_by_id.at(*definition->inherited_window_id) : nullptr;
     }
-
-    const auto property_scope =
-        std::to_string(window_relation->relation_id) + "." +
-        std::to_string(selected_definition_id);
     if (!effective_window_partition_expression_ids.empty()) {
-      window_partition_property_uuid = DerivedNativeRelationalUuid(
-          native.bound_ast_uuid, "window.partition." + property_scope);
-      window_dependency_property_uuids.push_back(
-          window_partition_property_uuid);
+      if (!retained_identity({window_relation->relation_id, selected_definition_id, PropertyRole::kWindowPartition},
+                             &window_partition_property_uuid)) return envelope;
+      window_dependency_property_uuids.push_back(window_partition_property_uuid);
     }
     if (!effective_window_ordering_terms.empty()) {
-      if (normalize_catalog_ranking) {
-        window_dependency_property_uuids.push_back(
-            std::string(kCatalogOrderingPropertyUuid));
-      } else {
-        window_ordering_property_uuid = DerivedNativeRelationalUuid(
-            native.bound_ast_uuid, "window.ordering." + property_scope);
-        window_dependency_property_uuids.push_back(
-            window_ordering_property_uuid);
-      }
-      for (std::size_t ordinal = 0;
-           ordinal < effective_window_ordering_terms.size(); ++ordinal) {
-        const auto& term = effective_window_ordering_terms[ordinal];
-        const auto expression = expressions_by_id.at(term.expression_id);
-        const auto descriptor = std::ranges::find_if(
-            native.descriptors, [&](const auto& candidate) {
-              return candidate.descriptor_id ==
-                     expression->result_descriptor_id;
-            });
-        if (ordinal != 0) encoded_window_ordering_terms.push_back(',');
-        encoded_window_ordering_terms +=
-            std::to_string(term.expression_id) + ":" +
-            std::to_string(term.direction == NativeSortDirection::kAscending
-                               ? 1
-                               : 2) +
-            ":" +
-            std::to_string(
-                term.null_placement == NativeNullPlacement::kNullsFirst ? 1
-                                                                        : 2) +
-            ":" +
-            (descriptor->collation_uuid.has_value()
-                 ? *descriptor->collation_uuid
-                 : "-");
+      core::platform::Uuid ordering_identity;
+      if (!retained_identity({window_relation->relation_id, selected_definition_id, PropertyRole::kWindowOrdering},
+                             &ordering_identity)) return envelope;
+      if (normalize_catalog_ranking) catalog_ordering_property_uuid = ordering_identity;
+      else window_ordering_property_uuid = ordering_identity;
+      window_dependency_property_uuids.push_back(ordering_identity);
+      if (!resolve_ordering(effective_window_ordering_terms, &window_ordering_terms)) {
+        AddNativeRelationalLoweringError(&envelope, "DATATYPE.DESCRIPTOR.INVALID", "window ordering descriptor is missing");
+        return envelope;
       }
     }
-    window_property_uuid = DerivedNativeRelationalUuid(
-        native.bound_ast_uuid, "window.result." + property_scope);
-    window_frame_descriptor_uuid = DerivedNativeRelationalUuid(
-        native.bound_ast_uuid, "window.frame." + property_scope);
+    if (!retained_identity({window_relation->relation_id, selected_definition_id, PropertyRole::kWindowResult},
+                           &window_property_uuid) ||
+        !retained_identity({window_relation->relation_id, selected_definition_id, PropertyRole::kWindowFrame},
+                           &window_frame_descriptor_uuid)) return envelope;
     window_delivered_property_uuids = window_dependency_property_uuids;
     window_delivered_property_uuids.push_back(window_property_uuid);
   }
-  const auto join_property_uuids = [](const std::vector<std::string>& uuids) {
-    if (uuids.empty()) return std::string("-");
-    std::string joined;
-    for (std::size_t index = 0; index < uuids.size(); ++index) {
-      if (index != 0) joined.push_back(',');
-      joined += uuids[index];
-    }
-    return joined;
-  };
-  std::string encoded_catalog_ordering_terms;
-  if (catalog_sort_relation != nullptr ||
-      normalize_catalog_ranking) {
-    const auto& catalog_ordering_terms =
-        normalize_catalog_ranking
-            ? native.window_definitions.front().ordering_terms
-            : catalog_sort_relation->ordering_terms;
-    for (std::size_t ordinal = 0;
-         ordinal < catalog_ordering_terms.size(); ++ordinal) {
-      const auto& term = catalog_ordering_terms[ordinal];
-      const auto expression = expressions_by_id.at(term.expression_id);
-      const auto descriptor = std::ranges::find_if(
-          native.descriptors, [&](const auto& candidate) {
-            return candidate.descriptor_id ==
-                   expression->result_descriptor_id;
-          });
-      if (ordinal != 0) encoded_catalog_ordering_terms.push_back(',');
-      encoded_catalog_ordering_terms +=
-                       std::to_string(term.expression_id) + ":" +
-                       std::to_string(
-                           term.direction == NativeSortDirection::kAscending
-                               ? 1
-                               : 2) +
-                       ":" +
-                       std::to_string(
-                           term.null_placement ==
-                                   NativeNullPlacement::kNullsFirst
-                               ? 1
-                               : 2) +
-                       ":" +
-                       (descriptor->collation_uuid.has_value()
-                            ? *descriptor->collation_uuid
-                            : "-");
+  if (catalog_sort_relation != nullptr || normalize_catalog_ranking) {
+    if (normalize_catalog_ranking) {
+      if (!retained_identity({window_relation->relation_id, selected_definition_id, PropertyRole::kWindowOrdering},
+                             &catalog_ordering_property_uuid)) return envelope;
+    } else if (!retained_identity({catalog_sort_relation->relation_id, 0, PropertyRole::kSortOrdering},
+                                   &catalog_ordering_property_uuid)) return envelope;
+    const auto& ordering_source = normalize_catalog_ranking ? native.window_definitions.front().ordering_terms
+                                                           : catalog_sort_relation->ordering_terms;
+    if (!resolve_ordering(ordering_source, &catalog_ordering_terms)) {
+      AddNativeRelationalLoweringError(&envelope, "DATATYPE.DESCRIPTOR.INVALID", "sort ordering descriptor is missing");
+      return envelope;
     }
   }
   for (const auto& relation : emitted_relations) {
@@ -42068,37 +41893,23 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
              JoinCanonicalHandleList(relation.input_relation_ids) + "|" +
              JoinCanonicalHandleList(output_descriptor_ids) + "|" +
              JoinCanonicalHandleList(relation.values_row_ids)});
-    envelope.operands.push_back(
-        {"relational_node_binding_v1", std::to_string(relation.relation_id),
-         EncodeCanonicalHex(
-             relation.relation_kind == NativeRelationAstKind::kCatalogSource
-                 ? (relation.semantic_variant_id.starts_with("sblr.model-source.")
-                        ? "SBLR_MODEL_SOURCE_V1"
-                        : "relation.source.v1")
-                 : relation.semantic_variant_id) +
-             "|" +
-             JoinCanonicalHandleList(relation.bound_expression_ids) +
-             "|" +
-             (relation.bound_object_uuid.has_value()
-                  ? *relation.bound_object_uuid
-                  : "-") +
-             "|" +
-             (relation.relation_kind == NativeRelationAstKind::kSort
-                  ? std::string(kCatalogOrderingPropertyUuid)
-                  : (relation.relation_kind == NativeRelationAstKind::kWindow
-                         ? join_property_uuids(
-                               window_dependency_property_uuids)
-                         : "-")) +
-             "|" +
-             (relation.relation_kind == NativeRelationAstKind::kSort
-                  ? std::string(kCatalogOrderingPropertyUuid)
-                  : ((relation.relation_kind ==
-                              NativeRelationAstKind::kWindow ||
-                      relation.relation_kind ==
-                          NativeRelationAstKind::kQualify)
-                         ? join_property_uuids(
-                               window_delivered_property_uuids)
-                         : "-"))});
+    engine::sblr::RelationalNodeBindingRecord binding;
+    binding.node_id = relation.relation_id;
+    binding.semantic_variant_id = relation.relation_kind == NativeRelationAstKind::kCatalogSource
+        ? (relation.semantic_variant_id.starts_with("sblr.model-source.") ? "SBLR_MODEL_SOURCE_V1" : "relation.source.v1")
+        : relation.semantic_variant_id;
+    binding.bound_expression_ids = relation.bound_expression_ids;
+    if (relation.bound_object_uuid) binding.required_object_uuids.push_back(*relation.bound_object_uuid);
+    if (relation.relation_kind == NativeRelationAstKind::kSort) {
+      binding.required_property_uuids = {catalog_ordering_property_uuid};
+      binding.delivered_property_uuids = {catalog_ordering_property_uuid};
+    } else {
+      if (relation.relation_kind == NativeRelationAstKind::kWindow)
+        binding.required_property_uuids = window_dependency_property_uuids;
+      if (relation.relation_kind == NativeRelationAstKind::kWindow || relation.relation_kind == NativeRelationAstKind::kQualify)
+        binding.delivered_property_uuids = window_delivered_property_uuids;
+    }
+    if (!emit_node_binding(binding)) return envelope;
     if (!relation.table_function_argument_expression_ids.empty()) {
       envelope.operands.push_back(
           {"relational_table_function_v1",
@@ -42107,37 +41918,34 @@ SblrEnvelope LowerBoundNativeRelationalToCanonicalSblr(
                relation.table_function_argument_expression_ids)});
     }
   }
-  if (catalog_sort_relation != nullptr ||
-      normalize_catalog_ranking) {
-    const auto ordering_origin_relation_id =
-        normalize_catalog_ranking
-            ? normalized_sort_relation_id
-            : catalog_sort_relation->relation_id;
-    envelope.operands.push_back(
-        {"relational_property_v1", std::string(kCatalogOrderingPropertyUuid),
-         "1|" + std::to_string(ordering_origin_relation_id) + "|-|" +
-             encoded_catalog_ordering_terms + "|-|-"});
+  if (catalog_sort_relation != nullptr || normalize_catalog_ranking) {
+    engine::internal_api::RelationalPropertyRecord ordering;
+    ordering.property_uuid = catalog_ordering_property_uuid;
+    ordering.origin_node_id = normalize_catalog_ranking ? normalized_sort_relation_id : catalog_sort_relation->relation_id;
+    ordering.ordering_terms = std::move(catalog_ordering_terms);
+    if (!emit_property(ordering)) return envelope;
   }
-  if (!window_partition_property_uuid.empty()) {
-    envelope.operands.push_back(
-        {"relational_property_v1", window_partition_property_uuid,
-         "3|" + std::to_string(window_relation->relation_id) + "|" +
-             JoinCanonicalHandleList(
-                 effective_window_partition_expression_ids) +
-             "|-|-|-"});
+  if (!window_partition_property_uuid.is_nil()) {
+    engine::internal_api::RelationalPropertyRecord partition;
+    partition.property_uuid = window_partition_property_uuid;
+    partition.property_kind = engine::internal_api::RelationalPropertyKind::kPartitioning;
+    partition.origin_node_id = window_relation->relation_id;
+    partition.expression_ids = effective_window_partition_expression_ids;
+    if (!emit_property(partition)) return envelope;
   }
-  if (!window_ordering_property_uuid.empty()) {
-    envelope.operands.push_back(
-        {"relational_property_v1", window_ordering_property_uuid,
-         "1|" + std::to_string(window_relation->relation_id) + "|-|" +
-             encoded_window_ordering_terms + "|-|-"});
+  if (!window_ordering_property_uuid.is_nil()) {
+    engine::internal_api::RelationalPropertyRecord ordering;
+    ordering.property_uuid = window_ordering_property_uuid; ordering.origin_node_id = window_relation->relation_id;
+    ordering.ordering_terms = std::move(window_ordering_terms);
+    if (!emit_property(ordering)) return envelope;
   }
-  if (!window_property_uuid.empty()) {
-    envelope.operands.push_back(
-        {"relational_property_v1", window_property_uuid,
-         "4|" + std::to_string(window_relation->relation_id) + "|-|-|" +
-             join_property_uuids(window_dependency_property_uuids) + "|" +
-             window_frame_descriptor_uuid});
+  if (!window_property_uuid.is_nil()) {
+    engine::internal_api::RelationalPropertyRecord window;
+    window.property_uuid = window_property_uuid; window.origin_node_id = window_relation->relation_id;
+    window.property_kind = engine::internal_api::RelationalPropertyKind::kWindow;
+    window.dependency_property_uuids = window_dependency_property_uuids;
+    window.window_frame_descriptor_uuid = window_frame_descriptor_uuid;
+    if (!emit_property(window)) return envelope;
   }
   return envelope;
 }
@@ -42740,12 +42548,19 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto simple_create_sequence = AnalyzeSimpleCreateSequence(cst);
   const auto simple_create_view = AnalyzeSimpleCreateView(cst);
   const auto simple_create_domain = AnalyzeSimpleCreateDomain(cst);
-  const auto alter_domain_ddl = AnalyzeAlterDomainDdl(cst, bound.resolved_object_uuids);
-  const auto alter_sequence_ddl = AnalyzeAlterSequenceDdl(cst, bound.resolved_object_uuids);
   const auto simple_create_executable_object =
       AnalyzeSimpleCreateExecutableObject(cst, bound.resolved_object_uuids);
   const auto alter_table_column_ddl =
       AnalyzeAlterTableColumnDdl(cst, bound.resolved_object_uuids);
+  const auto alter_rename_ddl = alter_table_column_ddl.active
+                                    ? AlterRenameDdlInfo{}
+                                    : AnalyzeAlterRenameDdl(cst, bound.resolved_object_uuids);
+  const auto alter_domain_ddl = alter_rename_ddl.active
+                                   ? AlterDomainDdlInfo{}
+                                   : AnalyzeAlterDomainDdl(cst, bound.resolved_object_uuids);
+  const auto alter_sequence_ddl = alter_rename_ddl.active
+                                     ? AlterSequenceDdlInfo{}
+                                     : AnalyzeAlterSequenceDdl(cst, bound.resolved_object_uuids);
   const auto constraint_ddl =
       (simple_create_domain.active || alter_domain_ddl.active || alter_sequence_ddl.active ||
        simple_create_executable_object.active || alter_table_column_ddl.active ||
@@ -42761,17 +42576,12 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   const auto catalog_descriptor_mutation =
       (transaction_lock_route.active || exact_command_route.active ||
        language_control_route.active || udr_package_route.active ||
-       simple_create_view.active)
+       simple_create_view.active || alter_rename_ddl.active)
           ? CatalogDescriptorMutationInfo{}
           : AnalyzeCatalogDescriptorMutation(cst, bound.resolved_object_uuids);
   const auto index_template_ddl =
       AnalyzeIndexTemplateDdl(cst, bound.resolved_object_uuids);
   const auto comment_on_ddl = AnalyzeCommentOnDdl(cst, bound.resolved_object_uuids);
-  const auto alter_rename_ddl = alter_table_column_ddl.active
-                                    ? AlterRenameDdlInfo{}
-                                    : AnalyzeAlterRenameDdl(
-                                          cst,
-                                          bound.resolved_object_uuids);
   const auto simple_drop_object =
       AnalyzeSimpleDropObjectDdl(cst, bound.resolved_object_uuids);
   const auto synonym_ddl = AnalyzeSynonymDdl(cst);
@@ -43395,8 +43205,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         << "\"real_file_effects\":false,"
         << "\"parser_executes_sql\":false,";
     AppendSbsfc085GrammarSurfaceJson(out, sbsfc085_surface);
-    AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-    out << ',';
     AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -43437,8 +43245,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         << "\"real_file_effects\":false,"
         << "\"parser_executes_sql\":false,";
     AppendSbsfc084GrammarSurfaceJson(out, sbsfc084_surface);
-    AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-    out << ',';
     AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -43479,8 +43285,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         << "\"real_file_effects\":false,"
         << "\"parser_executes_sql\":false,";
     AppendSbsfc083GrammarSurfaceJson(out, sbsfc083_surface);
-    AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-    out << ',';
     AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -43521,8 +43325,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         << "\"real_file_effects\":false,"
         << "\"parser_executes_sql\":false,";
     AppendSbsfc082SurfaceDescriptorJson(out, sbsfc082_descriptor);
-    AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-    out << ',';
     AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -43563,8 +43365,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         << "\"real_file_effects\":false,"
         << "\"parser_executes_sql\":false,";
     AppendSbsfc081DescriptorExpressionResidualJson(out, sbsfc081_residual);
-    AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-    out << ',';
     AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -43605,8 +43405,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         << "\"real_file_effects\":false,"
         << "\"parser_executes_sql\":false,";
     AppendSbsfc079MultimodelGeneralResidualJson(out, sbsfc079_residual);
-    AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-    out << ',';
     AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -43647,8 +43445,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         << "\"real_file_effects\":false,"
         << "\"parser_executes_sql\":false,";
     AppendSbsfc080OperationalGeneralResidualJson(out, sbsfc080_residual);
-    AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-    out << ',';
     AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -43689,8 +43485,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         << "\"real_file_effects\":false,"
         << "\"parser_executes_sql\":false,";
     AppendSbsfc078ProceduralGeneralResidualJson(out, sbsfc078_residual);
-    AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-    out << ',';
     AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -43730,9 +43524,14 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   if (!(exact_command_route.active && exact_command_route.valid) &&
       sbsfc077_residual.active && sbsfc077_residual.valid) {
     if (sbsfc077_residual.object_kind == "filespace" &&
-        sbsfc077_residual.target_object_uuid.empty() &&
-        !envelope.resolved_object_uuids.empty()) {
-      sbsfc077_residual.target_object_uuid = envelope.resolved_object_uuids.front();
+        !BindOperationTargetIdentity(envelope.resolved_object_uuids,
+                                     BoundTargetRequirement::exactly_one,
+                                     &sbsfc077_residual.target_object_uuid)) {
+      envelope.messages.diagnostics.push_back(MakeDiagnostic(
+          "SBLR.OPERAND_INVALID", "ERROR",
+          "Filespace operation requires exactly one bound binary target",
+          "sbp_sbsql.storage_lowering"));
+      return envelope;
     }
     PopulateSbsfc077NonGeneralResidualAuthority(&envelope, sbsfc077_residual);
     if (!bound.bound || envelope.messages.has_errors()) return envelope;
@@ -43761,8 +43560,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
         << "\"real_file_effects\":false,"
         << "\"parser_executes_sql\":false,";
     AppendSbsfc077NonGeneralResidualJson(out, sbsfc077_residual);
-    AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-    out << ',';
     AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
     out << ',';
     AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -44041,7 +43838,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   PopulateSimpleCreateExecutableObjectAuthority(&envelope, simple_create_executable_object);
   PopulateRoutineInvocationAuthority(&envelope, routine_invocation);
   PopulateTransactionLockAuthority(&envelope, transaction_lock_route);
-  PopulateCatalogDescriptorMutationAuthority(&envelope, catalog_descriptor_mutation);
   PopulateSimpleCreateSchemaAuthority(&envelope, simple_create_schema);
   PopulateSimpleCreateTableAuthority(&envelope, simple_create_table);
   PopulateCreateVectorCollectionAuthority(&envelope, create_vector_collection);
@@ -44076,6 +43872,17 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   PopulateEventNotificationAuthority(&envelope, event_route);
   PopulateBridgeRouteAuthority(&envelope, bridge_route);
   if (source_explain_observability_route) {
+    if (!envelope.resolved_object_uuids.empty()) {
+      const std::array<std::pair<std::string_view, core::platform::Uuid>, 1> identities{{
+          {"target_object_uuid", envelope.resolved_object_uuids.front()}}};
+      if (!AppendBoundDmlObjectIdentities(&envelope, identities)) {
+        envelope.messages.diagnostics.push_back(MakeDiagnostic(
+            "SBLR.OPERAND_INVALID", "ERROR",
+            "EXPLAIN requires an exact binary bound target identity.",
+            "sbp_sbsql.explain_lowering"));
+        return envelope;
+      }
+    }
     envelope.operation_family = "sblr.observability.inspect.v3";
     envelope.sblr_operation_key = "sblr.observability.inspect.v3";
     envelope.operation_id = "observability.explain_operation";
@@ -44682,9 +44489,7 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   AppendShowCreateJson(out, show_create);
   AppendObservabilityRouteJson(out, observability_route);
   if (source_explain_observability_route && !envelope.resolved_object_uuids.empty()) {
-    out << "\"target_object_uuid\":\""
-        << EscapeJson(envelope.resolved_object_uuids.front()) << "\","
-        << "\"target_object_kind\":\"table\",";
+    out << "\"target_object_kind\":\"table\",";
   }
   AppendCastValueJson(out, cast_value);
   AppendVectorSearchJson(out, vector_search);
@@ -44718,8 +44523,6 @@ SblrEnvelope LowerToSblr(const BoundStatement& bound, const CstDocument& cst, co
   AppendCursorControlJson(out, cursor_control);
   AppendPreparedStatementControlJson(out, prepared_control, prepared_inner_scalar_projection);
   AppendTransactionCharacteristicsJson(out, transaction_characteristics);
-  AppendJsonStringArray(out, "resolved_object_uuids", envelope.resolved_object_uuids);
-  out << ',';
   AppendJsonStringArray(out, "descriptor_requirements", envelope.descriptor_requirements);
   out << ',';
   AppendJsonStringArray(out, "policy_refs", envelope.policy_refs);
@@ -44771,29 +44574,11 @@ struct ParsedRelationalExpression {
   std::uint8_t kind{0};
   std::vector<std::uint32_t> child_ids;
   std::uint32_t descriptor_id{0};
-  std::optional<std::string> function_uuid;
-  std::optional<std::string> bound_name_uuid;
+  std::optional<scratchbird::core::platform::Uuid> function_uuid;
+  std::optional<scratchbird::core::platform::Uuid> bound_name_uuid;
   std::optional<std::uint8_t> literal_kind;
   std::optional<std::string> operator_name;
   std::optional<std::string> literal_or_parameter_ref;
-};
-
-struct ParsedRelationalModelOperation {
-  std::uint32_t ordinal{0};
-  std::uint32_t source_id{0};
-  std::string family_id;
-  std::string operation_id;
-  std::uint32_t expression_id{0};
-  std::optional<std::string> crs_uuid;
-  std::optional<std::uint64_t> crs_generation;
-};
-
-struct ParsedRelationalModelColumn {
-  std::uint32_t source_id{0};
-  std::uint32_t ordinal{0};
-  std::string column_uuid;
-  std::uint32_t descriptor_id{0};
-  std::string canonical_name_key;
 };
 
 struct ParsedRelationalOutput {
@@ -44821,23 +44606,23 @@ struct ParsedRelationalOrderingTerm {
   std::uint32_t expression_id{0};
   std::uint8_t direction{0};
   std::uint8_t null_placement{0};
-  std::optional<std::string> collation_uuid;
+  std::optional<core::platform::Uuid> collation_uuid;
 };
 
 struct ParsedRelationalProperty {
-  std::string uuid;
+  core::platform::Uuid uuid;
   std::uint8_t kind{0};
   std::uint32_t origin_node_id{0};
   std::vector<std::uint32_t> expression_ids;
   std::vector<ParsedRelationalOrderingTerm> ordering_terms;
-  std::vector<std::string> dependency_uuids;
-  std::optional<std::string> window_frame_descriptor_uuid;
+  std::vector<core::platform::Uuid> dependency_uuids;
+  std::optional<core::platform::Uuid> window_frame_descriptor_uuid;
   std::uint8_t distribution_kind{0};
   std::uint8_t materialization_kind{0};
   std::uint8_t rewindability_kind{0};
   std::uint8_t locality_kind{0};
-  std::optional<std::string> locality_uuid;
-  std::optional<std::string> security_visibility_context_uuid;
+  std::optional<core::platform::Uuid> locality_uuid;
+  std::optional<core::platform::Uuid> security_visibility_context_uuid;
   std::uint64_t security_visibility_generation{0};
 };
 
@@ -44866,7 +44651,7 @@ struct ParsedRelationalWindowInvocation {
   std::uint32_t definition_id{0};
   std::uint16_t function_abi_version{0};
   std::string builtin_id;
-  std::string function_uuid;
+  core::platform::Uuid function_uuid;
   std::uint32_t result_descriptor_id{0};
   std::string output_name_utf8;
   std::vector<std::uint32_t> argument_expression_ids;
@@ -44908,9 +44693,9 @@ struct ParsedRelationalNode {
   std::string semantic_variant_id;
   std::vector<std::uint32_t> bound_expression_ids;
   std::vector<std::uint32_t> argument_expression_ids;
-  std::vector<std::string> required_object_uuids;
-  std::vector<std::string> required_property_uuids;
-  std::vector<std::string> delivered_property_uuids;
+  std::vector<core::platform::Uuid> required_object_uuids;
+  std::vector<core::platform::Uuid> required_property_uuids;
+  std::vector<core::platform::Uuid> delivered_property_uuids;
 };
 
 struct ParsedRelationalGraph {
@@ -44928,8 +44713,6 @@ struct ParsedRelationalGraph {
   std::uint32_t root_node_id{0};
   std::vector<ParsedRelationalDescriptor> descriptors;
   std::vector<ParsedRelationalExpression> expressions;
-  std::vector<ParsedRelationalModelOperation> model_operations;
-  std::vector<ParsedRelationalModelColumn> model_columns;
   std::vector<ParsedRelationalOutput> outputs;
   std::vector<ParsedRelationalValuesRow> values_rows;
   std::vector<ParsedRelationalGroupingSet> grouping_sets;
@@ -44984,32 +44767,12 @@ bool ParseCanonicalRelationalUnsigned(const std::string_view encoded,
   return true;
 }
 
-bool IsCanonicalRelationalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-') {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const char ch = value[index];
-    if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-      return false;
-    }
-  }
-  return true;
-}
-
 bool IsCanonicalRelationalUuid(const scratchbird::core::platform::Uuid& value) {
   return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 bool IsNonNullCanonicalRelationalUuid(const scratchbird::core::platform::Uuid& value) {
   return scratchbird::core::uuid::IsEngineIdentityUuid(value);
-}
-
-bool IsNonNullCanonicalRelationalUuid(const std::string_view value) {
-  return IsCanonicalRelationalUuid(value) &&
-         value != "00000000-0000-0000-0000-000000000000";
 }
 
 template <std::size_t FieldCount>
@@ -45149,89 +44912,7 @@ bool ParseCanonicalRelationalStringList(
   return true;
 }
 
-bool ParseCanonicalRelationalOrderingTerms(
-    const std::string_view encoded,
-    std::vector<ParsedRelationalOrderingTerm>* terms) {
-  if (terms == nullptr || encoded.empty()) return false;
-  terms->clear();
-  if (encoded == "-") return true;
-  std::size_t start = 0;
-  while (start <= encoded.size()) {
-    const auto separator = encoded.find(',', start);
-    const auto token = encoded.substr(
-        start, separator == std::string_view::npos ? encoded.size() - start
-                                                    : separator - start);
-    std::array<std::string_view, 4> fields{};
-    std::size_t field_start = 0;
-    bool valid = true;
-    for (std::size_t index = 0; index < fields.size(); ++index) {
-      const auto field_separator = token.find(':', field_start);
-      if (index + 1 == fields.size()) {
-        if (field_separator != std::string_view::npos) valid = false;
-        fields[index] = token.substr(field_start);
-      } else if (field_separator == std::string_view::npos) {
-        valid = false;
-      } else {
-        fields[index] =
-            token.substr(field_start, field_separator - field_start);
-        field_start = field_separator + 1;
-      }
-      if (!valid) break;
-    }
-    std::uint64_t expression_id = 0;
-    std::uint64_t direction = 0;
-    std::uint64_t null_placement = 0;
-    if (!valid ||
-        !ParseCanonicalRelationalUnsigned(
-            fields[0], std::numeric_limits<std::uint32_t>::max(),
-            &expression_id) ||
-        expression_id == 0 ||
-        !ParseCanonicalRelationalUnsigned(
-            fields[1], std::numeric_limits<std::uint8_t>::max(), &direction) ||
-        !ParseCanonicalRelationalUnsigned(
-            fields[2], std::numeric_limits<std::uint8_t>::max(),
-            &null_placement)) {
-      return false;
-    }
-    ParsedRelationalOrderingTerm term;
-    term.expression_id = static_cast<std::uint32_t>(expression_id);
-    term.direction = static_cast<std::uint8_t>(direction);
-    term.null_placement = static_cast<std::uint8_t>(null_placement);
-    if (fields[3] != "-") term.collation_uuid = std::string(fields[3]);
-    terms->push_back(std::move(term));
-    if (terms->size() > kMaximumRelationalReferenceCount) return false;
-    if (separator == std::string_view::npos) break;
-    start = separator + 1;
-  }
-  return true;
-}
 
-bool ParseCanonicalRelationalWindowBound(
-    const std::string_view encoded,
-    std::optional<ParsedRelationalWindowBound>* bound) {
-  if (bound == nullptr) return false;
-  if (encoded == "-") {
-    bound->reset();
-    return true;
-  }
-  const auto separator = encoded.find(':');
-  if (separator == std::string_view::npos ||
-      encoded.find(':', separator + 1) != std::string_view::npos) {
-    return false;
-  }
-  std::uint64_t kind = 0;
-  ParsedRelationalWindowBound decoded;
-  if (!ParseCanonicalRelationalUnsigned(
-          encoded.substr(0, separator),
-          std::numeric_limits<std::uint8_t>::max(), &kind) ||
-      !ParseOptionalCanonicalRelationalU32(
-          encoded.substr(separator + 1), &decoded.offset_expression_id)) {
-    return false;
-  }
-  decoded.kind = static_cast<std::uint8_t>(kind);
-  *bound = std::move(decoded);
-  return true;
-}
 
 bool AddRelationalCount(const std::size_t addend,
                         const std::size_t maximum,
@@ -45265,13 +44946,11 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       }};
   const bool time_series_wire_hint = std::ranges::any_of(
       envelope.operands, [](const auto& operand) {
-        return operand.type == "relational_expression_v1" &&
-               (operand.value.find(EncodeCanonicalHex("TIME_RANGE")) !=
-                    std::string::npos ||
-                operand.value.find(EncodeCanonicalHex("TIME_BUCKET")) !=
-                    std::string::npos ||
-                operand.value.find(EncodeCanonicalHex("TIME_DOWNSAMPLE")) !=
-                    std::string::npos);
+        scratchbird::engine::internal_api::RelationalExpressionRecord expression;
+        return DecodeRelationalExpressionOperand(operand, &expression) &&
+               (expression.operator_name == "TIME_RANGE" ||
+                expression.operator_name == "TIME_BUCKET" ||
+                expression.operator_name == "TIME_DOWNSAMPLE");
       });
   const auto timestamp_operand = std::ranges::find_if(
       envelope.operands, [](const auto& operand) {
@@ -45601,158 +45280,46 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       graph->descriptors.push_back(std::move(descriptor));
       continue;
     }
-    if (operand.type == "relational_expression_v1") {
-      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
-                              &record_count)) {
+    if (operand.type == "relational_expression_v2") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount, &record_count)) {
         return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                                     "relational record limit exceeded",
-                                     "record_count");
+                                     "relational record limit exceeded", "record_count");
       }
-      std::uint64_t id = 0;
-      std::uint64_t kind = 0;
-      std::uint64_t descriptor_id = 0;
-      std::array<std::string_view, 8> fields{};
+      scratchbird::engine::internal_api::RelationalExpressionRecord wire;
+      if (!DecodeRelationalExpressionOperand(operand, &wire)) {
+        return RefuseRelationalGraph("SBLR.OPERAND_INVALID",
+                                     "binary relational expression record is malformed", "expression_record");
+      }
+      if (wire.child_expression_ids.size() > kMaximumRelationalFanout) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
+                                     "relational expression fanout limit exceeded", "expression_fanout");
+      }
       ParsedRelationalExpression expression;
-      if (!ParseCanonicalRelationalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
-          id == 0 || !SplitCanonicalRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[0], std::numeric_limits<std::uint8_t>::max(), &kind) ||
-          !ParseCanonicalRelationalHandleList(fields[1],
-                                              &expression.child_ids) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[2], std::numeric_limits<std::uint32_t>::max(),
-              &descriptor_id) ||
-          descriptor_id == 0 ||
-          !DecodeOptionalCanonicalRelationalHex(fields[6],
-                                                &expression.operator_name) ||
-          !DecodeOptionalCanonicalRelationalHex(
-              fields[7], &expression.literal_or_parameter_ref)) {
-        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
-                                     "relational expression record is malformed",
-                                     "expression_record");
-      }
-      if (expression.child_ids.size() > kMaximumRelationalFanout) {
-        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                                     "relational expression fanout limit exceeded",
-                                     "expression_fanout");
-      }
-      expression.id = static_cast<std::uint32_t>(id);
-      expression.kind = static_cast<std::uint8_t>(kind);
-      expression.descriptor_id = static_cast<std::uint32_t>(descriptor_id);
-      if (fields[3] != "-") expression.function_uuid = std::string(fields[3]);
-      if (fields[4] != "-") expression.bound_name_uuid = std::string(fields[4]);
-      if (fields[5] != "-") {
-        std::uint64_t literal_kind = 0;
-        if (!ParseCanonicalRelationalUnsigned(
-                fields[5], std::numeric_limits<std::uint8_t>::max(),
-                &literal_kind)) {
-          return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
-                                       "relational literal kind is malformed",
-                                       "expression_typed_fields");
-        }
-        expression.literal_kind = static_cast<std::uint8_t>(literal_kind);
-      }
+      expression.id = wire.expression_id;
+      expression.kind = static_cast<std::uint8_t>(wire.expression_kind);
+      expression.child_ids = std::move(wire.child_expression_ids);
+      expression.descriptor_id = wire.result_descriptor_id;
+      expression.function_uuid = wire.function_uuid;
+      expression.bound_name_uuid = wire.bound_name_uuid;
+      if (wire.literal_kind) expression.literal_kind = static_cast<std::uint8_t>(*wire.literal_kind);
+      expression.operator_name = std::move(wire.operator_name);
+      expression.literal_or_parameter_ref = std::move(wire.literal_or_parameter_ref);
       graph->expressions.push_back(std::move(expression));
       continue;
     }
-    if (operand.type == "relational_model_operation_v1") {
-      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
-                              &record_count)) {
-        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                                     "relational record limit exceeded",
-                                     "record_count");
-      }
-      std::uint64_t ordinal = 0;
-      std::uint64_t source_id = 0;
-      std::uint64_t expression_id = 0;
-      std::array<std::string_view, 6> fields{};
-      ParsedRelationalModelOperation operation;
-      if (!ParseCanonicalRelationalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(),
-              &ordinal) ||
-          !SplitCanonicalRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[0], std::numeric_limits<std::uint32_t>::max(),
-              &source_id) ||
-          source_id == 0 ||
-          !DecodeCanonicalRelationalHex(fields[1], &operation.family_id) ||
-          !DecodeCanonicalRelationalHex(fields[2], &operation.operation_id) ||
-          operation.family_id.empty() || operation.operation_id.empty() ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[3], std::numeric_limits<std::uint32_t>::max(),
-              &expression_id) ||
-          expression_id == 0 ||
-          ((fields[4] == "-") != (fields[5] == "-"))) {
-        return RefuseRelationalGraph(
-            "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "relational model operation record is malformed",
-            "model_operation_record");
-      }
-      operation.ordinal = static_cast<std::uint32_t>(ordinal);
-      operation.source_id = static_cast<std::uint32_t>(source_id);
-      operation.expression_id = static_cast<std::uint32_t>(expression_id);
-      if (fields[4] != "-") {
-        std::uint64_t generation = 0;
-        if (!IsCanonicalRelationalUuid(fields[4]) ||
-            !ParseCanonicalRelationalUnsigned(
-                fields[5], std::numeric_limits<std::uint64_t>::max(),
-                &generation) ||
-            generation == 0) {
-          return RefuseRelationalGraph(
-              "SBLR.PLAN_TREE.INVALID_HANDLE",
-              "relational model CRS binding is malformed",
-              "model_operation_record");
-        }
-        operation.crs_uuid = std::string(fields[4]);
-        operation.crs_generation = generation;
-      }
-      graph->model_operations.push_back(std::move(operation));
-      continue;
+    if (operand.type == "relational_expression_v1") {
+      return RefuseRelationalGraph("SBLR.OPERAND_INVALID",
+                                   "text relational expression carriers are not executable", "expression_record");
     }
-    if (operand.type == "relational_model_column_v1") {
-      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
-                              &record_count)) {
-        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                                     "relational record limit exceeded",
-                                     "record_count");
-      }
-      std::uint64_t presented_ordinal = 0;
-      std::uint64_t source_id = 0;
-      std::uint64_t ordinal = 0;
-      std::uint64_t descriptor_id = 0;
-      std::array<std::string_view, 5> fields{};
-      ParsedRelationalModelColumn column;
-      if (!ParseCanonicalRelationalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(),
-              &presented_ordinal) ||
-          !SplitCanonicalRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[0], std::numeric_limits<std::uint32_t>::max(),
-              &source_id) ||
-          source_id == 0 ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[1], std::numeric_limits<std::uint32_t>::max(),
-              &ordinal) ||
-          ordinal != presented_ordinal || !IsCanonicalRelationalUuid(fields[2]) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[3], std::numeric_limits<std::uint32_t>::max(),
-              &descriptor_id) ||
-          descriptor_id == 0 ||
-          !DecodeCanonicalRelationalHex(fields[4],
-                                        &column.canonical_name_key) ||
-          column.canonical_name_key.empty()) {
-        return RefuseRelationalGraph(
-            "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "relational model column record is malformed",
-            "model_column_record");
-      }
-      column.source_id = static_cast<std::uint32_t>(source_id);
-      column.ordinal = static_cast<std::uint32_t>(ordinal);
-      column.column_uuid = std::string(fields[2]);
-      column.descriptor_id = static_cast<std::uint32_t>(descriptor_id);
-      graph->model_columns.push_back(std::move(column));
-      continue;
+    if (operand.type == "relational_model_operation_v1" ||
+        operand.type == "relational_model_column_v1") {
+      // Model semantics are carried by the canonical expression DAG. These
+      // parser-private text records were never executable query operands.
+      // Reject them before allocating records or interpreting UUID spellings.
+      return RefuseRelationalGraph(
+          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
+          "parser-private model records are not canonical query.execute operands",
+          "model_transport_record");
     }
     if (operand.type == "relational_output_v1") {
       if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
@@ -45848,206 +45415,113 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       graph->grouping_sets.push_back(std::move(grouping_set));
       continue;
     }
-    if (operand.type == "relational_window_definition_v1") {
-      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
-                              &record_count)) {
+    if (operand.type == "relational_window_definition_v2") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount, &record_count)) {
         return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                                     "relational record limit exceeded",
-                                     "record_count");
+                                     "relational record limit exceeded", "record_count");
       }
-      std::array<std::string_view, 9> fields{};
-      std::uint64_t id = 0;
-      std::uint64_t node_id = 0;
-      std::uint64_t frame_unit = 0;
-      std::uint64_t exclusion = 0;
+      engine::internal_api::RelationalWindowDefinitionRecord decoded;
+      if (!DecodeRelationalWindowDefinitionOperand(operand, &decoded)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "binary relational window definition is malformed",
+                                     "window_definition_record");
+      }
       ParsedRelationalWindowDefinition definition;
-      if (!ParseCanonicalRelationalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
-          id == 0 ||
-          !SplitCanonicalRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[0], std::numeric_limits<std::uint32_t>::max(),
-              &node_id) ||
-          node_id == 0 ||
-          !DecodeOptionalCanonicalRelationalHex(
-              fields[1], &definition.canonical_name_key) ||
-          !ParseOptionalCanonicalRelationalU32(
-              fields[2], &definition.inherited_window_id) ||
-          !ParseCanonicalRelationalHandleList(
-              fields[3], &definition.partition_expression_ids) ||
-          !ParseCanonicalRelationalOrderingTerms(
-              fields[4], &definition.ordering_terms) ||
-          (fields[5] != "-" &&
-           !ParseCanonicalRelationalUnsigned(
-               fields[5], std::numeric_limits<std::uint8_t>::max(),
-               &frame_unit)) ||
-          !ParseCanonicalRelationalWindowBound(fields[6],
-                                               &definition.frame_start) ||
-          !ParseCanonicalRelationalWindowBound(fields[7],
-                                               &definition.frame_end) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[8], std::numeric_limits<std::uint8_t>::max(),
-              &exclusion)) {
-        return RefuseRelationalGraph(
-            "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "relational window-definition record is malformed",
-            "window_definition_record");
+      definition.id = decoded.window_id; definition.node_id = decoded.relation_node_id;
+      definition.canonical_name_key = std::move(decoded.canonical_name_key);
+      definition.inherited_window_id = decoded.inherited_window_id;
+      definition.partition_expression_ids = std::move(decoded.partition_expression_ids);
+      for (const auto& term : decoded.ordering_terms) {
+        ParsedRelationalOrderingTerm parsed;
+        parsed.expression_id = term.expression_id;
+        parsed.direction = static_cast<std::uint8_t>(term.direction);
+        parsed.null_placement = static_cast<std::uint8_t>(term.null_placement);
+        if (!term.collation_uuid.is_nil()) parsed.collation_uuid = term.collation_uuid;
+        definition.ordering_terms.push_back(parsed);
       }
-      definition.id = static_cast<std::uint32_t>(id);
-      definition.node_id = static_cast<std::uint32_t>(node_id);
-      if (fields[5] != "-") {
-        definition.frame_unit = static_cast<std::uint8_t>(frame_unit);
-      }
-      definition.exclusion = static_cast<std::uint8_t>(exclusion);
+      if (decoded.frame_unit) definition.frame_unit = static_cast<std::uint8_t>(*decoded.frame_unit);
+      const auto bound = [](const auto& value) -> std::optional<ParsedRelationalWindowBound> {
+        if (!value) return std::nullopt;
+        return ParsedRelationalWindowBound{static_cast<std::uint8_t>(value->bound_kind), value->offset_expression_id};
+      };
+      definition.frame_start = bound(decoded.frame_start); definition.frame_end = bound(decoded.frame_end);
+      definition.exclusion = static_cast<std::uint8_t>(decoded.exclusion);
       graph->window_definitions.push_back(std::move(definition));
       continue;
     }
-    if (operand.type == "relational_window_invocation_v1") {
-      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
-                              &record_count)) {
+    if (operand.type == "relational_window_definition_v1") {
+      return RefuseRelationalGraph("SBLR.OPERAND_INVALID",
+                                   "text relational window definitions are not executable",
+                                   "window_definition_record");
+    }
+    if (operand.type == "relational_window_invocation_v2") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount, &record_count)) {
         return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                                     "relational record limit exceeded",
-                                     "record_count");
+                                     "relational record limit exceeded", "record_count");
       }
-      std::array<std::string_view, 9> fields{};
-      std::uint64_t id = 0;
-      std::uint64_t node_id = 0;
-      std::uint64_t expression_id = 0;
-      std::uint64_t definition_id = 0;
-      std::uint64_t abi_version = 0;
-      std::uint64_t descriptor_id = 0;
+      engine::internal_api::RelationalWindowInvocationRecord decoded;
+      if (!DecodeRelationalWindowInvocationOperand(operand, &decoded)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
+                                     "binary relational window invocation is malformed",
+                                     "window_invocation_record");
+      }
       ParsedRelationalWindowInvocation invocation;
-      if (!ParseCanonicalRelationalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(), &id) ||
-          id == 0 ||
-          !SplitCanonicalRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[0], std::numeric_limits<std::uint32_t>::max(),
-              &node_id) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[1], std::numeric_limits<std::uint32_t>::max(),
-              &expression_id) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[2], std::numeric_limits<std::uint32_t>::max(),
-              &definition_id) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[3], std::numeric_limits<std::uint16_t>::max(),
-              &abi_version) ||
-          !DecodeCanonicalRelationalHex(fields[4], &invocation.builtin_id) ||
-          !IsNonNullCanonicalRelationalUuid(fields[5]) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[6], std::numeric_limits<std::uint32_t>::max(),
-              &descriptor_id) ||
-          !DecodeCanonicalRelationalHex(fields[7],
-                                        &invocation.output_name_utf8) ||
-          !ParseCanonicalRelationalHandleList(
-              fields[8], &invocation.argument_expression_ids)) {
-        return RefuseRelationalGraph(
-            "SBLR.PLAN_TREE.INVALID_HANDLE",
-            "relational window-invocation record is malformed",
-            "window_invocation_record");
-      }
-      invocation.id = static_cast<std::uint32_t>(id);
-      invocation.node_id = static_cast<std::uint32_t>(node_id);
-      invocation.function_expression_id =
-          static_cast<std::uint32_t>(expression_id);
-      invocation.definition_id = static_cast<std::uint32_t>(definition_id);
-      invocation.function_abi_version =
-          static_cast<std::uint16_t>(abi_version);
-      invocation.function_uuid = fields[5];
-      invocation.result_descriptor_id =
-          static_cast<std::uint32_t>(descriptor_id);
+      invocation.id = decoded.invocation_id;
+      invocation.node_id = decoded.relation_node_id;
+      invocation.function_expression_id = decoded.function_expression_id;
+      invocation.definition_id = decoded.window_definition_id;
+      invocation.function_abi_version = decoded.function_abi_version;
+      invocation.builtin_id = std::move(decoded.builtin_id);
+      invocation.function_uuid = decoded.function_uuid;
+      invocation.result_descriptor_id = decoded.result_descriptor_id;
+      invocation.output_name_utf8 = std::move(decoded.output_name_utf8);
+      invocation.argument_expression_ids = std::move(decoded.argument_expression_ids);
       graph->window_invocations.push_back(std::move(invocation));
       continue;
     }
-    if (operand.type == "relational_property_v1" ||
-        operand.type == "relational_property_v2") {
-      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
-                              &record_count)) {
+    if (operand.type == "relational_window_invocation_v1") {
+      return RefuseRelationalGraph("SBLR.OPERAND_INVALID",
+                                   "text relational window invocations are not executable",
+                                   "window_invocation_record");
+    }
+    if (operand.type == "relational_property_v3") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount, &record_count)) {
         return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                                     "relational record limit exceeded",
-                                     "record_count");
+                                     "relational record limit exceeded", "record_count");
       }
-      std::uint64_t kind = 0;
-      std::uint64_t origin_node_id = 0;
-      ParsedRelationalProperty property;
-      const auto parse_common = [&](const auto& fields) {
-        return IsCanonicalRelationalUuid(operand.name) &&
-               ParseCanonicalRelationalUnsigned(
-                   fields[0], std::numeric_limits<std::uint8_t>::max(),
-                   &kind) &&
-               ParseCanonicalRelationalUnsigned(
-                   fields[1], std::numeric_limits<std::uint32_t>::max(),
-                   &origin_node_id) &&
-               origin_node_id != 0 &&
-               ParseCanonicalRelationalHandleList(
-                   fields[2], &property.expression_ids) &&
-               ParseCanonicalRelationalOrderingTerms(
-                   fields[3], &property.ordering_terms) &&
-               ParseCanonicalRelationalStringList(
-                   fields[4], &property.dependency_uuids);
-      };
-      bool parsed = false;
-      if (operand.type == "relational_property_v1") {
-        std::array<std::string_view, 6> fields{};
-        parsed = SplitCanonicalRelationalFields(operand.value, &fields) &&
-                 parse_common(fields);
-        if (parsed && fields[5] != "-") {
-          property.window_frame_descriptor_uuid = std::string(fields[5]);
-        }
-      } else {
-        std::array<std::string_view, 13> fields{};
-        std::uint64_t distribution_kind = 0;
-        std::uint64_t materialization_kind = 0;
-        std::uint64_t rewindability_kind = 0;
-        std::uint64_t locality_kind = 0;
-        parsed = SplitCanonicalRelationalFields(operand.value, &fields) &&
-                 parse_common(fields) &&
-                 ParseCanonicalRelationalUnsigned(
-                     fields[6], std::numeric_limits<std::uint8_t>::max(),
-                     &distribution_kind) &&
-                 ParseCanonicalRelationalUnsigned(
-                     fields[7], std::numeric_limits<std::uint8_t>::max(),
-                     &materialization_kind) &&
-                 ParseCanonicalRelationalUnsigned(
-                     fields[8], std::numeric_limits<std::uint8_t>::max(),
-                     &rewindability_kind) &&
-                 ParseCanonicalRelationalUnsigned(
-                     fields[9], std::numeric_limits<std::uint8_t>::max(),
-                     &locality_kind) &&
-                 ParseCanonicalRelationalUnsigned(
-                     fields[12], std::numeric_limits<std::uint64_t>::max(),
-                     &property.security_visibility_generation);
-        if (parsed) {
-          if (fields[5] != "-") {
-            property.window_frame_descriptor_uuid = std::string(fields[5]);
-          }
-          property.distribution_kind =
-              static_cast<std::uint8_t>(distribution_kind);
-          property.materialization_kind =
-              static_cast<std::uint8_t>(materialization_kind);
-          property.rewindability_kind =
-              static_cast<std::uint8_t>(rewindability_kind);
-          property.locality_kind = static_cast<std::uint8_t>(locality_kind);
-          if (fields[10] != "-") {
-            property.locality_uuid = std::string(fields[10]);
-          }
-          if (fields[11] != "-") {
-            property.security_visibility_context_uuid =
-                std::string(fields[11]);
-          }
-        }
-      }
-      if (!parsed) {
+      engine::internal_api::RelationalPropertyRecord decoded;
+      if (!DecodeRelationalPropertyOperand(operand, &decoded)) {
         return RefuseRelationalGraph("QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
-                                     "relational property record is malformed",
-                                     "property_record");
+                                     "binary relational property is malformed", "property_record");
       }
-      property.uuid = operand.name;
-      property.kind = static_cast<std::uint8_t>(kind);
-      property.origin_node_id = static_cast<std::uint32_t>(origin_node_id);
+      ParsedRelationalProperty property;
+      property.uuid = decoded.property_uuid;
+      property.kind = static_cast<std::uint8_t>(decoded.property_kind);
+      property.origin_node_id = decoded.origin_node_id;
+      property.expression_ids = std::move(decoded.expression_ids);
+      for (const auto& term : decoded.ordering_terms) {
+        ParsedRelationalOrderingTerm parsed;
+        parsed.expression_id = term.expression_id;
+        parsed.direction = static_cast<std::uint8_t>(term.direction);
+        parsed.null_placement = static_cast<std::uint8_t>(term.null_placement);
+        if (!term.collation_uuid.is_nil()) parsed.collation_uuid = term.collation_uuid;
+        property.ordering_terms.push_back(parsed);
+      }
+      property.dependency_uuids = std::move(decoded.dependency_property_uuids);
+      if (!decoded.window_frame_descriptor_uuid.is_nil()) property.window_frame_descriptor_uuid = decoded.window_frame_descriptor_uuid;
+      property.distribution_kind = static_cast<std::uint8_t>(decoded.distribution_kind);
+      property.materialization_kind = static_cast<std::uint8_t>(decoded.materialization_kind);
+      property.rewindability_kind = static_cast<std::uint8_t>(decoded.rewindability_kind);
+      property.locality_kind = static_cast<std::uint8_t>(decoded.locality_kind);
+      if (!decoded.locality_uuid.is_nil()) property.locality_uuid = decoded.locality_uuid;
+      if (!decoded.security_visibility_context_uuid.is_nil()) property.security_visibility_context_uuid = decoded.security_visibility_context_uuid;
+      property.security_visibility_generation = decoded.security_visibility_generation;
       graph->properties.push_back(std::move(property));
       continue;
+    }
+    if (operand.type == "relational_property_v1" || operand.type == "relational_property_v2") {
+      return RefuseRelationalGraph("SBLR.OPERAND_INVALID",
+                                   "text relational properties are not executable", "property_record");
     }
     if (operand.type == "relational_node_v1") {
       if (graph->nodes.size() >= kMaximumRelationalNodeCount) {
@@ -46085,41 +45559,34 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       graph->nodes.push_back(std::move(node));
       continue;
     }
-    if (operand.type == "relational_node_binding_v1") {
-      std::uint64_t node_id = 0;
-      std::array<std::string_view, 5> fields{};
-      if (!ParseCanonicalRelationalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(),
-              &node_id) ||
-          node_id == 0 ||
-          !SplitCanonicalRelationalFields(operand.value, &fields)) {
+    if (operand.type == "relational_node_binding_v2") {
+      engine::sblr::RelationalNodeBindingRecord binding;
+      if (!DecodeRelationalNodeBindingOperand(operand, &binding)) {
         return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
-                                     "relational node binding is malformed",
+                                     "binary relational node binding is malformed",
                                      "node_binding_record");
       }
       const auto node = std::ranges::find_if(
           graph->nodes, [&](const auto& candidate) {
-            return candidate.id == node_id;
+            return candidate.id == binding.node_id;
           });
-      if (node == graph->nodes.end() || node->binding_present ||
-          !DecodeCanonicalRelationalHex(fields[0],
-                                        &node->semantic_variant_id) ||
-          node->semantic_variant_id.empty() ||
-          !ParseCanonicalRelationalHandleList(fields[1],
-                                              &node->bound_expression_ids) ||
-          !ParseCanonicalRelationalStringList(fields[2],
-                                              &node->required_object_uuids) ||
-          !ParseCanonicalRelationalStringList(
-              fields[3], &node->required_property_uuids) ||
-          !ParseCanonicalRelationalStringList(
-              fields[4], &node->delivered_property_uuids)) {
+      if (node == graph->nodes.end() || node->binding_present) {
         return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
                                      "relational node binding is invalid or out of order",
-                                     "node_binding_record",
-                                     static_cast<std::uint32_t>(node_id));
+                                     "node_binding_record", binding.node_id);
       }
+      node->semantic_variant_id = std::move(binding.semantic_variant_id);
+      node->bound_expression_ids = std::move(binding.bound_expression_ids);
+      node->required_object_uuids = std::move(binding.required_object_uuids);
+      node->required_property_uuids = std::move(binding.required_property_uuids);
+      node->delivered_property_uuids = std::move(binding.delivered_property_uuids);
       node->binding_present = true;
       continue;
+    }
+    if (operand.type == "relational_node_binding_v1") {
+      return RefuseRelationalGraph("SBLR.OPERAND_INVALID",
+                                   "text relational node bindings are not executable",
+                                   "node_binding_record");
     }
     if (operand.type == "relational_table_function_v1") {
       std::uint64_t node_id = 0;
@@ -46147,96 +45614,43 @@ RelationalGraphVerification DecodeCanonicalRelationalGraph(
       }
       continue;
     }
-    if (operand.type == "relational_row_pattern_v1") {
-      if (!AddRelationalCount(1, kMaximumRelationalRecordCount,
-                              &record_count)) {
-        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                                     "relational record limit exceeded",
-                                     "record_count");
+    if (operand.type == "relational_row_pattern_v2") {
+      if (!AddRelationalCount(1, kMaximumRelationalRecordCount, &record_count)) {
+        return RefuseRelationalGraph("SBLR.PLAN_TREE.RESOURCE_LIMIT", "relational record limit exceeded", "record_count");
       }
-      std::uint64_t node_id = 0;
-      std::uint64_t pattern_id = 0;
-      std::uint64_t rows_per_match = 0;
-      std::uint64_t after_match_skip = 0;
-      std::uint64_t maximum_partition_rows = 0;
-      std::uint64_t maximum_active_states = 0;
-      std::uint64_t maximum_output_rows = 0;
-      std::array<std::string_view, 12> fields{};
+      engine::internal_api::RelationalRowPatternRecord decoded;
+      if (!DecodeRelationalRowPatternOperand(operand, &decoded)) {
+        return RefuseRelationalGraph("SBLR.OPERAND_INVALID", "malformed binary row-pattern descriptor", "row_pattern_record");
+      }
       ParsedRelationalRowPattern pattern;
-      if (!ParseCanonicalRelationalUnsigned(
-              operand.name, std::numeric_limits<std::uint32_t>::max(),
-              &node_id) ||
-          !SplitCanonicalRelationalFields(operand.value, &fields) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[0], std::numeric_limits<std::uint32_t>::max(),
-              &pattern_id) ||
-          !ParseCanonicalRelationalHandleList(
-              fields[1], &pattern.partition_expression_ids) ||
-          !ParseCanonicalRelationalOrderingTerms(
-              fields[2], &pattern.ordering_terms) ||
-          !ParseCanonicalRelationalHandleList(
-              fields[4], &pattern.measure_expression_ids) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[5], std::numeric_limits<std::uint8_t>::max(),
-              &rows_per_match) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[6], std::numeric_limits<std::uint8_t>::max(),
-              &after_match_skip) ||
-          !DecodeOptionalCanonicalRelationalHex(
-              fields[7], &pattern.skip_target_key) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[8], std::numeric_limits<std::uint32_t>::max(),
-              &maximum_partition_rows) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[9], std::numeric_limits<std::uint32_t>::max(),
-              &maximum_active_states) ||
-          !ParseCanonicalRelationalUnsigned(
-              fields[10], std::numeric_limits<std::uint32_t>::max(),
-              &maximum_output_rows) ||
-          (fields[11] != "0" && fields[11] != "1")) {
-        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
-                                     "row-pattern descriptor is malformed",
-                                     "row_pattern_record");
+      pattern.id = decoded.pattern_id; pattern.node_id = decoded.relation_node_id;
+      pattern.partition_expression_ids = std::move(decoded.partition_expression_ids);
+      pattern.measure_expression_ids = std::move(decoded.measure_expression_ids);
+      pattern.rows_per_match = static_cast<std::uint8_t>(decoded.rows_per_match);
+      pattern.after_match_skip = static_cast<std::uint8_t>(decoded.after_match_skip);
+      pattern.skip_target_key = std::move(decoded.skip_target_key);
+      pattern.maximum_partition_rows = decoded.maximum_partition_rows; pattern.maximum_active_states = decoded.maximum_active_states;
+      pattern.maximum_output_rows = decoded.maximum_output_rows;
+      pattern.stable_row_identity_tie_break_allowed = decoded.stable_row_identity_tie_break_allowed;
+      for (const auto& term : decoded.ordering_terms) {
+        ParsedRelationalOrderingTerm ordering;
+        ordering.expression_id = term.expression_id; ordering.direction = static_cast<std::uint8_t>(term.direction);
+        ordering.null_placement = static_cast<std::uint8_t>(term.null_placement);
+        if (!term.collation_uuid.is_nil()) ordering.collation_uuid = term.collation_uuid;
+        pattern.ordering_terms.push_back(ordering);
       }
-      std::array<std::string_view, 6> variable_fields{};
-      std::uint64_t minimum_occurrences = 0;
-      ParsedRelationalRowPatternVariable variable;
-      if (!SplitCanonicalRelationalSubfields(
-              fields[3], ':', &variable_fields) ||
-          !DecodeCanonicalRelationalHex(
-              variable_fields[0], &variable.canonical_name_key) ||
-          !ParseCanonicalRelationalUnsigned(
-              variable_fields[1],
-              std::numeric_limits<std::uint32_t>::max(),
-              &minimum_occurrences) ||
-          !ParseOptionalCanonicalRelationalU32(
-              variable_fields[2], &variable.maximum_occurrences) ||
-          (variable_fields[3] != "0" && variable_fields[3] != "1") ||
-          !ParseOptionalCanonicalRelationalU32(
-              variable_fields[4], &variable.define_expression_id) ||
-          (variable_fields[5] != "0" && variable_fields[5] != "1")) {
-        return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
-                                     "row-pattern variable is malformed",
-                                     "row_pattern_variable");
+      for (auto& source : decoded.variables) {
+        ParsedRelationalRowPatternVariable variable;
+        variable.canonical_name_key = std::move(source.canonical_name_key); variable.minimum_occurrences = source.minimum_occurrences;
+        variable.maximum_occurrences = source.maximum_occurrences; variable.reluctant = source.reluctant;
+        variable.define_expression_id = source.define_expression_id; variable.define_always_true = source.define_always_true;
+        pattern.variables.push_back(std::move(variable));
       }
-      pattern.id = static_cast<std::uint32_t>(pattern_id);
-      pattern.node_id = static_cast<std::uint32_t>(node_id);
-      pattern.rows_per_match = static_cast<std::uint8_t>(rows_per_match);
-      pattern.after_match_skip = static_cast<std::uint8_t>(after_match_skip);
-      pattern.maximum_partition_rows =
-          static_cast<std::uint32_t>(maximum_partition_rows);
-      pattern.maximum_active_states =
-          static_cast<std::uint32_t>(maximum_active_states);
-      pattern.maximum_output_rows =
-          static_cast<std::uint32_t>(maximum_output_rows);
-      pattern.stable_row_identity_tie_break_allowed = fields[11] == "1";
-      variable.minimum_occurrences =
-          static_cast<std::uint32_t>(minimum_occurrences);
-      variable.reluctant = variable_fields[3] == "1";
-      variable.define_always_true = variable_fields[5] == "1";
-      pattern.variables.push_back(std::move(variable));
       graph->row_patterns.push_back(std::move(pattern));
       continue;
+    }
+    if (operand.type == "relational_row_pattern_v1") {
+      return RefuseRelationalGraph("SBLR.OPERAND_INVALID", "text relational row patterns are not executable", "row_pattern_record");
     }
     return RefuseRelationalGraph("SBLR.PLAN_TREE.INVALID_HANDLE",
                                  "query.execute contains an unknown operand",
@@ -47134,13 +46548,6 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
     }
   }
 
-  if (!graph.model_operations.empty() || !graph.model_columns.empty()) {
-    return RefuseRelationalGraph(
-          "SB_MODEL_OPERATION_SEMANTIC_REFUSED_V1",
-        "parser-private model records are not canonical query.execute operands",
-        "model_transport_record");
-  }
-
   std::unordered_map<std::uint32_t, const ParsedRelationalValuesRow*> rows;
   for (const auto& row : graph.values_rows) {
     if (!rows.emplace(row.id, &row).second) {
@@ -47171,7 +46578,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   }
 
   std::unordered_map<std::uint32_t, const ParsedRelationalNode*> nodes;
-  std::unordered_set<std::string> bounded_model_object_uuids;
+  std::set<core::platform::Uuid> bounded_model_object_uuids;
   for (const auto& node : graph.nodes) {
     if (node.kind < 1 || node.kind > 17 || !node.binding_present ||
         node.semantic_variant_id.empty() ||
@@ -47221,7 +46628,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                                      "bound_expression_ids", node.id);
       }
     }
-    std::unordered_set<std::string> required_objects;
+    std::set<core::platform::Uuid> required_objects;
     for (const auto& uuid : node.required_object_uuids) {
       if (!IsCanonicalRelationalUuid(uuid) ||
           !required_objects.insert(uuid).second ||
@@ -47233,19 +46640,20 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                                      "required_object_uuids", node.id);
       }
     }
-    std::unordered_set<std::string> property_references;
+    std::set<core::platform::Uuid> property_references;
     for (const auto& uuid : node.required_property_uuids) {
       if (!IsCanonicalRelationalUuid(uuid) ||
-          !property_references.insert("r:" + uuid).second) {
+          !property_references.insert(uuid).second) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1",
             "required relational property reference is invalid",
             "required_property_uuids", node.id);
       }
     }
+    property_references.clear();
     for (const auto& uuid : node.delivered_property_uuids) {
       if (!IsCanonicalRelationalUuid(uuid) ||
-          !property_references.insert("d:" + uuid).second) {
+          !property_references.insert(uuid).second) {
         return RefuseRelationalGraph(
             "QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1",
             "delivered relational property reference is invalid",
@@ -47827,7 +47235,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
       const auto& expected_output_binding =
           (ordinal == 1 || ordinal == 2)
               ? analyzer_identity->bound_name_uuid
-              : std::optional<std::string>{node.required_object_uuids.front()};
+              : std::optional<core::platform::Uuid>{node.required_object_uuids.front()};
       exact_operation =
           output->ordinal == ordinal && output->visible &&
           output->name_utf8 == kNames[ordinal] &&
@@ -48657,9 +48065,6 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
   for (const auto& expression : graph.expressions) {
     referenced_descriptors.insert(expression.descriptor_id);
   }
-  for (const auto& column : graph.model_columns) {
-    referenced_descriptors.insert(column.descriptor_id);
-  }
   for (const auto& node : graph.nodes) {
     std::vector<const ParsedRelationalOutput*> node_outputs;
     for (const auto& output : graph.outputs) {
@@ -48769,7 +48174,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
                                  "orphan_descriptor");
   }
 
-  std::unordered_map<std::string, const ParsedRelationalProperty*> properties;
+  std::map<core::platform::Uuid, const ParsedRelationalProperty*> properties;
   for (const auto& property : graph.properties) {
     if (!AddRelationalCount(property.expression_ids.size(),
                             kMaximumRelationalReferenceCount,
@@ -48815,7 +48220,7 @@ RelationalGraphVerification ValidateCanonicalRelationalGraph(
             property.origin_node_id);
       }
     }
-    std::unordered_set<std::string> dependencies;
+    std::set<core::platform::Uuid> dependencies;
     for (const auto& dependency : property.dependency_uuids) {
       if (!IsCanonicalRelationalUuid(dependency) ||
           !dependencies.insert(dependency).second ||
@@ -49179,6 +48584,10 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     result.messages = envelope.messages;
     return result;
   }
+  if (!ValidateBoundObjectIdentityOperands(envelope)) {
+    AddVerifierError(&result.messages, "SBLR.OPERAND_INVALID",
+                     "Object identity roles must be binary bound UUIDv7 references with unique roles and contiguous related-object indices");
+  }
   if (envelope.envelope_version != 3) {
     AddVerifierError(&result.messages, "SBSQL.SBLR.ENVELOPE_VERSION_INVALID",
                      "SBLR envelope version is not supported");
@@ -49286,7 +48695,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     if (envelope.operation_family != "sblr.query.multimodel_or_ddl.v3" ||
         envelope.sblr_operation_key != "sblr.query.multimodel_or_ddl.v3" ||
         envelope.payload.find("\"target_object_kind\":\"vector_collection\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"vector_value_descriptor\":\"dense_vector\"") == std::string::npos ||
         envelope.payload.find("\"vector_value_embedded\":false") == std::string::npos ||
         envelope.payload.find("\"source_relation_required\":true") == std::string::npos ||
@@ -49595,7 +49004,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.sblr_operation_key != "sblr.query.multimodel_or_ddl.v3" ||
         envelope.payload.find("\"target_object_kind\":\"vector_collection\"") ==
             std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"object_name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
         !HasValue(envelope.required_authority_steps,
@@ -49622,7 +49031,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     }
     if (envelope.operation_family != "sblr.query.multimodel_or_ddl.v3" ||
         envelope.sblr_operation_key != "sblr.query.multimodel_or_ddl.v3" ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
+        (envelope.payload.find("\"source_relation_required\":false") == std::string::npos &&
+         !FindDmlObjectIdentity(envelope, "target_object_uuid")) ||
         envelope.payload.find("\"object_name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"name_text_included\":true") == std::string::npos ||
         envelope.payload.find("\"name_text_authority\":false") == std::string::npos ||
@@ -49659,6 +49069,11 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       AddVerifierError(&result.messages,
                        "SBSQL.SBLR.SBSFC077_OPCODE_INVALID",
                        "SBSFC-077 exact routes must lower to their runtime opcode");
+    }
+    if (envelope.payload.find("\"target_object_kind\":\"filespace\"") != std::string::npos &&
+        !FindDmlObjectIdentity(envelope, "target_object_uuid")) {
+      AddVerifierError(&result.messages, "SBLR.OPERAND_INVALID",
+                       "Filespace operation requires its bound binary target");
     }
     if (envelope.payload.find("\"row_surface_id\":\"SBSQL-") == std::string::npos ||
         envelope.payload.find("\"runtime_evidence_kind\"") == std::string::npos ||
@@ -50032,7 +49447,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     }
   }
   if (envelope.payload.find("\"catalog_envelope_kind\":\"constraint_ddl\"") != std::string::npos) {
-    if (envelope.payload.find("\"catalog_authority\":\"sys.constraint_descriptor\"") == std::string::npos ||
+    if (!FindDmlObjectIdentity(envelope, "target_object_uuid") ||
+        envelope.payload.find("\"catalog_authority\":\"sys.constraint_descriptor\"") == std::string::npos ||
         envelope.payload.find("\"logical_constraint_authority\":true") == std::string::npos ||
         envelope.payload.find("\"index_is_derivative_support\":true") == std::string::npos ||
         !HasValue(envelope.descriptor_requirements, "sys.constraint_descriptor") ||
@@ -50074,6 +49490,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.sblr_operation_key != "sblr.catalog.mutation.v3" ||
         envelope.payload.find("\"catalog_authority\":\"sys.optimizer.statistics_descriptor\"") == std::string::npos ||
         envelope.payload.find("\"statistics_target_kind\":\"table\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
         !HasValue(envelope.required_rights, "right.catalog_mutate") ||
@@ -50100,9 +49517,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     if (envelope.operation_family != "sblr.catalog.mutation.v3" ||
         envelope.sblr_operation_key != "sblr.catalog.mutation.v3" ||
         envelope.payload.find("\"catalog_authority\":\"sys.catalog.index\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_kind\":\"index\"") == std::string::npos ||
+        envelope.payload.find("\"target_object_kind\":\"table\"") == std::string::npos ||
         envelope.payload.find("\"index_target_kind\":\"table\"") == std::string::npos ||
-        envelope.payload.find("\"index_target_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"index_key_count\"") == std::string::npos ||
         envelope.payload.find("\"index_profile\"") == std::string::npos ||
         envelope.payload.find("\"index_expression_keys_included\"") == std::string::npos ||
@@ -50167,7 +49584,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "CREATE INDEX TEMPLATE SBLR must require the index-template API authority step");
     }
     if (!create_template &&
-        !HasValue(envelope.required_authority_steps, "authority.engine.ddl_drop_object_api_required")) {
+        (!FindDmlObjectIdentity(envelope, "target_object_uuid") ||
+         !HasValue(envelope.required_authority_steps, "authority.engine.ddl_drop_object_api_required"))) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.DROP_INDEX_TEMPLATE_API_AUTHORITY_MISSING",
                        "DROP INDEX TEMPLATE SBLR must require the drop-object API authority step");
     }
@@ -50186,7 +49604,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.sblr_operation_key != "sblr.catalog.mutation.v3" ||
         envelope.payload.find("\"catalog_authority\":\"sys.catalog.object_comment\"") == std::string::npos ||
         envelope.payload.find("\"target_object_kind\"") == std::string::npos ||
-        envelope.payload.find("\"comment_target_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"comment_is_null\"") == std::string::npos ||
         envelope.payload.find("\"comment_text_is_user_payload\":true") == std::string::npos ||
         envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
@@ -50217,7 +49635,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.sblr_operation_key != "sblr.catalog.mutation.v3" ||
         envelope.payload.find("\"catalog_authority\":\"sys.name_registry\"") == std::string::npos ||
         envelope.payload.find("\"target_object_kind\"") == std::string::npos ||
-        envelope.payload.find("\"rename_target_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"new_name_text_is_user_payload\":true") == std::string::npos ||
         envelope.payload.find("\"target_name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
@@ -50247,7 +49665,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.sblr_operation_key != "sblr.catalog.mutation.v3" ||
         envelope.payload.find("\"catalog_authority\"") == std::string::npos ||
         envelope.payload.find("\"target_object_kind\"") == std::string::npos ||
-        envelope.payload.find("\"drop_target_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"target_name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"name_registry_retirement_required\":true") == std::string::npos ||
@@ -50405,7 +49823,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         envelope.payload.find("\"name_text_included\":false") != std::string::npos ||
         (envelope.payload.find("\"name_text_included\":true") != std::string::npos &&
          envelope.payload.find("\"name_text_authority\":\"metadata_only_engine_name_registry\"") != std::string::npos);
-    if (envelope.operation_family != "sblr.catalog.mutation.v3" ||
+    if (!FindDmlObjectIdentity(envelope, "target_object_uuid") ||
+        envelope.operation_family != "sblr.catalog.mutation.v3" ||
         envelope.sblr_operation_key != "sblr.catalog.mutation.v3" ||
         envelope.payload.find("\"catalog_authority\":\"sys.catalog.") == std::string::npos ||
         !signature_descriptor_valid ||
@@ -50432,14 +49851,15 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     }
   }
   if (envelope.payload.find("\"routine_invocation\":true") != std::string::npos) {
+    const auto target = FindDmlObjectIdentity(envelope, "target_object_uuid");
+    const auto routine = FindDmlObjectIdentity(envelope, "routine_object_uuid");
     if (envelope.operation_family != "sblr.routine.execute.v3" ||
         envelope.sblr_operation_key != "sblr.routine.execute.v3" ||
         envelope.operation_id != "routine.procedure_invoke" ||
         envelope.sblr_opcode != "SBLR_PROCEDURE_INVOKE" ||
         envelope.engine_api_function != "EngineInvokeExecutableObject" ||
         envelope.payload.find("\"target_object_kind\":\"procedure\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\":\"") == std::string::npos ||
-        envelope.payload.find("\"object_uuid\":\"") == std::string::npos ||
+        !target || !routine || target != routine ||
         envelope.payload.find("\"server_revalidates_sblr_uuid\":true") == std::string::npos ||
         envelope.payload.find("\"runtime_invocation_included\":true") == std::string::npos ||
         envelope.payload.find("\"parser_executes_sql\":false") == std::string::npos ||
@@ -50659,9 +50079,14 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "event notification SBLR must route through engine event APIs with structured operands and no parser SQL execution");
     }
     if (!create_channel && !list_subscriptions &&
-        envelope.payload.find("\"channel_uuid\"") == std::string::npos) {
+        !FindDmlObjectIdentity(envelope, "target_object_uuid")) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.EVENT_CHANNEL_UUID_MISSING",
                        "event notification runtime routes require a server-resolved channel UUID");
+    }
+    if ((create_channel || list_subscriptions) &&
+        FindDmlObjectIdentity(envelope, "target_object_uuid")) {
+      AddVerifierError(&result.messages, "SBLR.OPERAND_INVALID",
+                       "Event creation and session subscription listing do not select an existing channel target");
     }
     if (create_channel &&
         (envelope.payload.find("\"channel_name_text_is_user_payload\":true") == std::string::npos ||
@@ -51067,7 +50492,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.descriptor_requirements, "sys.name_registry") ||
         envelope.payload.find("\"catalog_envelope_kind\":\"show_create\"") == std::string::npos ||
         envelope.payload.find("\"catalog_read_only\":true") == std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"show_create_target_kind\":\"table\"") == std::string::npos ||
         envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos ||
@@ -51168,8 +50593,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.descriptor_requirements, "sys.security.privilege_grant") ||
         envelope.payload.find("\"security_envelope_kind\":\"privilege_dcl\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
-        envelope.payload.find("\"grantee_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
+        !FindDmlObjectIdentity(envelope, "grantee_uuid") ||
         envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_PRIVILEGE_AUTHORITY_INVALID",
@@ -51195,8 +50620,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.required_authority_steps, "authority.parser.no_storage_or_finality") ||
         !HasValue(envelope.descriptor_requirements, "sys.security.membership") ||
         envelope.payload.find("\"security_envelope_kind\":\"membership_dcl\"") == std::string::npos ||
-        envelope.payload.find("\"member_principal_uuid\"") == std::string::npos ||
-        envelope.payload.find("\"container_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "member_principal_uuid") ||
+        !FindDmlObjectIdentity(envelope, "container_uuid") ||
         envelope.payload.find("\"name_text_included\":false") == std::string::npos ||
         envelope.payload.find("\"sql_text_included\":false") == std::string::npos) {
       AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_MEMBERSHIP_AUTHORITY_INVALID",
@@ -51253,10 +50678,12 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
                        "security policy/role SBLR must use UUID-bound engine security authority without parser authorization");
     }
     if (envelope.operation_id == "security.session.set_role") {
+      const bool no_role = envelope.payload.find("\"role_mode\":\"none\"") != std::string::npos;
+      const bool has_role = FindDmlObjectIdentity(envelope, "role_uuid").has_value();
       if (!HasValue(envelope.required_authority_steps,
                     "authority.engine.security_session_role_api_required") ||
           !HasValue(envelope.descriptor_requirements, "sys.security.role") ||
-          envelope.payload.find("\"role_uuid\"") == std::string::npos) {
+          no_role == has_role) {
         AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_ROLE_AUTHORITY_INVALID",
                          "SET ROLE SBLR must carry UUID-bound role authority");
       }
@@ -51276,7 +50703,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
       if (!HasValue(envelope.required_authority_steps,
                     "authority.engine.security_principal_api_required") ||
           !HasValue(envelope.descriptor_requirements, "sys.security.principal") ||
-          envelope.payload.find("\"principal_uuid\"") == std::string::npos ||
+          !FindDmlObjectIdentity(envelope, "principal_uuid") ||
           !principal_name_policy_valid) {
         AddVerifierError(&result.messages, "SBSQL.SBLR.SECURITY_PRINCIPAL_AUTHORITY_INVALID",
                          "security principal SBLR must carry UUID-bound principal authority");
@@ -51284,9 +50711,9 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
     } else {
       const bool create_policy = envelope.operation_id == "security.policy.create";
       const bool policy_uuid_binding_valid =
-          create_policy
-              ? envelope.payload.find("\"target_object_uuid\"") != std::string::npos
-              : envelope.payload.find("\"policy_uuid\"") != std::string::npos;
+          FindDmlObjectIdentity(envelope, "policy_uuid").has_value() &&
+          (!(create_policy || envelope.operation_id == "security.policy.attach") ||
+           FindDmlObjectIdentity(envelope, "target_object_uuid").has_value());
       const bool policy_name_policy_valid =
           create_policy
               ? envelope.payload.find("\"name_text_included\":true") != std::string::npos &&
@@ -51399,8 +50826,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         !supported_join_operation ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
-        envelope.payload.find("\"related_object_0_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
+        !FindDmlObjectIdentity(envelope, "related_object_0_uuid") ||
         envelope.payload.find("\"left_key_field\"") == std::string::npos ||
         envelope.payload.find("\"right_key_field\"") == std::string::npos ||
         envelope.payload.find("\"source_relation_required\":true") == std::string::npos ||
@@ -51428,8 +50855,8 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"set_operation\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
-        envelope.payload.find("\"related_object_0_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
+        !FindDmlObjectIdentity(envelope, "related_object_0_uuid") ||
         envelope.payload.find("\"source_relation_required\":true") == std::string::npos ||
         envelope.payload.find("\"row_storage_touched\":true") == std::string::npos ||
         envelope.payload.find("\"mga_transaction_context_required\":true") == std::string::npos ||
@@ -51455,7 +50882,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\":\"sample\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"sample_clause_present\":true") == std::string::npos ||
         envelope.payload.find("\"sample_method\"") == std::string::npos ||
         envelope.payload.find("\"sample_percent\"") == std::string::npos ||
@@ -51496,7 +50923,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         !has_window_partition_or_order_binding ||
         envelope.payload.find("\"window_function\"") == std::string::npos ||
         (envelope.payload.find("\"window_binding_model\":\"engine_row_descriptor_field_int64_current_route\"") == std::string::npos &&
@@ -51527,7 +50954,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\":\"count_all\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"aggregate_function\":\"sb.aggregate.count\"") == std::string::npos ||
         envelope.payload.find("\"aggregate_binding_model\":\"engine_row_descriptor_field_int64_result_route\"") == std::string::npos ||
         envelope.payload.find("\"source_relation_required\":true") == std::string::npos ||
@@ -51636,7 +51063,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\":\"group_by\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"group_key_field\"") == std::string::npos ||
         envelope.payload.find("\"aggregate_value_field\"") == std::string::npos ||
         envelope.payload.find("\"group_key_column\":\"0\"") == std::string::npos ||
@@ -51684,7 +51111,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\":\"materialized_cte\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"cte_strategy\":\"materialized\"") == std::string::npos ||
         envelope.payload.find("\"source_relation_required\":true") == std::string::npos ||
         envelope.payload.find("\"row_storage_touched\":true") == std::string::npos ||
@@ -51740,7 +51167,7 @@ SblrVerifierResult VerifySblrEnvelope(const SblrEnvelope& envelope) {
         !HasValue(envelope.descriptor_requirements, "sys.storage.row_descriptor") ||
         envelope.payload.find("\"query_execute\":\"true\"") == std::string::npos ||
         envelope.payload.find("\"query_operation\":\"scalar_subquery\"") == std::string::npos ||
-        envelope.payload.find("\"target_object_uuid\"") == std::string::npos ||
+        !FindDmlObjectIdentity(envelope, "target_object_uuid") ||
         envelope.payload.find("\"project_columns\":\"0\"") == std::string::npos ||
         envelope.payload.find("\"source_relation_required\":true") == std::string::npos ||
         envelope.payload.find("\"row_storage_touched\":true") == std::string::npos ||

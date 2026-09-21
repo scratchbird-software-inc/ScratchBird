@@ -11,12 +11,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cctype>
+#include <cerrno>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <mutex>
-#include <sstream>
+#include <type_traits>
 #include <string_view>
 #include <unordered_map>
 
@@ -24,17 +24,20 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 namespace scratchbird::engine::internal_api {
 namespace {
-constexpr std::string_view kMagic = "SBPCR1";
+constexpr std::size_t kHeaderBytes = 200;
+constexpr std::uint64_t kJournalLimit = 256ULL * 1024ULL * 1024ULL;
 constexpr std::string_view kDomain =
-    "ScratchBird.SblrPreparedCoordinationRegistry.V1";
+    "ScratchBird.SblrPreparedCoordinationRegistry.V2";
 std::mutex g_mutex;
-std::unordered_map<std::string, SblrPreparedCoordinationSnapshot> g_live;
-std::unordered_map<std::string, std::uint64_t> g_high_water;
+using States = std::unordered_map<EngineUuid, SblrPreparedCoordinationSnapshot, EngineUuidHash>;
+States g_live;
+std::unordered_map<EngineUuid, std::uint64_t, EngineUuidHash> g_high_water;
 std::atomic<std::uint64_t> g_handle{1};
 
 EngineApiDiagnostic Diag(std::string code, std::string key, std::string detail) {
@@ -55,20 +58,12 @@ bool HasRecoveryAuthority(const EngineRequestContext& c) {
       std::find(c.trace_tags.begin(), c.trace_tags.end(),
                 "right:SBLR_PREPARED_COORDINATION_ADMIN") != c.trace_tags.end();
 }
-bool ValidUuid(std::string_view s, scratchbird::core::platform::UuidKind kind) {
-  if (kind == scratchbird::core::platform::UuidKind::session)
-    return scratchbird::core::uuid::ParseTypedUuid(kind, std::string(s)).ok();
-  return scratchbird::core::uuid::ParseDurableEngineIdentityUuid(
-      kind, std::string(s)).ok();
+bool ValidUuid(const EngineUuid& id, scratchbird::core::platform::UuidKind kind) {
+  return scratchbird::core::uuid::MakeTypedUuid(kind, id).ok() &&
+         scratchbird::core::uuid::IsEngineIdentityUuid(id);
 }
-std::string NewUuid(std::uint64_t salt) {
-  const auto now = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch()).count());
-  const auto value = scratchbird::core::uuid::GenerateEngineIdentityV7(
-      scratchbird::core::platform::UuidKind::object, now + salt);
-  return value.ok() ? scratchbird::core::uuid::UuidToString(value.value.value)
-                    : std::string{};
+EngineUuid NewUuid() {
+  return scratchbird::core::uuid::IssueRuntimeIdentityV7().value_or(EngineUuid{});
 }
 std::string Hash(std::string_view bytes) {
   const auto digest = scratchbird::core::hash::ComputeSha256Digest(
@@ -86,7 +81,8 @@ bool HashValue(std::string_view value) {
 bool Reason(std::string_view value) {
   return !value.empty() && value.size() <= 128 &&
       std::all_of(value.begin(), value.end(), [](unsigned char c) {
-        return std::isalnum(c) || c == '.' || c == '_' || c == ':' || c == '-';
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '.' || c == '_' || c == ':' || c == '-';
       });
 }
 SblrPreparedCoordinationKind KindFromReason(std::string_view reason) {
@@ -101,128 +97,223 @@ SblrPreparedCoordinationKind KindFromReason(std::string_view reason) {
 std::string Path(const EngineRequestContext& c) {
   return c.database_path + ".sb.sblr_prepared_coordination.v1";
 }
+
+void SetLe(std::string& bytes, std::size_t at, std::uint64_t value, std::size_t width) {
+  for (std::size_t i=0;i<width;++i) bytes[at+i]=static_cast<char>(value>>(8*i));
+}
+std::uint64_t GetLe(std::string_view bytes, std::size_t at, std::size_t width) {
+  std::uint64_t value=0;
+  for (std::size_t i=0;i<width;++i) value|=std::uint64_t(static_cast<unsigned char>(bytes[at+i]))<<(8*i);
+  return value;
+}
+bool Zero(std::string_view bytes) {
+  return std::all_of(bytes.begin(),bytes.end(),[](char c){return c==0;});
+}
+bool PutHash(std::string& bytes, std::size_t at, std::string_view value) {
+  if(value.empty()) return true;
+  if(!HashValue(value)) return false;
+  const auto nibble=[](char c){return c<='9'?c-'0':c-'a'+10;};
+  for(std::size_t i=0;i<32;++i)
+    bytes[at+i]=static_cast<char>((nibble(value[7+2*i])<<4)|nibble(value[8+2*i]));
+  return true;
+}
+std::string GetHash(std::string_view bytes,std::size_t at) {
+  std::array<std::uint8_t,32> value{};
+  for(std::size_t i=0;i<32;++i)value[i]=static_cast<unsigned char>(bytes[at+i]);
+  return "sha256:"+core::hash::HexLower(value);
+}
+std::string Record(std::uint8_t phase,const SblrPreparedCoordinationSnapshot& s,
+                   std::uint64_t prior,std::string_view reason) {
+  if(!Reason(reason)||phase>2||!ValidUuid(s.coordination_uuid,core::platform::UuidKind::object)||
+     !ValidUuid(s.operation_uuid,core::platform::UuidKind::object)||
+     !ValidUuid(s.database_uuid,core::platform::UuidKind::database)||
+     !ValidUuid(s.session_uuid,core::platform::UuidKind::session)||
+     !ValidUuid(s.provisional_prepared_uuid,core::platform::UuidKind::object)||
+     s.provisional_prepared_generation==0||s.coordinator_generation==0||
+     (s.kind!=SblrPreparedCoordinationKind::preparation&&s.kind!=SblrPreparedCoordinationKind::execution)||
+     s.state<SblrPreparedCoordinationState::begun||s.state>SblrPreparedCoordinationState::revoked)
+    return {};
+  std::string bytes(kHeaderBytes+reason.size(),'\0');
+  bytes.replace(0,4,"SBPC");SetLe(bytes,4,2,2);bytes[6]=phase;
+  bytes[7]=static_cast<char>(s.state);SetLe(bytes,8,bytes.size(),4);bytes[12]=static_cast<char>(s.kind);
+  const std::array<const EngineUuid*,5> ids{&s.coordination_uuid,&s.operation_uuid,
+      &s.database_uuid,&s.session_uuid,&s.provisional_prepared_uuid};
+  for(std::size_t i=0;i<ids.size();++i)
+    std::copy(ids[i]->bytes.begin(),ids[i]->bytes.end(),bytes.begin()+16+16*i);
+  SetLe(bytes,96,s.provisional_prepared_generation,8);SetLe(bytes,104,s.coordinator_generation,8);
+  SetLe(bytes,112,prior,8);bytes[120]=s.seal_evidence_sha256.empty()?0:1;
+  if(!PutHash(bytes,128,s.seal_evidence_sha256)||
+     (phase!=0&&!PutHash(bytes,168,s.decision_evidence_sha256)))return {};
+  SetLe(bytes,160,reason.size(),2);bytes.replace(kHeaderBytes,reason.size(),reason);
+  return bytes;
+}
 std::string Material(const SblrPreparedCoordinationSnapshot& s,
-                     std::uint64_t prior, std::string_view reason) {
-  std::ostringstream out;
-  out << kDomain << '\n' << s.coordination_uuid << '\n' << s.operation_uuid
-      << '\n' << s.database_uuid << '\n' << s.session_uuid << '\n'
-      << s.provisional_prepared_uuid << '\n'
-      << s.provisional_prepared_generation << '\n'
-      << s.coordinator_generation << '\n' << prior << '\n'
-      << static_cast<unsigned>(s.state) << '\n' << s.seal_evidence_sha256
-      << '\n' << reason;
-  return out.str();
+                     std::uint64_t prior,std::string_view reason) {
+  auto bytes=Record(0,s,prior,reason);
+  if(bytes.empty())return {};
+  return std::string(kDomain)+bytes;
 }
-std::string Record(std::string_view kind,
-                   const SblrPreparedCoordinationSnapshot& s,
-                   std::uint64_t prior, std::string_view reason) {
-  std::ostringstream out;
-  out << kMagic << '\t' << kind << '\t' << s.coordination_uuid << '\t'
-      << s.operation_uuid << '\t' << s.database_uuid << '\t' << s.session_uuid
-      << '\t' << s.provisional_prepared_uuid << '\t'
-      << s.provisional_prepared_generation << '\t' << s.coordinator_generation
-      << '\t' << prior << '\t' << static_cast<unsigned>(s.state) << '\t'
-      << s.seal_evidence_sha256 << '\t' << reason << '\t'
-      << s.decision_evidence_sha256;
-  return out.str();
-}
-bool Append(const std::string& path, const std::string& line) {
-  {
-    std::ofstream out(path, std::ios::binary | std::ios::app);
-    if (!out) return false;
-    out << line << '\n';
-    out.flush();
-    if (!out) return false;
-  }
+#if !defined(_WIN32)
+struct Descriptor {
+  int fd=-1;
+  ~Descriptor(){if(fd>=0)::close(fd);}
+};
+#endif
+bool Append(const std::string& path,const std::string& bytes) {
 #if defined(_WIN32)
-  HANDLE h = CreateFileA(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (h == INVALID_HANDLE_VALUE) return false;
-  const bool ok = FlushFileBuffers(h) != 0; CloseHandle(h); return ok;
+  {
+    std::ofstream output(path,std::ios::binary|std::ios::app);
+    output.write(bytes.data(),static_cast<std::streamsize>(bytes.size()));
+    output.flush();if(!output)return false;
+  }
+  HANDLE h=CreateFileA(path.c_str(),GENERIC_WRITE,FILE_SHARE_READ,nullptr,
+                      OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,nullptr);
+  if(h==INVALID_HANDLE_VALUE)return false;
+  const bool ok=FlushFileBuffers(h)!=0;CloseHandle(h);return ok;
 #else
-  const int fd = ::open(path.c_str(), O_WRONLY | O_CLOEXEC);
-  if (fd < 0) return false;
-  const bool ok = ::fsync(fd) == 0; ::close(fd); return ok;
+  auto parent=std::filesystem::path(path).parent_path();if(parent.empty())parent=".";
+  Descriptor file{::open(path.c_str(),O_WRONLY|O_APPEND|O_CREAT|O_CLOEXEC|O_NOFOLLOW,0600)};
+  if(file.fd<0)return false;
+  struct stat metadata{};
+  if(::fstat(file.fd,&metadata)!=0||!S_ISREG(metadata.st_mode)||metadata.st_size<0||
+     static_cast<std::uint64_t>(metadata.st_size)>kJournalLimit-bytes.size())return false;
+  std::size_t offset=0;
+  while(offset<bytes.size()) {
+    const auto count=::write(file.fd,bytes.data()+offset,bytes.size()-offset);
+    if(count<0&&errno==EINTR)continue;
+    if(count<=0)return false;offset+=static_cast<std::size_t>(count);
+  }
+  if(::fsync(file.fd)!=0)return false;
+  Descriptor directory{::open(parent.c_str(),O_RDONLY|O_DIRECTORY|O_CLOEXEC)};
+  return directory.fd>=0&&::fsync(directory.fd)==0;
 #endif
 }
-bool Publish(const EngineRequestContext& c,
-             const SblrPreparedCoordinationSnapshot& s,
-             std::uint64_t prior, std::string_view reason) {
-  return Append(Path(c), Record("EVIDENCE", s, prior, reason)) &&
-         Append(Path(c), Record("STATE", s, prior, reason));
+bool Publish(const EngineRequestContext& c,const SblrPreparedCoordinationSnapshot& s,
+             std::uint64_t prior,std::string_view reason) {
+  const auto evidence=Record(1,s,prior,reason),state=Record(2,s,prior,reason);
+  if(evidence.empty()||state.empty()||!HashValue(s.decision_evidence_sha256)||
+     s.decision_evidence_sha256!=Hash(Material(s,prior,reason)))return false;
+  const auto path=Path(c);
+  std::error_code error;
+  const auto existing=std::filesystem::exists(path,error);
+  if(error)return false;
+  const auto size=existing?std::filesystem::file_size(path,error):0;
+  if(error||size>kJournalLimit-evidence.size()-state.size())return false;
+  return Append(path,evidence)&&Append(path,state);
 }
-std::vector<std::string> Split(std::string_view v, char separator) {
-  std::vector<std::string> result; std::size_t begin = 0;
-  while (begin <= v.size()) {
-    const auto end = v.find(separator, begin);
-    result.emplace_back(v.substr(begin, end == std::string_view::npos
-        ? v.size() - begin : end - begin));
-    if (end == std::string_view::npos) break;
-    begin = end + 1;
+bool Decode(std::string_view bytes,std::uint8_t phase,
+            SblrPreparedCoordinationSnapshot* output,std::uint64_t* prior,std::string* reason) {
+  if(bytes.size()<kHeaderBytes||bytes.substr(0,4)!="SBPC"||GetLe(bytes,4,2)!=2||
+     GetLe(bytes,6,1)!=phase||GetLe(bytes,8,4)!=bytes.size()||
+     !Zero(bytes.substr(13,3))||!Zero(bytes.substr(121,7))||!Zero(bytes.substr(162,6))||
+     GetLe(bytes,120,1)>1||GetLe(bytes,160,2)!=bytes.size()-kHeaderBytes||
+     (bytes[120]==0&&!Zero(bytes.substr(128,32))))return false;
+  SblrPreparedCoordinationSnapshot s;
+  s.state=static_cast<SblrPreparedCoordinationState>(GetLe(bytes,7,1));
+  s.kind=static_cast<SblrPreparedCoordinationKind>(GetLe(bytes,12,1));
+  const std::array<EngineUuid*,5> ids{&s.coordination_uuid,&s.operation_uuid,
+      &s.database_uuid,&s.session_uuid,&s.provisional_prepared_uuid};
+  for(std::size_t i=0;i<ids.size();++i)
+    std::copy_n(bytes.begin()+16+16*i,16,ids[i]->bytes.begin());
+  s.provisional_prepared_generation=GetLe(bytes,96,8);s.coordinator_generation=GetLe(bytes,104,8);
+  *prior=GetLe(bytes,112,8);*reason=std::string(bytes.substr(kHeaderBytes));
+  if(bytes[120])s.seal_evidence_sha256=GetHash(bytes,128);
+  s.decision_evidence_sha256=GetHash(bytes,168);
+  if(Record(phase,s,*prior,*reason)!=bytes||
+     s.decision_evidence_sha256!=Hash(Material(s,*prior,*reason)))return false;
+  *output=std::move(s);return true;
+}
+bool ReadJournal(const std::string& path,std::string* bytes) {
+#if defined(_WIN32)
+  std::ifstream input(path,std::ios::binary|std::ios::ate);
+  if(!input)return !std::filesystem::exists(path);
+  const auto size=input.tellg();if(size<=0||std::uint64_t(size)>kJournalLimit)return false;
+  bytes->resize(static_cast<std::size_t>(size));input.seekg(0);input.read(bytes->data(),size);
+  return bool(input);
+#else
+  Descriptor file{::open(path.c_str(),O_RDONLY|O_CLOEXEC|O_NOFOLLOW)};
+  if(file.fd<0)return errno==ENOENT;
+  struct stat metadata{};
+  if(::fstat(file.fd,&metadata)!=0||!S_ISREG(metadata.st_mode)||metadata.st_size<=0||
+     std::uint64_t(metadata.st_size)>kJournalLimit)return false;
+  bytes->resize(static_cast<std::size_t>(metadata.st_size));std::size_t offset=0;
+  while(offset<bytes->size()) {
+    const auto count=::read(file.fd,bytes->data()+offset,bytes->size()-offset);
+    if(count<0&&errno==EINTR)continue;
+    if(count<=0)return false;offset+=static_cast<std::size_t>(count);
   }
-  return result;
+  return true;
+#endif
 }
-bool U64(std::string_view v, std::uint64_t* out) {
-  if (v.empty() || out == nullptr) return false;
-  std::uint64_t n = 0;
-  for (char c : v) { if (c < '0' || c > '9' ||
-      n > (std::numeric_limits<std::uint64_t>::max() - (c-'0')) / 10) return false;
-    n = n * 10 + static_cast<unsigned>(c-'0'); }
-  *out = n; return true;
+bool LegalTransition(const SblrPreparedCoordinationSnapshot& s,
+                     const SblrPreparedCoordinationSnapshot* previous,
+                     std::uint64_t prior,std::string_view reason) {
+  if(!previous) {
+    return prior==0&&s.state==SblrPreparedCoordinationState::begun&&
+      KindFromReason(reason)==s.kind&&
+      (s.kind==SblrPreparedCoordinationKind::preparation
+       ?s.seal_evidence_sha256.empty()&&s.provisional_prepared_generation==s.coordinator_generation
+       :!s.seal_evidence_sha256.empty());
+  }
+  if(prior!=previous->coordinator_generation||s.kind!=previous->kind||
+     s.provisional_prepared_uuid!=previous->provisional_prepared_uuid||
+     s.provisional_prepared_generation!=previous->provisional_prepared_generation||
+     s.operation_uuid!=previous->operation_uuid||s.database_uuid!=previous->database_uuid||
+     s.session_uuid!=previous->session_uuid)return false;
+  if(s.state==SblrPreparedCoordinationState::acquired)
+    return previous->state==SblrPreparedCoordinationState::begun&&reason=="prepared.acquire"&&s.seal_evidence_sha256.empty();
+  if(s.state==SblrPreparedCoordinationState::sealed)
+    return previous->state==SblrPreparedCoordinationState::acquired&&reason=="prepared.seal"&&!s.seal_evidence_sha256.empty();
+  return s.state==SblrPreparedCoordinationState::revoked&&
+    (previous->state==SblrPreparedCoordinationState::begun||previous->state==SblrPreparedCoordinationState::acquired)&&
+    KindFromReason(reason)==SblrPreparedCoordinationKind::unknown&&reason!="prepared.acquire"&&reason!="prepared.seal"&&s.seal_evidence_sha256.empty();
 }
-bool Decode(const std::string& line, std::string_view kind,
-            SblrPreparedCoordinationSnapshot* s, std::uint64_t* prior,
-            std::string* reason) {
-  const auto f = Split(line, '\t'); std::uint64_t state = 0;
-  if (f.size()!=14 || f[0]!=kMagic || f[1]!=kind || !U64(f[7],&s->provisional_prepared_generation) ||
-      !U64(f[8],&s->coordinator_generation) || !U64(f[9],prior) || !U64(f[10],&state) ||
-      state<1 || state>4) return false;
-  s->coordination_uuid=f[2]; s->operation_uuid=f[3]; s->database_uuid=f[4];
-  s->session_uuid=f[5]; s->provisional_prepared_uuid=f[6];
-  s->state=static_cast<SblrPreparedCoordinationState>(state);
-  s->seal_evidence_sha256=f[11]; *reason=f[12];
-  s->kind=KindFromReason(*reason);
-  s->decision_evidence_sha256=f[13];
-  return ValidUuid(s->coordination_uuid,scratchbird::core::platform::UuidKind::object) &&
-      ValidUuid(s->operation_uuid,scratchbird::core::platform::UuidKind::object) &&
-      ValidUuid(s->database_uuid,scratchbird::core::platform::UuidKind::database) &&
-      ValidUuid(s->session_uuid,scratchbird::core::platform::UuidKind::session) &&
-      ValidUuid(s->provisional_prepared_uuid,scratchbird::core::platform::UuidKind::object) &&
-      s->provisional_prepared_generation!=0 && s->coordinator_generation!=0 && Reason(*reason) &&
-      (s->seal_evidence_sha256.empty() || HashValue(s->seal_evidence_sha256)) &&
-      s->decision_evidence_sha256==Hash(Material(*s,*prior,*reason));
+bool Replay(const EngineRequestContext& c,States* states,std::uint64_t* high) {
+  std::string bytes;if(!ReadJournal(Path(c),&bytes))return false;
+  States staged;std::uint64_t highest=0;std::size_t offset=0;
+  while(offset<bytes.size()) {
+    const auto read=[&](std::uint8_t phase,SblrPreparedCoordinationSnapshot* s,
+                       std::uint64_t* prior,std::string* reason,std::string_view* raw) {
+      if(bytes.size()-offset<kHeaderBytes)return false;
+      const auto size=GetLe(bytes,offset+8,4);
+      if(size<kHeaderBytes||size>kHeaderBytes+128||size>bytes.size()-offset)return false;
+      *raw=std::string_view(bytes).substr(offset,size);offset+=size;
+      return Decode(*raw,phase,s,prior,reason);
+    };
+    SblrPreparedCoordinationSnapshot e,s;std::uint64_t ep=0,sp=0;std::string er,sr;std::string_view eb,sb;
+    if(!read(1,&e,&ep,&er,&eb)||!read(2,&s,&sp,&sr,&sb))return false;
+    auto normalized=std::string(eb);normalized[6]=2;
+    if(normalized!=sb||ep!=sp||er!=sr||s.database_uuid!=c.database_uuid||s.coordinator_generation<=highest)return false;
+    const auto found=staged.find(s.coordination_uuid);
+    if(!LegalTransition(s,found==staged.end()?nullptr:&found->second,sp,sr))return false;
+    highest=s.coordinator_generation;staged[s.coordination_uuid]=std::move(s);
+  }
+  states->swap(staged);*high=highest;return true;
 }
-bool Replay(const EngineRequestContext& c,
-            std::unordered_map<std::string,SblrPreparedCoordinationSnapshot>* states,
-            std::uint64_t* high) {
-  states->clear(); *high=0; std::ifstream in(Path(c),std::ios::binary);
-  if (!in) return !std::filesystem::exists(Path(c));
-  std::vector<std::string> lines; std::string line;
-  while(std::getline(in,line)) lines.push_back(line);
-  if(!in.eof() || lines.size()%2) return false;
-  for(std::size_t i=0;i<lines.size();i+=2) {
-    SblrPreparedCoordinationSnapshot e,s; std::uint64_t ep=0,sp=0; std::string er,sr;
-    if(!Decode(lines[i],"EVIDENCE",&e,&ep,&er)||!Decode(lines[i+1],"STATE",&s,&sp,&sr)||
-       lines[i].substr(lines[i].find('\t',lines[i].find('\t')+1)) !=
-       lines[i+1].substr(lines[i+1].find('\t',lines[i+1].find('\t')+1) ) ||
-       ep!=sp || er!=sr || e.kind!=s.kind ||
-       s.database_uuid!=c.database_uuid ||
-       s.coordinator_generation<=*high) return false;
-    const auto found=states->find(s.coordination_uuid);
-    if((found==states->end() &&
-        (ep!=0||s.state!=SblrPreparedCoordinationState::begun||
-         s.kind==SblrPreparedCoordinationKind::unknown)) ||
-       (found!=states->end() && (ep!=found->second.coordinator_generation ||
-        s.kind!=SblrPreparedCoordinationKind::unknown ||
-        found->second.provisional_prepared_uuid!=s.provisional_prepared_uuid ||
-        found->second.provisional_prepared_generation!=s.provisional_prepared_generation ||
-        found->second.operation_uuid!=s.operation_uuid || found->second.session_uuid!=s.session_uuid))) return false;
-    if(found!=states->end()) s.kind=found->second.kind;
-    (*states)[s.coordination_uuid]=s; *high=s.coordinator_generation;
+bool LiveMatchesDurable(const EngineUuid& node,const States& states) {
+  for(const auto& [id,state]:states) {
+    if(state.state!=SblrPreparedCoordinationState::begun&&
+       state.state!=SblrPreparedCoordinationState::acquired)continue;
+    const auto live=g_live.find(id);
+    if(live==g_live.end()||live->second.database_uuid!=node||
+       live->second.decision_evidence_sha256!=state.decision_evidence_sha256)return false;
+  }
+  for(const auto& [id,live]:g_live) {
+    if(live.database_uuid!=node)continue;
+    const auto durable=states.find(id);
+    if(durable==states.end()||
+       durable->second.decision_evidence_sha256!=live.decision_evidence_sha256)return false;
   }
   return true;
 }
-std::uint64_t NextGeneration(const std::string& db) {
+std::uint64_t NewHandle() {
+  auto value=g_handle.load(std::memory_order_relaxed);
+  while(value!=0&&value!=std::numeric_limits<std::uint64_t>::max()) {
+    if(g_handle.compare_exchange_weak(value,value+1,std::memory_order_relaxed))return value;
+  }
+  return 0;
+}
+std::uint64_t NextGeneration(const EngineUuid& db) {
   auto& value=g_high_water[db]; if(value==std::numeric_limits<std::uint64_t>::max()) return 0;
   return ++value;
 }
@@ -232,8 +323,8 @@ SblrPreparedCoordinationResult Denied() {
                     "coordination reference is not visible"); return r;
 }
 SblrPreparedCoordinationResult Mutate(
-    const EngineRequestContext& c, const std::string& coordination,
-    const std::string& operation, std::uint64_t expected,
+    const EngineRequestContext& c, const EngineUuid& coordination,
+    const EngineUuid& operation, std::uint64_t expected,
     SblrPreparedCoordinationState from, SblrPreparedCoordinationState to,
     std::string_view seal_hash, std::string_view reason) {
   if(!HasAuthority(c)) return Denied();
@@ -245,12 +336,17 @@ SblrPreparedCoordinationResult Mutate(
   if(it->second.coordinator_generation!=expected || it->second.state!=from) {
     r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.compare_stale","coordination compare failed"); return r;
   }
+  States durable;std::uint64_t high=0;
+  if(!Replay(c,&durable,&high)||!LiveMatchesDurable(c.database_uuid,durable)) {
+    r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.recovery_required",
+                      "durable coordination does not match live ownership");return r;
+  }
+  g_high_water[c.database_uuid]=std::max(g_high_water[c.database_uuid],high);
   auto next=it->second; const auto prior=next.coordinator_generation;
   next.coordinator_generation=NextGeneration(next.database_uuid); next.state=to;
   next.seal_evidence_sha256=std::string(seal_hash);
   next.decision_evidence_sha256=Hash(Material(next,prior,reason));
   if(next.coordinator_generation==0 || !Publish(c,next,prior,reason)) {
-    g_high_water[next.database_uuid]=prior;
     r.diagnostic=Diag("SBLR.EXECUTION_FAILED","sblr.prepared_coordination.publish_failed","durable transition failed"); return r;
   }
   if(to==SblrPreparedCoordinationState::sealed || to==SblrPreparedCoordinationState::revoked) g_live.erase(it);
@@ -261,7 +357,7 @@ SblrPreparedCoordinationResult Mutate(
 }  // namespace
 
 SblrPreparedCoordinationResult BeginSblrPreparedCoordination(
-    const EngineRequestContext& c,const std::string& operation) {
+    const EngineRequestContext& c,const EngineUuid& operation) {
   std::lock_guard lock(g_mutex); SblrPreparedCoordinationResult r;
   if(!HasAuthority(c)) return Denied();
   if(c.database_path.empty() || !ValidUuid(c.database_uuid,scratchbird::core::platform::UuidKind::database) ||
@@ -269,22 +365,20 @@ SblrPreparedCoordinationResult BeginSblrPreparedCoordination(
      !ValidUuid(operation,scratchbird::core::platform::UuidKind::object)) {
     r.diagnostic=Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.begin_invalid","exact prepared begin identity required"); return r;
   }
-  auto& high=g_high_water[c.database_uuid];
-  if(high==0 && std::filesystem::exists(Path(c))) {
-    std::unordered_map<std::string,SblrPreparedCoordinationSnapshot> states;
-    if(!Replay(c,&states,&high)) { r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.recovery_required","registry replay failed or recovery required"); return r; }
-    for(const auto& [id,s]:states) if(s.state==SblrPreparedCoordinationState::begun||s.state==SblrPreparedCoordinationState::acquired) {
-      r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.recovery_required","unfinished coordination requires startup recovery"); return r; }
+  std::uint64_t durable_high=0;States states;
+  if(!Replay(c,&states,&durable_high)||!LiveMatchesDurable(c.database_uuid,states)) {
+    r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.recovery_required",
+                      "registry replay failed or unfinished coordination requires recovery");return r;
   }
+  auto& high=g_high_water[c.database_uuid];high=std::max(high,durable_high);
   SblrPreparedCoordinationSnapshot s; s.coordinator_generation=NextGeneration(c.database_uuid);
   s.provisional_prepared_generation=s.coordinator_generation;
-  s.coordination_uuid=NewUuid(s.coordinator_generation*2); s.provisional_prepared_uuid=NewUuid(s.coordinator_generation*2+1);
+  s.coordination_uuid=NewUuid(); s.provisional_prepared_uuid=NewUuid();
   s.operation_uuid=operation; s.database_uuid=c.database_uuid; s.session_uuid=c.session_uuid;
-  s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed); if(s.private_handle==0) s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed);
+  s.private_handle=NewHandle();
   s.kind=SblrPreparedCoordinationKind::preparation;
   s.state=SblrPreparedCoordinationState::begun; s.decision_evidence_sha256=Hash(Material(s,0,"prepared.begin"));
-  if(s.coordinator_generation==0||s.coordination_uuid.empty()||s.provisional_prepared_uuid.empty()||!Publish(c,s,0,"prepared.begin")) {
-    if(s.coordinator_generation) --g_high_water[c.database_uuid];
+  if(s.coordinator_generation==0||s.private_handle==0||s.coordination_uuid.is_nil()||s.provisional_prepared_uuid.is_nil()||!Publish(c,s,0,"prepared.begin")) {
     r.diagnostic=Diag("SBLR.EXECUTION_FAILED","sblr.prepared_coordination.begin_publish_failed","durable begin failed"); return r;
   }
   g_live[s.coordination_uuid]=s; r.ok=true;r.snapshot=s;r.diagnostic=Ok();
@@ -292,8 +386,8 @@ SblrPreparedCoordinationResult BeginSblrPreparedCoordination(
 }
 
 SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
-    const EngineRequestContext& c, const std::string& operation,
-    const std::string& prepared) {
+    const EngineRequestContext& c, const EngineUuid& operation,
+    const EngineUuid& prepared) {
   std::lock_guard lock(g_mutex); SblrPreparedCoordinationResult r;
   if(!HasAuthority(c)) return Denied();
   if(c.database_path.empty() ||
@@ -303,9 +397,9 @@ SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
      !ValidUuid(prepared,scratchbird::core::platform::UuidKind::object)) {
     r.diagnostic=Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.execution_begin_invalid","exact prepared execution identity required"); return r;
   }
-  std::unordered_map<std::string,SblrPreparedCoordinationSnapshot> states;
+  States states;
   std::uint64_t durable_high=0;
-  if(!Replay(c,&states,&durable_high)) {
+  if(!Replay(c,&states,&durable_high)||!LiveMatchesDurable(c.database_uuid,states)) {
     r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.execution_replay_stale","prepared registry replay failed"); return r;
   }
   g_high_water[c.database_uuid]=std::max(g_high_water[c.database_uuid],durable_high);
@@ -333,18 +427,17 @@ SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
   }
   SblrPreparedCoordinationSnapshot s;
   s.coordinator_generation=NextGeneration(c.database_uuid);
-  s.coordination_uuid=NewUuid(s.coordinator_generation*2);
+  s.coordination_uuid=NewUuid();
   s.operation_uuid=operation; s.database_uuid=c.database_uuid;
   s.session_uuid=c.session_uuid;
   s.provisional_prepared_uuid=sealed->provisional_prepared_uuid;
   s.provisional_prepared_generation=sealed->provisional_prepared_generation;
-  s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed);
-  if(s.private_handle==0) s.private_handle=g_handle.fetch_add(1,std::memory_order_relaxed);
+  s.private_handle=NewHandle();
   s.kind=SblrPreparedCoordinationKind::execution;
   s.state=SblrPreparedCoordinationState::begun;
   s.seal_evidence_sha256=sealed->seal_evidence_sha256;
   s.decision_evidence_sha256=Hash(Material(s,0,"prepared.execution.begin"));
-  if(s.coordinator_generation==0||s.coordination_uuid.empty()||s.private_handle==0||
+  if(s.coordinator_generation==0||s.coordination_uuid.is_nil()||s.private_handle==0||
      !Publish(c,s,0,"prepared.execution.begin")) {
     r.diagnostic=Diag("SBLR.EXECUTION_FAILED","sblr.prepared_coordination.execution_begin_publish_failed","durable execution begin failed"); return r;
   }
@@ -353,12 +446,12 @@ SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
 }
 
 SblrPreparedCoordinationResult AcquireSblrPreparedCoordination(
-    const EngineRequestContext& c,const std::string& coordination,const std::string& operation,std::uint64_t expected) {
+    const EngineRequestContext& c,const EngineUuid& coordination,const EngineUuid& operation,std::uint64_t expected) {
   std::lock_guard lock(g_mutex); return Mutate(c,coordination,operation,expected,SblrPreparedCoordinationState::begun,SblrPreparedCoordinationState::acquired,{},"prepared.acquire");
 }
 SblrPreparedCoordinationResult SealSblrPreparedCoordination(
-    const EngineRequestContext& c,const std::string& coordination,const std::string& operation,std::uint64_t expected,
-    const std::string& prepared,std::uint64_t prepared_generation,const std::string& evidence) {
+    const EngineRequestContext& c,const EngineUuid& coordination,const EngineUuid& operation,std::uint64_t expected,
+    const EngineUuid& prepared,std::uint64_t prepared_generation,const std::string& evidence) {
   std::lock_guard lock(g_mutex); const auto it=g_live.find(coordination);
   if(!HasAuthority(c)||it==g_live.end()||it->second.database_uuid!=c.database_uuid||it->second.session_uuid!=c.session_uuid) return Denied();
   if(it->second.provisional_prepared_uuid!=prepared||it->second.provisional_prepared_generation!=prepared_generation||!HashValue(evidence)) {
@@ -366,9 +459,9 @@ SblrPreparedCoordinationResult SealSblrPreparedCoordination(
   return Mutate(c,coordination,operation,expected,SblrPreparedCoordinationState::acquired,SblrPreparedCoordinationState::sealed,evidence,"prepared.seal");
 }
 SblrPreparedCoordinationResult RevokeSblrPreparedCoordination(
-    const EngineRequestContext& c,const std::string& coordination,const std::string& operation,std::uint64_t expected,const std::string& reason) {
+    const EngineRequestContext& c,const EngineUuid& coordination,const EngineUuid& operation,std::uint64_t expected,const std::string& reason) {
   std::lock_guard lock(g_mutex); SblrPreparedCoordinationResult r;
-  if(!Reason(reason)){r.diagnostic=Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.reason_invalid","canonical reason required");return r;}
+  if(!Reason(reason)||KindFromReason(reason)!=SblrPreparedCoordinationKind::unknown||reason=="prepared.acquire"||reason=="prepared.seal"){r.diagnostic=Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.reason_invalid","canonical reason required");return r;}
   const auto it=g_live.find(coordination); if(it==g_live.end()) return Denied();
   const auto from=it->second.state; if(from!=SblrPreparedCoordinationState::begun&&from!=SblrPreparedCoordinationState::acquired){r.diagnostic=Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.terminal","coordination already terminal");return r;}
   return Mutate(c,coordination,operation,expected,from,SblrPreparedCoordinationState::revoked,{},reason);
@@ -376,7 +469,7 @@ SblrPreparedCoordinationResult RevokeSblrPreparedCoordination(
 EngineApiDiagnostic RecoverSblrPreparedCoordinationRegistry(const EngineRequestContext& c) {
   std::lock_guard lock(g_mutex); if(!HasRecoveryAuthority(c)) return Diag("SECURITY.ACCESS_DENIED","sblr.prepared_coordination.recovery_denied","startup recovery authority required");
   if(c.database_path.empty()||!ValidUuid(c.database_uuid,scratchbird::core::platform::UuidKind::database)) return Diag("SBLR.OPERAND_INVALID","sblr.prepared_coordination.recovery_invalid","database identity required");
-  std::unordered_map<std::string,SblrPreparedCoordinationSnapshot> states; std::uint64_t high=0;
+  States states; std::uint64_t high=0;
   if(!Replay(c,&states,&high)) return Diag("SBLR.PARAMETER.STALE","sblr.prepared_coordination.corrupt","contradictory or torn durable evidence");
   g_high_water[c.database_uuid]=high;
   for(auto& [id,s]:states) if(s.state==SblrPreparedCoordinationState::begun||s.state==SblrPreparedCoordinationState::acquired) {

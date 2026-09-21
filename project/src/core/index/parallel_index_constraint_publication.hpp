@@ -19,8 +19,8 @@ namespace scratchbird::core::index {
 
 struct ParallelIndexConstraintRow {
   std::string encoded_key;
-  std::string row_uuid;
-  std::string version_uuid;
+  scratchbird::core::platform::Uuid row_uuid;
+  scratchbird::core::platform::Uuid version_uuid;
   std::string parent_key;
   std::string payload_value;
   std::int64_t check_value = 0;

@@ -3,6 +3,7 @@
 #pragma once
 #include "catalog_value_codec.hpp"
 #include "catalog_record_codec.hpp"
+#include "../resources/collation_profile.hpp"
 #include <optional>
 #include <string_view>
 
@@ -36,6 +37,7 @@ struct CatalogCharsetRecord {
   u64 creator_transaction_number = 0;
 };
 struct CatalogCollationRecord {
+  resources::CollationProfile comparison_profile = resources::CollationProfile::unbound;
   std::string canonical_name;
   TypedUuid resource_uuid;
   std::string charset_name;

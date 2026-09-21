@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace scratchbird::storage::database {
@@ -171,6 +172,12 @@ struct EngineDescriptor {
   EngineUuid type_uuid;
   // Nil is the absence of a collation; otherwise this is its bound UUIDv7.
   EngineUuid collation_uuid;
+  // Datatype registry binding is distinct from the owning descriptor/column
+  // occurrence above. Both UUIDs are binary; generation zero is unbound.
+  EngineUuid datatype_descriptor_uuid;
+  EngineApiU64 datatype_descriptor_generation = 0;
+  // Bound resource identity, never extracted from encoded descriptor text.
+  EngineUuid charset_uuid;
   bool operator==(const EngineDescriptor&) const = default;
 };
 
@@ -284,6 +291,9 @@ struct EnginePredicateEnvelope {
 
 struct EngineProjectionEnvelope {
   std::vector<std::string> canonical_projection_envelopes;
+  // Expression occurrence paths, not object names. Executable identities stay
+  // binary through binding; a function display/profile label is not authority.
+  std::vector<std::pair<std::string, EngineUuid>> function_identities;
 };
 
 struct EngineOrderingEnvelope {
@@ -324,9 +334,13 @@ struct EngineUnsupportedFeature {
   std::string reason;
 };
 
+// Text facts and binary identity references are distinct alternatives. Names,
+// digests and counters are never inferred to be UUIDs from spelling or kind.
+// Reference admission/absence semantics remain with each evidence producer.
+using EngineEvidenceValue = std::variant<std::string, EngineUuid>;
 struct EngineEvidenceReference {
   std::string evidence_kind;
-  std::string evidence_id;
+  EngineEvidenceValue evidence_id;
 };
 
 struct EngineAuthorizationSubject {

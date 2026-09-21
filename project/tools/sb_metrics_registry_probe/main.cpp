@@ -28,6 +28,25 @@ bool Require(bool condition, const std::string& message) {
 
 }  // namespace
 
+// This executable is a registry/component probe, not an authorized adapter.
+// Its explicit fixture provenance tests presentation only; it grants no
+// export, committed-snapshot, cluster or residency authority.
+scratchbird::core::metrics::MetricExportResult ProbeProjection(
+    const scratchbird::core::metrics::MetricRegistry& registry,bool include_cluster) {
+  using namespace scratchbird::core::metrics;
+  const auto fixture_id=[](unsigned char tag){MetricUuid id;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[15]=tag;return id;};
+  const MetricExportContext context{fixture_id(1),fixture_id(2),fixture_id(3),1,1,2,"probe-local"};
+  std::vector<MetricExportSample> samples;
+  for(const auto& value:registry.SnapshotCurrent(include_cluster)){
+    const auto* descriptor=registry.FindDescriptor(value.family);
+    if(!descriptor)return {MetricExportError::invalid_projection,{}};
+    MetricExportSample sample;sample.descriptor=*descriptor;sample.value=value;sample.export_name=value.family;
+    for(const auto& label:descriptor->labels)sample.label_rules.push_back({label.key,label.sensitive?std::string{}:label.key,label.sensitive});
+    samples.push_back(std::move(sample));
+  }
+  return RenderOpenMetricsProjection(context,samples);
+}
+
 int main() {
   using namespace scratchbird::core::metrics;
   bool ok = true;
@@ -194,7 +213,9 @@ int main() {
     ok &= Require(sample.ok, "non-cluster descriptor accepts owner sample " + descriptor.family);
   }
 
-  const auto exported = ExportOpenMetrics(registry, true);
+  const auto projection = ProbeProjection(registry, true);
+  ok &= Require(projection.ok(), "typed OpenMetrics projection rendered");
+  const auto& exported=projection.text;
   ok &= Require(exported.find("sb_storage_device_read_latency_microseconds_bucket") != std::string::npos,
                 "histogram bucket exported");
   ok &= Require(exported.find("# EOF") != std::string::npos, "openmetrics EOF exported");
@@ -202,8 +223,8 @@ int main() {
                  Labels({{"component", "probe"}, {"provider_family", "local_password"}, {"session_uuid", "session-secret"}}),
                  1.0,
                  "security_session");
-  const auto redacted = ExportOpenMetrics(registry, false);
-  ok &= Require(redacted.find("session-secret") == std::string::npos,
+  const auto redacted = ProbeProjection(registry, false);
+  ok &= Require(redacted.ok()&&redacted.text.find("session-secret") == std::string::npos,
                 "sensitive labels redacted from OpenMetrics export");
 
   if (!ok) {

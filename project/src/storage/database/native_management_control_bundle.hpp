@@ -13,6 +13,7 @@ struct NativeManagementControlBundleRoot {
   u64 map_count=0,page_count=0;
   std::array<byte,32> aggregate_sha256{},first_page_sha256{};
   u64 inventory_count=0;
+  u64 directory_count=0,payload_bytes=0;
   bool operator==(const NativeManagementControlBundleRoot&) const=default;
 };
 enum class NativeManagementControlBundleError {
@@ -33,6 +34,7 @@ struct NativeManagementControlBundleRead {
   std::vector<disk::NativeCommonPageHeader> page_headers;
   u64 total_pages=0;
   std::vector<std::vector<byte>> inventory_images;
+  std::vector<std::vector<byte>> directory_images;
   bool ok() const noexcept{return error==NativeManagementControlBundleError::none&&!allocation_images.empty()&&!page_headers.empty()&&total_pages;}
 };
 // Complete immutable reconstruction input; not physical allocation, history,
@@ -43,7 +45,8 @@ NativeManagementControlBundleImage EncodeNativeManagementControlBundle(
   const std::vector<std::vector<byte>>& allocation_images,const Uuid& database,
   const Uuid& bootstrap,const Uuid& object,const Uuid& attempt,
   const std::vector<disk::NativeCommonPageHeader>& headers,u64 budget,
-  const std::vector<std::vector<byte>>& inventory_images={}) noexcept;
+  const std::vector<std::vector<byte>>& inventory_images={},
+  const std::vector<std::vector<byte>>& directory_images={}) noexcept;
 NativeManagementControlBundleRead DecodeNativeManagementControlBundle(
   const std::vector<std::vector<byte>>& pages,const NativeManagementControlBundleRoot&,
   const Uuid& database,const Uuid& bootstrap,u64 budget) noexcept;

@@ -25,7 +25,7 @@ using scratchbird::engine::internal_api::EngineEvidenceReference;
 
 void AddEvidence(IndexedPhysicalOperatorResult* result,
                  std::string kind,
-                 std::string id) {
+                 internal_api::EngineEvidenceValue id) {
   result->evidence.push_back({std::move(kind), std::move(id)});
 }
 
@@ -344,15 +344,19 @@ IndexedPhysicalOperatorResult ExecuteMergeOrdered(
               std::to_string(left.locators.size()));
   AddEvidence(&result, "merge_ordered_input_right_count",
               std::to_string(right.locators.size()));
+  AddEvidence(&result, "merge_ordered_left_index_uuid",
+              request.physical_tree->index_uuid.value);
+  AddEvidence(&result, "merge_ordered_right_index_uuid",
+              request.right_physical_tree->index_uuid.value);
   for (const auto& evidence : left.evidence) {
     AddEvidence(&result,
-                "merge_ordered_left_stream_evidence",
-                evidence.evidence_kind + "=" + evidence.evidence_id);
+                "merge_ordered_left_stream_evidence." + evidence.evidence_kind,
+                evidence.evidence_id);
   }
   for (const auto& evidence : right.evidence) {
     AddEvidence(&result,
-                "merge_ordered_right_stream_evidence",
-                evidence.evidence_kind + "=" + evidence.evidence_id);
+                "merge_ordered_right_stream_evidence." + evidence.evidence_kind,
+                evidence.evidence_id);
   }
 
   std::size_t i = 0;

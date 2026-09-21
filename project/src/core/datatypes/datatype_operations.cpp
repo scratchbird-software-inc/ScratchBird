@@ -8,6 +8,7 @@
 
 #include "datatype_operations.hpp"
 #include "canonical_utf8.hpp"
+#include "uuid.hpp"
 
 #include "sbl_numeric.hpp"
 
@@ -52,148 +53,41 @@ std::string LowerAscii(std::string value) {
   return value;
 }
 
-std::string EncodeUtf8Codepoint(std::uint32_t codepoint) {
-  std::string out;
-  if (codepoint <= 0x7f) {
-    out.push_back(static_cast<char>(codepoint));
-  } else if (codepoint <= 0x7ff) {
-    out.push_back(static_cast<char>(0xc0 | ((codepoint >> 6) & 0x1f)));
-    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
-  } else if (codepoint <= 0xffff) {
-    out.push_back(static_cast<char>(0xe0 | ((codepoint >> 12) & 0x0f)));
-    out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
-    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
-  } else {
-    out.push_back(static_cast<char>(0xf0 | ((codepoint >> 18) & 0x07)));
-    out.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3f)));
-    out.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3f)));
-    out.push_back(static_cast<char>(0x80 | (codepoint & 0x3f)));
-  }
-  return out;
-}
-
-bool IsUpperLatinCodepoint(std::uint32_t codepoint) {
-  return (codepoint >= 'A' && codepoint <= 'Z') ||
-         (codepoint >= 0x00c0 && codepoint <= 0x00d6) ||
-         (codepoint >= 0x00d8 && codepoint <= 0x00de) ||
-         codepoint == 0x0152 || codepoint == 0x0178 || codepoint == 0x1e9e;
-}
-
-std::uint32_t LowerLatinCodepoint(std::uint32_t codepoint) {
-  if (codepoint >= 'A' && codepoint <= 'Z') { return codepoint + 0x20; }
-  if ((codepoint >= 0x00c0 && codepoint <= 0x00d6) ||
-      (codepoint >= 0x00d8 && codepoint <= 0x00de)) {
-    return codepoint + 0x20;
-  }
-  if (codepoint == 0x0152) { return 0x0153; }
-  if (codepoint == 0x0178) { return 0x00ff; }
-  if (codepoint == 0x1e9e) { return 0x00df; }
-  return codepoint;
-}
-
-bool AppendAccentFoldedLatin(std::uint32_t codepoint,
-                             bool case_insensitive,
-                             std::string* out) {
-  const bool upper = IsUpperLatinCodepoint(codepoint);
-  const auto append_char = [&](char lower, char upper_char) {
-    out->push_back(case_insensitive || !upper ? lower : upper_char);
-  };
-  const auto append_text = [&](std::string_view lower, std::string_view upper_text) {
-    out->append(case_insensitive || !upper ? lower : upper_text);
-  };
-  switch (codepoint) {
-    case 0x00c0: case 0x00c1: case 0x00c2: case 0x00c3:
-    case 0x00c4: case 0x00c5: case 0x00e0: case 0x00e1:
-    case 0x00e2: case 0x00e3: case 0x00e4: case 0x00e5:
-      append_char('a', 'A');
-      return true;
-    case 0x00c6: case 0x00e6:
-      append_text("ae", "AE");
-      return true;
-    case 0x00c7: case 0x00e7:
-      append_char('c', 'C');
-      return true;
-    case 0x00d0: case 0x00f0:
-      append_char('d', 'D');
-      return true;
-    case 0x00c8: case 0x00c9: case 0x00ca: case 0x00cb:
-    case 0x00e8: case 0x00e9: case 0x00ea: case 0x00eb:
-      append_char('e', 'E');
-      return true;
-    case 0x00cc: case 0x00cd: case 0x00ce: case 0x00cf:
-    case 0x00ec: case 0x00ed: case 0x00ee: case 0x00ef:
-      append_char('i', 'I');
-      return true;
-    case 0x00d1: case 0x00f1:
-      append_char('n', 'N');
-      return true;
-    case 0x00d2: case 0x00d3: case 0x00d4: case 0x00d5:
-    case 0x00d6: case 0x00d8: case 0x00f2: case 0x00f3:
-    case 0x00f4: case 0x00f5: case 0x00f6: case 0x00f8:
-      append_char('o', 'O');
-      return true;
-    case 0x0152: case 0x0153:
-      append_text("oe", "OE");
-      return true;
-    case 0x00de: case 0x00fe:
-      append_text("th", "TH");
-      return true;
-    case 0x00d9: case 0x00da: case 0x00db: case 0x00dc:
-    case 0x00f9: case 0x00fa: case 0x00fb: case 0x00fc:
-      append_char('u', 'U');
-      return true;
-    case 0x00dd: case 0x0178: case 0x00fd: case 0x00ff:
-      append_char('y', 'Y');
-      return true;
-    default:
-      return false;
-  }
-}
-
-bool NormalizeLatinTextForCollation(const std::string& value,
-                                    bool case_insensitive,
-                                    bool accent_insensitive,
-                                    std::string* output) {
-  std::string out;
-  out.reserve(value.size());
-  std::size_t offset = 0;
-  while (offset < value.size()) {
-    std::uint32_t codepoint = 0;
-    if (!DecodeCanonicalUtf8Scalar(reinterpret_cast<const std::uint8_t*>(value.data()),
-                                   value.size(), &offset, &codepoint)) return false;
-    if (codepoint == 0x00df && case_insensitive) {
-      out.append("ss");
-      continue;
-    }
-    if (accent_insensitive &&
-        AppendAccentFoldedLatin(codepoint, case_insensitive, &out)) {
-      continue;
-    }
-    if (case_insensitive) { codepoint = LowerLatinCodepoint(codepoint); }
-    out.append(EncodeUtf8Codepoint(codepoint));
-  }
-  output->swap(out);
-  return true;
-}
-
-bool TextSeedRequested(const DatatypeTextSeedAuthority& seed,
-                       bool case_insensitive_character_compare) {
-  return case_insensitive_character_compare ||
-         seed.active ||
-         !seed.seed_pack_name.empty() ||
-         !seed.seed_pack_version.empty() ||
-         !seed.charset_name.empty() ||
-         !seed.collation_name.empty() ||
-         seed.collation_case_insensitive ||
-         seed.collation_accent_insensitive;
-}
-
 bool TextSeedReady(const DatatypeTextSeedAuthority& seed) {
-  return seed.active &&
-         !seed.seed_pack_name.empty() &&
-         !seed.seed_pack_version.empty() &&
-         !seed.charset_name.empty() &&
-         !seed.collation_name.empty();
+  return seed.active && uuid::IsEngineIdentityUuid(seed.database_uuid) &&
+      uuid::IsEngineIdentityUuid(seed.charset_uuid) &&
+      uuid::IsEngineIdentityUuid(seed.collation_uuid) &&
+      seed.resource_epoch != 0 && seed.collation_epoch != 0 &&
+      seed.comparison_profile != resources::CollationProfile::unbound &&
+      resources::ValidCollationProfile(seed.comparison_profile,
+          seed.collation_case_insensitive, seed.collation_accent_insensitive) &&
+      (resources::UsesUnicodeRoot(seed.comparison_profile)
+          ? bool(seed.unicode_collation) : !seed.unicode_collation);
+}
+
+bool MakeTextComparisonKey(const DatatypeTextSeedAuthority& seed,
+                           const std::string& value, std::string* key) {
+  if (!TextSeedReady(seed)) return false;
+  if (seed.comparison_profile == resources::CollationProfile::utf8_binary) {
+    *key = value;
+    return true;
+  }
+  const auto strength = static_cast<resources::UnicodeCollationStrength>(
+      static_cast<std::uint64_t>(seed.comparison_profile) - 1);
+  // Bound output by representable string storage. Execution owners retain
+  // their operation memory admission; this primitive never silently truncates.
+  return seed.unicode_collation->MakeSortKey(value, strength,
+      {key->max_size(), key->max_size()}, key) == resources::UnicodeNormalizationStatus::ok;
+}
+
+std::string TextComparisonCohort(const DatatypeTextSeedAuthority& seed) {
+  std::string bytes = "20:";
+  for (const auto* id : {&seed.database_uuid, &seed.charset_uuid, &seed.collation_uuid})
+    bytes.append(reinterpret_cast<const char*>(id->bytes.data()), id->bytes.size());
+  for (const auto value : {seed.resource_epoch, seed.collation_epoch,
+                           static_cast<std::uint64_t>(seed.comparison_profile)})
+    for (unsigned n = 0; n < 8; ++n) bytes.push_back(static_cast<char>(value >> (8 * n)));
+  return bytes;
 }
 
 std::string TextSeedDetail(const DatatypeTextSeedAuthority& seed) {
@@ -1486,6 +1380,25 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
       result.category != DatatypeCastCategory::lossless_implicit) {
     return CastFailure("explicit_cast_required", result.category);
   }
+  if (request.target_type_id == CanonicalTypeId::real128) {
+    // Cast admission above establishes source-family conversion permission.
+    // The reference canonicalizes that value directly in the target format;
+    // its ordinary adapter validates the context before NULL propagation.
+    DatatypeNumericOperationRequest numeric;
+    numeric.type_id = CanonicalTypeId::real128;
+    numeric.operation = DatatypeNumericOperationKind::canonicalize;
+    numeric.left = {CanonicalTypeId::real128, request.value.encoded_value, request.value.is_null};
+    numeric.context = request.numeric_context;
+    auto canonical = ApplyNumericOperation(numeric);
+    result.status = canonical.status;
+    result.diagnostic = std::move(canonical.diagnostic);
+    result.numeric_facts = canonical.numeric_facts;
+    if (canonical.ok()) {
+      result.value = std::move(canonical.value);
+      result.value.type_id = CanonicalTypeId::real128;
+    }
+    return result;
+  }
   result.status = OkStatus();
   result.value.type_id = request.target_type_id;
   result.value.is_null = request.value.is_null;
@@ -1532,22 +1445,6 @@ DatatypeCastResult CastDatatypeValue(const DatatypeCastRequest& request) {
     if (!CanonicalizeDecimalFloatText(value, context, &result.value.encoded_value)) {
       return CastFailure("decimal_float_invalid_or_out_of_range", result.category);
     }
-    return result;
-  }
-  if (request.target_type_id == CanonicalTypeId::real128) {
-    namespace numeric = scratchbird::libraries::sbl_numeric;
-    numeric::NumericRequest backend_request;
-    backend_request.type = numeric::NumericType::real128;
-    backend_request.operation = numeric::NumericOperation::canonicalize;
-    backend_request.left = {numeric::NumericType::real128, value, false};
-    const auto backend_result = numeric::ApplyNumericOperation(backend_request);
-    if (backend_result.status != numeric::NumericStatusCode::ok) {
-      return CastFailure(backend_result.diagnostic_code.empty()
-                             ? "real128_invalid_or_out_of_range"
-                             : backend_result.diagnostic_code,
-                         result.category);
-    }
-    result.value.encoded_value = backend_result.value.encoded;
     return result;
   }
   if (request.target_type_id == CanonicalTypeId::int128 ||
@@ -1927,8 +1824,7 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
   }
   std::string left = request.left.encoded_value;
   std::string right = request.right.encoded_value;
-  if (request.left.type_id == CanonicalTypeId::character &&
-      TextSeedRequested(request.text_seed, request.case_insensitive_character_compare)) {
+  if (request.left.type_id == CanonicalTypeId::character) {
     if (!TextSeedReady(request.text_seed)) {
       result.status = ErrorStatus();
       result.diagnostic = MakeDatatypeOperationDiagnostic(
@@ -1948,15 +1844,11 @@ DatatypeComparisonResult CompareDatatypeValues(const DatatypeComparisonRequest& 
           "collation_mode_mismatch:" + TextSeedDetail(request.text_seed));
       return result;
     }
-    if (!NormalizeLatinTextForCollation(left,
-            request.text_seed.collation_case_insensitive,
-            request.text_seed.collation_accent_insensitive, &left) ||
-        !NormalizeLatinTextForCollation(right,
-            request.text_seed.collation_case_insensitive,
-            request.text_seed.collation_accent_insensitive, &right)) {
+    if (!MakeTextComparisonKey(request.text_seed, left, &left) ||
+        !MakeTextComparisonKey(request.text_seed, right, &right)) {
       result.status = ErrorStatus();
       result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-          "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", "character_utf8_invalid");
+          "SB_DATATYPE_COMPARISON_REJECTED", "datatype.comparison.rejected", "collation_key_failed");
       return result;
     }
   }
@@ -2194,7 +2086,7 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
   }
   std::string value = request.value.encoded_value;
   if (request.value.type_id == CanonicalTypeId::character) {
-    if (TextSeedRequested(request.text_seed, request.case_insensitive_character_compare)) {
+    {
       if (!TextSeedReady(request.text_seed)) {
         result.status = ErrorStatus();
         result.diagnostic = MakeDatatypeOperationDiagnostic(
@@ -2214,22 +2106,14 @@ DatatypeSortKeyResult MakeDatatypeSortKey(const DatatypeSortKeyRequest& request)
             "collation_mode_mismatch:" + TextSeedDetail(request.text_seed));
         return result;
       }
-      if (!NormalizeLatinTextForCollation(value,
-              request.text_seed.collation_case_insensitive,
-              request.text_seed.collation_accent_insensitive, &value)) {
+      if (!MakeTextComparisonKey(request.text_seed, value, &value)) {
         result.status = ErrorStatus();
         result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
-            "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "character_utf8_invalid");
+            "SB_DATATYPE_SORT_KEY_REJECTED", "datatype.sort_key.rejected", "collation_key_failed");
         return result;
       }
     }
-    result.sort_key = "20:" + request.text_seed.seed_pack_name + ":" +
-                      request.text_seed.seed_pack_version + ":" +
-                      request.text_seed.collation_name + ":" +
-                      request.text_seed.charset_name + ":" +
-                      (request.text_seed.collation_case_insensitive ? "ci" : "cs") + ":" +
-                      (request.text_seed.collation_accent_insensitive ? "ai" : "as") + ":" +
-                      HexEncodeLower(value);
+    result.sort_key = TextComparisonCohort(request.text_seed) + value;
     return result;
   }
   if (IsInteger(request.value.type_id)) {
@@ -2293,6 +2177,15 @@ DatatypeHashResult HashDatatypeValue(const DatatypeHashRequest& request) {
         "datatype.hash.rejected",
         failure_detail);
     return result;
+  }
+  if (!request.value.is_null && request.value.type_id == CanonicalTypeId::character) {
+    if (!MakeTextComparisonKey(request.text_seed, payload, &payload)) {
+      result.status = ErrorStatus();
+      result.diagnostic = MakeDatatypeOperationDiagnostic(result.status,
+          "SB_DATATYPE_HASH_REJECTED", "datatype.hash.rejected", "collation_key_failed");
+      return result;
+    }
+    payload = TextComparisonCohort(request.text_seed) + payload;
   }
   for (unsigned char c : payload) {
     mix(c);

@@ -77,6 +77,8 @@ enum class CatalogRecordKind : u16 {
   protected_material_version = 95,
   protected_material_policy_binding = 96,
   protected_material_audit_event = 97,
+  metric_label_schema = 98,
+  metric_series = 99,
   cluster_stub = 100,
   unknown = 0xffffu
 };

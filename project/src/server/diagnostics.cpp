@@ -23,10 +23,8 @@ namespace scratchbird::server {
 bool AdoptEngineDiagnosticSource(
     const scratchbird::server_engine_bridge::EngineDiagnosticSnapshot& source,
     ServerDiagnostic* target) {
-  if (target == nullptr || source.code.empty() || source.code != target->code ||
-      (source.occurrence_uuid[6] & 0xf0) != 0x70 ||
-      (source.occurrence_uuid[8] & 0xc0) != 0x80 ||
-      (source.canonical_metadata && source.canonical_metadata->code != source.code)) {
+  if (target == nullptr || source.code != target->code ||
+      !scratchbird::server_engine_bridge::IsConsistentEngineDiagnosticSnapshot(source)) {
     return false;
   }
   static_assert(std::is_nothrow_move_assignable_v<ServerDiagnostic>);

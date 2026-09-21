@@ -9,6 +9,7 @@
 #include "dml/merge_api.hpp"
 
 #include "crud_support/crud_store.hpp"
+#include "behavior_support/api_behavior_store.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/delete_api.hpp"
 #include "dml/dml_row_locator_stream.hpp"
@@ -311,17 +312,16 @@ void AddMergeTargetAccessPlanEvidence(const DmlTargetAccessPlan& plan,
 void AppendMergeRowLocatorStreamEvidence(
     const DmlRowLocatorStreamResult& stream,
     std::vector<EngineEvidenceReference>* evidence) {
-  evidence->push_back({"merge_row_locator_stream",
+  std::vector<EngineEvidenceReference> group;
+  group.push_back({"merge_row_locator_stream",
                        stream.ok ? DmlRowLocatorStreamSourceName(stream.source)
                                  : "refused"});
-  evidence->push_back({"merge_row_locator_stream_ok",
+  group.push_back({"merge_row_locator_stream_ok",
                        stream.ok ? "true" : "false"});
-  evidence->push_back({"merge_row_locator_count",
+  group.push_back({"merge_row_locator_count",
                        std::to_string(stream.locators.size())});
-  for (const auto& item : stream.evidence) {
-    evidence->push_back({"merge_row_locator_stream_evidence",
-                         item.evidence_kind + "=" + item.evidence_id});
-  }
+  AppendApiEvidenceGroup(group, stream.evidence, "merge_row_locator_stream_evidence");
+  AppendApiEvidenceGroup(*evidence, group);
 }
 
 DmlTargetAccessPlan BuildRowUuidLocatorPlanFromRows(

@@ -1545,60 +1545,23 @@ bool TextLineU64(std::string_view encoded, std::string_view key, std::uint64_t* 
   if (value.empty()) return false;
   std::uint64_t parsed = 0;
   for (const unsigned char ch : value) {
-    if (!std::isdigit(ch)) return false;
-    parsed = parsed * 10 + static_cast<std::uint64_t>(ch - '0');
+    if (ch < '0' || ch > '9') return false;
+    const auto digit = static_cast<std::uint64_t>(ch - '0');
+    if (parsed > (std::numeric_limits<std::uint64_t>::max() - digit) / 10)
+      return false;
+    parsed = parsed * 10 + digit;
   }
   if (out != nullptr) *out = parsed;
   return true;
 }
 
-std::string EvidenceValue(std::string_view encoded, std::string_view evidence_kind) {
-  const std::string prefix = "evidence=" + std::string(evidence_kind) + ":";
-  std::size_t start = 0;
-  while (start <= encoded.size()) {
-    const std::size_t end = encoded.find('\n', start);
-    const std::string_view line =
-        encoded.substr(start, end == std::string_view::npos ? encoded.size() - start : end - start);
-    if (line.size() >= prefix.size() &&
-        line.substr(0, prefix.size()) == prefix) {
-      return std::string(line.substr(prefix.size()));
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
-  return {};
-}
-
-void PopulateTransactionStateFromPayload(std::string_view payload,
-                                         ServerExecutionResult* result) {
+void PopulateAffectedRowsFromPayload(std::string_view payload,
+                                    ServerExecutionResult* result) {
   if (result == nullptr) return;
   std::uint64_t affected_rows = 0;
   if (TextLineU64(payload, "server_affected_rows", &affected_rows)) {
     result->affected_rows = affected_rows;
     result->affected_rows_present = true;
-  }
-  std::uint64_t local_transaction_id = 0;
-  if (!TextLineU64(payload, "replacement_local_transaction_id", &local_transaction_id) &&
-      !TextLineU64(payload, "local_transaction_id", &local_transaction_id)) {
-    return;
-  }
-  result->transaction_state_present = true;
-  result->local_transaction_id = local_transaction_id;
-  std::uint64_t snapshot = 0;
-  if (!TextLineU64(payload, "replacement_snapshot_visible_through_local_transaction_id", &snapshot)) {
-    (void)TextLineU64(payload, "snapshot_visible_through_local_transaction_id", &snapshot);
-  }
-  result->snapshot_visible_through_local_transaction_id = snapshot;
-  result->transaction_uuid = TextLineValue(payload, "replacement_transaction_uuid");
-  if (result->transaction_uuid.is_nil()) {
-    result->transaction_uuid = TextLineValue(payload, "transaction_uuid");
-  }
-  result->transaction_timestamp = TextLineValue(payload, "replacement_transaction_timestamp");
-  if (result->transaction_timestamp.empty()) {
-    result->transaction_timestamp = TextLineValue(payload, "transaction_timestamp");
-  }
-  if (result->transaction_timestamp.empty()) {
-    result->transaction_timestamp = EvidenceValue(payload, "transaction_timestamp");
   }
 }
 
@@ -1836,7 +1799,7 @@ bool DecodeExecuteResultPayloadV2Base(const Frame& response,
                   "An accepted V2 outcome cannot report unknown or known-not-applied finality.");
     return false;
   }
-  PopulateTransactionStateFromPayload(result->row_packet, result);
+  PopulateAffectedRowsFromPayload(result->row_packet, result);
   // Free-form row payload is never transaction authority in V2.  Preserve its
   // affected-row projection above, then rebuild active transaction state only
   // from the validated typed selector matrix.
@@ -4486,20 +4449,7 @@ std::vector<std::uint8_t> EncodeAttachPayload(const std::array<std::uint8_t, 16>
   return out;
 }
 
-std::vector<std::uint8_t> EncodeExecutePayload(const std::array<std::uint8_t, 16>& session_uuid,
-                                               std::string_view encoded_sblr_envelope,
-                                               bool cursor_requested,
-                                               const std::vector<std::uint8_t>& data_packet = {}) {
-  std::vector<std::uint8_t> out;
-  PutUuid(&out, session_uuid);
-  PutUuid(&out, {});
-  PutU8(&out, cursor_requested ? 1 : 0);
-  PutString(&out, encoded_sblr_envelope);
-  if (!data_packet.empty()) {
-    PutBytes(&out, data_packet);
-  }
-  return out;
-}
+
 
 void PutTransactionRouting(std::vector<std::uint8_t>* out,
                            const ParserTransactionRouting& transaction) {
@@ -4516,21 +4466,7 @@ void PutTransactionSelector(std::vector<std::uint8_t>* out,
 
 bool ValidateTransactionRouting(const ParserTransactionRouting& transaction,
                                 MessageVectorSet* messages) {
-  const bool selector_present = transaction.selector.present();
-  const bool selector_partially_present =
-      transaction.selector.local_transaction_id != 0 ||
-      !transaction.selector.transaction_uuid.is_nil();
-  switch (transaction.route) {
-    case ParserTransactionRoute::kLegacyDefault:
-      if (!selector_partially_present) return true;
-      break;
-    case ParserTransactionRoute::kSelected:
-      if (selector_present) return true;
-      break;
-    case ParserTransactionRoute::kBeginAdditional:
-      if (!selector_partially_present) return true;
-      break;
-  }
+  if (transaction.valid()) return true;
   AddDiagnostic(messages,
                 "PARSER_SERVER_IPC.TRANSACTION_ROUTING_INVALID",
                 "The transaction route and engine-issued selector are inconsistent.");
@@ -4703,22 +4639,7 @@ std::vector<std::uint8_t> EncodePreparePayloadV2(
   return out;
 }
 
-std::vector<std::uint8_t> EncodeExecutePreparedPayload(
-    const std::array<std::uint8_t, 16>& session_uuid,
-    const std::array<std::uint8_t, 16>& prepared_statement_uuid,
-    std::string_view encoded_sblr_envelope,
-    bool cursor_requested,
-    const std::vector<std::uint8_t>& data_packet = {}) {
-  std::vector<std::uint8_t> out;
-  PutUuid(&out, session_uuid);
-  PutUuid(&out, prepared_statement_uuid);
-  PutU8(&out, cursor_requested ? 1 : 0);
-  PutString(&out, encoded_sblr_envelope);
-  if (!data_packet.empty()) {
-    PutBytes(&out, data_packet);
-  }
-  return out;
-}
+
 
 std::vector<std::uint8_t> EncodeClosePreparedSblrPayload(
     const std::array<std::uint8_t, 16>& session_uuid,
@@ -5381,7 +5302,7 @@ bool RequireTransactionRoutingV2(const ParserSessionContext& session,
   if (session.transaction_routing_v2_negotiated) return true;
   AddDiagnostic(messages,
                 "PARSER_SERVER_IPC.TRANSACTION_ROUTING_V2_NOT_NEGOTIATED",
-                "Independent transaction routing was not negotiated during hello.");
+                "Typed transaction routing and outcomes were not negotiated during hello.");
   return false;
 }
 
@@ -7605,64 +7526,25 @@ ServerExecutionResult SbpsClient::ExecuteSblrWithDataPacket(
     std::string_view encoded_sblr_envelope,
     const std::vector<std::uint8_t>& data_packet,
     bool cursor_requested) const {
-  ServerExecutionResult result;
-  const auto session_uuid = session.session_uuid.bytes;
-  const auto connection_uuid = session.connection_uuid.bytes;
-  MessageVectorSet messages;
-  Frame response;
-  if (!SendRequest(endpoint_,
-                   BaseHeader(kMessageExecuteSblr,
-                              kSchemaExecuteSblrV1,
-                              session_uuid,
-                              connection_uuid),
-                   EncodeExecutePayload(session_uuid,
-                                        encoded_sblr_envelope,
-                                        cursor_requested,
-                                        data_packet),
-                   &response,
-                   &messages,
-                   ActiveSocketCacheKey())) {
-    result.messages = std::move(messages);
-    return result;
-  }
-  if (response.header.message_type != kMessageExecuteResult || IsErrorFrame(response)) {
-    AddFrameDiagnostics(response, &messages);
-    result.messages = std::move(messages);
-    return result;
-  }
-  std::size_t offset = 0;
-  std::string outcome;
-  if (!ReadString(response.payload, &offset, &outcome) || outcome != "accepted") {
-    AddDiagnostic(&messages, "PARSER_SERVER_IPC.EXECUTE_REJECTED", "The server rejected SBLR execution.");
-    result.messages = std::move(messages);
-    return result;
-  }
-  if (offset + 16 + 16 + 8 > response.payload.size()) {
-    AddDiagnostic(&messages, "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID", "The server execute result payload is malformed.");
-    result.messages = std::move(messages);
-    return result;
-  }
-  offset += 16; // server request UUID
-  result.cursor_uuid = scratchbird::core::platform::Uuid{GetUuid(response.payload, offset)};
-  offset += 16;
-  result.row_count = GetU64(response.payload, offset);
-  offset += 8;
-  if (!ReadString(response.payload, &offset, &result.operation_id) ||
-      !ReadString(response.payload, &offset, &result.row_packet)) {
-    AddDiagnostic(&messages, "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID", "The server execute result payload is malformed.");
-    result.messages = std::move(messages);
-    return result;
-  }
-  PopulateTransactionStateFromPayload(result.row_packet, &result);
-  result.accepted = true;
-  if (ExecutionInvalidatesPublicResolutionCache(result.operation_id)) {
-    ClearSbpsClientPublicResolutionCacheForSession(endpoint_, session);
-  }
-  return result;
+  // The server selects its engine-owned default transaction. No selector is
+  // reconstructed from free-form row data, and no V1 downgrade is attempted.
+  return ExecuteSblrWithDataPacketRouted(
+      session, encoded_sblr_envelope, data_packet, {}, cursor_requested);
 }
 
 ServerExecutionResult SbpsClient::ExecuteSblrWithDataPacketRouted(
     const ParserSessionContext& session,
+    std::string_view encoded_sblr_envelope,
+    const std::vector<std::uint8_t>& data_packet,
+    const ParserTransactionRouting& transaction,
+    bool cursor_requested) const {
+  return ExecuteSblrWithRouting(session, {}, encoded_sblr_envelope, data_packet,
+                                transaction, cursor_requested);
+}
+
+ServerExecutionResult SbpsClient::ExecuteSblrWithRouting(
+    const ParserSessionContext& session,
+    const scratchbird::core::platform::Uuid& prepared_statement_uuid,
     std::string_view encoded_sblr_envelope,
     const std::vector<std::uint8_t>& data_packet,
     const ParserTransactionRouting& transaction,
@@ -7686,7 +7568,7 @@ ServerExecutionResult SbpsClient::ExecuteSblrWithDataPacketRouted(
                               session_uuid,
                               connection_uuid),
                    EncodeExecutePayloadV2(session_uuid,
-                                          {},
+                                          prepared_statement_uuid.bytes,
                                           encoded_sblr_envelope,
                                           cursor_requested,
                                           data_packet,
@@ -8008,66 +7890,15 @@ ServerExecutionResult SbpsClient::ExecutePreparedSblr(
     const std::vector<std::uint8_t>& data_packet,
     bool cursor_requested) const {
   ServerExecutionResult result;
-  if (prepared_statement_uuid.is_nil()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(prepared_statement_uuid)) {
     AddDiagnostic(&result.messages,
                   "PARSER_SERVER_IPC.PREPARED_HANDLE_REQUIRED",
-                  "Prepared SBLR execution requires a prepared statement UUID.");
+                  "Prepared SBLR execution requires a valid engine-issued prepared statement identity.");
     return result;
   }
-  const auto session_uuid = session.session_uuid.bytes;
-  const auto connection_uuid = session.connection_uuid.bytes;
-  MessageVectorSet messages;
-  Frame response;
-  if (!SendRequest(endpoint_,
-                   BaseHeader(kMessageExecuteSblr,
-                              kSchemaExecuteSblrV1,
-                              session_uuid,
-                              connection_uuid),
-                   EncodeExecutePreparedPayload(session_uuid,
-                                                prepared_statement_uuid.bytes,
-                                                encoded_sblr_envelope,
-                                                cursor_requested,
-                                                data_packet),
-                   &response,
-                   &messages,
-                   ActiveSocketCacheKey())) {
-    result.messages = std::move(messages);
-    return result;
-  }
-  if (response.header.message_type != kMessageExecuteResult || IsErrorFrame(response)) {
-    AddFrameDiagnostics(response, &messages);
-    result.messages = std::move(messages);
-    return result;
-  }
-  std::size_t offset = 0;
-  std::string outcome;
-  if (!ReadString(response.payload, &offset, &outcome) || outcome != "accepted") {
-    AddDiagnostic(&messages, "PARSER_SERVER_IPC.EXECUTE_REJECTED", "The server rejected prepared SBLR execution.");
-    result.messages = std::move(messages);
-    return result;
-  }
-  if (offset + 16 + 16 + 8 > response.payload.size()) {
-    AddDiagnostic(&messages, "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID", "The server execute result payload is malformed.");
-    result.messages = std::move(messages);
-    return result;
-  }
-  offset += 16; // server request UUID
-  result.cursor_uuid = scratchbird::core::platform::Uuid{GetUuid(response.payload, offset)};
-  offset += 16;
-  result.row_count = GetU64(response.payload, offset);
-  offset += 8;
-  if (!ReadString(response.payload, &offset, &result.operation_id) ||
-      !ReadString(response.payload, &offset, &result.row_packet)) {
-    AddDiagnostic(&messages, "PARSER_SERVER_IPC.EXECUTE_RESULT_INVALID", "The server execute result payload is malformed.");
-    result.messages = std::move(messages);
-    return result;
-  }
-  PopulateTransactionStateFromPayload(result.row_packet, &result);
-  result.accepted = true;
-  if (ExecutionInvalidatesPublicResolutionCache(result.operation_id)) {
-    ClearSbpsClientPublicResolutionCacheForSession(endpoint_, session);
-  }
-  return result;
+  return ExecuteSblrWithRouting(session, prepared_statement_uuid,
+                                encoded_sblr_envelope, data_packet, {},
+                                cursor_requested);
 }
 
 ServerExecutionResult SbpsClient::ExecutePreparedSblrRouted(
@@ -8078,69 +7909,18 @@ ServerExecutionResult SbpsClient::ExecutePreparedSblrRouted(
     const std::vector<std::uint8_t>& data_packet,
     bool cursor_requested) const {
   ServerExecutionResult result;
-  if (!RequireTransactionRoutingV2(session, &result.messages)) {
-    return result;
-  }
-  if (prepared_statement_uuid.is_nil()) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(prepared_statement_uuid)) {
     AddDiagnostic(&result.messages,
                   "PARSER_SERVER_IPC.PREPARED_HANDLE_REQUIRED",
-                  "Prepared SBLR execution requires a prepared statement UUID.");
+                  "Prepared SBLR execution requires a valid engine-issued prepared statement identity.");
     return result;
   }
   ParserTransactionRouting routing;
   routing.route = ParserTransactionRoute::kSelected;
   routing.selector = transaction;
-  MessageVectorSet messages;
-  if (!ValidateTransactionRouting(routing, &messages)) {
-    result.messages = std::move(messages);
-    return result;
-  }
-  const auto session_uuid = session.session_uuid.bytes;
-  const auto connection_uuid = session.connection_uuid.bytes;
-  Frame response;
-  if (!SendRequest(endpoint_,
-                   BaseHeader(kMessageExecuteSblr,
-                              kSchemaExecuteSblrV2,
-                              session_uuid,
-                              connection_uuid),
-                   EncodeExecutePayloadV2(session_uuid,
-                                          prepared_statement_uuid.bytes,
-                                          encoded_sblr_envelope,
-                                          cursor_requested,
-                                          data_packet,
-                                          routing),
-                   &response,
-                   &messages,
-                   ActiveSocketCacheKey())) {
-    ProjectV2TransportOutcomeUnknown(messages, &result);
-    result.messages = std::move(messages);
-    return result;
-  }
-  if (response.header.message_type != kMessageExecuteResult ||
-      response.header.schema_id != kSchemaExecuteResultV2) {
-    if (IsErrorFrame(response)) AddFrameDiagnostics(response, &messages);
-    AddDiagnostic(&messages,
-                  "PARSER_SERVER_IPC.EXECUTE_RESULT_SCHEMA_MISMATCH",
-                  "The server did not return the required V2 execute-result schema.");
-    ProjectV2ResponseOutcomeUnknown(
-        &messages, &result, "unexpected_response_type_or_schema");
-    result.messages = std::move(messages);
-    return result;
-  }
-  if (!DecodeExecuteResultPayloadV2(response, &result, &messages)) {
-    ProjectV2ResponseOutcomeUnknown(
-        &messages, &result, "malformed_typed_response");
-    result.messages = std::move(messages);
-    return result;
-  }
-  result.messages = std::move(messages);
-  if (result.catalog_invalidation_applied ||
-      ((result.accepted ||
-        result.finality_state == ParserTransactionFinality::kKnownApplied) &&
-       ExecutionInvalidatesPublicResolutionCache(result.operation_id))) {
-    ClearSbpsClientPublicResolutionCacheForSession(endpoint_, session);
-  }
-  return result;
+  return ExecuteSblrWithRouting(session, prepared_statement_uuid,
+                                encoded_sblr_envelope, data_packet, routing,
+                                cursor_requested);
 }
 
 ServerClosePreparedSblrResult SbpsClient::ClosePreparedSblr(

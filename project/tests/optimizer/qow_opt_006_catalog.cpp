@@ -8,6 +8,8 @@
 
 #include "optimizer_catalog_backed_planning.hpp"
 #include "optimizer_profile_factory.hpp"
+#include "relational_planner.hpp"
+#include "optimizer_plan_cache.hpp"
 #include "model_family_profile_factory.hpp"
 #include "../sbsql_sblr_alignment/binary_uuid_fixture.hpp"
 #include <algorithm>
@@ -773,6 +775,195 @@ bool ValidateModelProfileOwnership() {
   return passed;
 }
 
+bool ValidateSharedIndexCapabilityOwnership() {
+  auto request = Request();
+  request.statistics.node_estimates.front().row_count = 32;
+  request.statistics.node_estimates.front().page_count = 4;
+  auto availability = Availability(request);
+  const auto calibration = BinaryUuid("019f0000-0000-7300-8000-000000006202");
+  const auto first_index = BinaryUuid("019f0000-0000-7300-8000-000000006301");
+  const auto second_index = BinaryUuid("019f0000-0000-7300-8000-000000006302");
+  request.catalog.object_uuids.insert(request.catalog.object_uuids.end(),
+                                    {first_index, second_index});
+  request.catalog.object_generations = {{first_index, 17}, {second_index, 23},
+                                        {BinaryUuid(kRelation), 9}};
+  request.security.authorized_object_uuids.insert(
+      request.security.authorized_object_uuids.end(), {first_index, second_index});
+  availability.capability_catalog.capabilities.front().implementation_id = "scan.index.btree.v1";
+  availability.node_bindings.front().index_uuid = first_index;
+  availability.node_bindings.front().index_generation = 17;
+  auto second = availability.node_bindings.front();
+  second.index_uuid = second_index;
+  second.index_generation = 23;
+  second.memory_bytes_required = 256;
+  availability.node_bindings.push_back(second);
+  const auto admission = opt::AdmitCanonicalOptimizerPlanningRequest(request);
+  const auto profiles = opt::BuildCanonicalOptimizerAlternativeProfiles(
+      request, admission, availability, calibration);
+  if (!Require(profiles.accepted && profiles.identity_owner && profiles.candidates.size() == 2 &&
+               profiles.inventory.catalog.alternatives.size() == 2,
+               "shared capability collapsed two admitted index profiles")) {
+    for (const auto& issue : profiles.issues)
+      std::cerr << issue.diagnostic_id << ':' << issue.field_id << '\n';
+    return false;
+  }
+  const auto cap = availability.node_bindings.front().capability_uuid;
+  const auto* first = profiles.identity_owner->Find(1, cap, first_index, 17);
+  const auto* other = profiles.identity_owner->Find(1, cap, second_index, 23);
+  bool passed = Require(first && other && first->alternative_uuid != other->alternative_uuid &&
+      first->cost_vector_uuid != other->cost_vector_uuid &&
+      first->transformation_uuid != other->transformation_uuid,
+      "index alternatives shared issued physical identities");
+  if (!first || !other) return false;
+  passed &= Require(profiles.identity_owner->FindAlternative(first->alternative_uuid) == first &&
+      profiles.identity_owner->FindAlternative(other->alternative_uuid) == other &&
+      first->index_uuid == first_index && first->index_generation == 17 &&
+      other->index_uuid == second_index && other->index_generation == 23 &&
+      !profiles.identity_owner->Find(1, cap) &&
+      !profiles.identity_owner->Find(1, cap, first_index, 23) &&
+      !profiles.identity_owner->FindAlternative({}),
+      "alternative lookup lost index or generation identity");
+  std::reverse(availability.node_bindings.begin(), availability.node_bindings.end());
+  const auto reordered = opt::BuildCanonicalOptimizerAlternativeProfiles(
+      request, admission, availability, calibration, profiles.identity_owner);
+  passed &= Require(reordered.accepted && reordered.identity_owner == profiles.identity_owner &&
+      reordered.candidates[0].alternative_uuid == profiles.candidates[0].alternative_uuid &&
+      reordered.candidates[1].alternative_uuid == profiles.candidates[1].alternative_uuid,
+      "input order changed retained index identities");
+
+  opt::RelationalDagPlanningInput planning;
+  planning.admission_request = request;
+  planning.admission = admission;
+  planning.executor_availability = availability;
+  planning.calibration_profile_uuid = calibration;
+  planning.profile_identity_owner = profiles.identity_owner;
+  planning.search_policy.maximum_exhaustive_plan_count = 8;
+  planning.search_policy.bounded_beam_width = 4;
+  planning.search_policy.deterministic_step_cost_ns = 1;
+  planning.search_policy.engine_owned = true;
+  planning.publication_identity.selected_plan_uuid =
+      BinaryUuid("019f0000-0000-7300-8000-000000006303");
+  planning.publication_identity.first_causal_counter_id = 100;
+  planning.publication_identity.engine_owned = true;
+  const auto selected = opt::PlanCanonicalRelationalDag(planning);
+  const auto& selected_dag = selected.publication.physical_dag;
+  const auto* retained_index = selected_dag.profile_identity_owner && selected_dag.nodes.size() == 1
+      ? selected_dag.profile_identity_owner->FindAlternative(
+            selected_dag.nodes.front().selected_alternative_uuid) : nullptr;
+  passed &= Require(selected.accepted && selected.physical_dag_published &&
+      selected.search.legal_candidate_count == 2 &&
+      selected.publication.physical_dag.nodes.size() == 1 &&
+      selected.publication.physical_dag.nodes.front().selected_alternative_uuid == first->alternative_uuid &&
+      selected.publication.physical_dag.profile_identity_owner == profiles.identity_owner &&
+      retained_index && retained_index->index_uuid == first_index &&
+      retained_index->index_generation == 17 &&
+      !selected.data_access_allowed,
+      "actual memo search and physical publication lost the selected index binding");
+  if (!selected.accepted)
+    for (const auto& diagnostic : selected.diagnostics) std::cerr << diagnostic << '\n';
+  // This exercises the cache's owner handoff only, not prepared-plan admission
+  // or execution: those require the complete parameter/result/dependency rows.
+  opt::CanonicalPreparedPhysicalPlan retained;
+  retained.profile_identity_owner = selected_dag.profile_identity_owner;
+  auto rebound = opt::BindCanonicalExecutablePlanToCurrentStatement(
+      retained, selected_dag.mga_statement_context);
+  passed &= Require(rebound.profile_identity_owner == profiles.identity_owner &&
+      rebound.profile_identity_owner->FindAlternative(first->alternative_uuid) == first,
+      "cached-plan statement rebinding dropped its index identity owner");
+
+  const auto reject = [&](auto changed_request, auto changed_availability, bool retained) {
+    const auto changed_admission = opt::AdmitCanonicalOptimizerPlanningRequest(changed_request);
+    const auto result = opt::BuildCanonicalOptimizerAlternativeProfiles(
+        changed_request, changed_admission, changed_availability, calibration,
+        retained ? profiles.identity_owner : nullptr);
+    return Require(!result.accepted && !result.identity_owner && result.candidates.empty() &&
+        result.inventory.catalog.alternatives.empty() && !result.issues.empty(),
+        "invalid index binding published partial profile authority");
+  };
+  auto changed = availability;
+  ++changed.node_bindings.front().index_generation;
+  passed &= reject(request, changed, true);
+  passed &= reject(request, changed, false);
+  auto updated_catalog = request;
+  ++updated_catalog.catalog.object_generations[1].generation;
+  const auto updated_admission = opt::AdmitCanonicalOptimizerPlanningRequest(updated_catalog);
+  const auto new_scope = opt::BuildCanonicalOptimizerAlternativeProfiles(
+      updated_catalog, updated_admission, changed, calibration);
+  passed &= Require(new_scope.accepted && new_scope.identity_owner != profiles.identity_owner &&
+      new_scope.identity_owner->ScopeUuid() != profiles.identity_owner->ScopeUuid(),
+      "new admitted index generation reused old profile identity owner");
+  changed = availability;
+  changed.node_bindings.front().index_generation = 0;
+  passed &= reject(request, changed, false);
+  changed = availability;
+  changed.node_bindings.front().index_uuid = {};
+  passed &= reject(request, changed, false);
+  changed = availability;
+  changed.node_bindings.front().index_uuid = BinaryUuid(kRelation);
+  passed &= reject(request, changed, false);
+  changed = availability;
+  changed.node_bindings.push_back(changed.node_bindings.front());
+  ++changed.node_bindings.back().index_generation;
+  passed &= reject(request, changed, false);
+  auto foreign = request;
+  foreign.catalog.object_uuids.pop_back();
+  passed &= reject(foreign, availability, false);
+  foreign = request;
+  foreign.security.authorized_object_uuids.pop_back();
+  passed &= reject(foreign, availability, false);
+  foreign = request;
+  foreign.catalog.object_generations.clear();
+  passed &= reject(foreign, availability, false);
+  foreign = request;
+  foreign.catalog.object_generations.front().generation = 0;
+  passed &= reject(foreign, availability, false);
+  foreign = request;
+  foreign.catalog.object_generations.back() = foreign.catalog.object_generations.front();
+  passed &= reject(foreign, availability, false);
+  foreign = request;
+  ++foreign.catalog.object_generations.back().generation;
+  passed &= reject(foreign, availability, true);
+  foreign = request;
+  std::reverse(foreign.catalog.object_generations.begin(), foreign.catalog.object_generations.end());
+  const auto reordered_catalog = opt::BuildCanonicalOptimizerAlternativeProfiles(
+      foreign, admission, availability, calibration, profiles.identity_owner);
+  passed &= Require(reordered_catalog.accepted && reordered_catalog.identity_owner == profiles.identity_owner,
+                    "generation row order changed the retained scope");
+  for (unsigned version = 0; version != 16; ++version) {
+    for (unsigned variant = 0; variant != 4; ++variant) {
+      if (version == 7 && variant == 2) continue;
+      changed = availability;
+      changed.node_bindings.front().index_uuid.bytes[6] = static_cast<std::uint8_t>(version << 4);
+      changed.node_bindings.front().index_uuid.bytes[8] = static_cast<std::uint8_t>(variant << 6);
+      passed &= reject(request, changed, false);
+    }
+  }
+  bool finished = false;
+  for (long failure = 0; failure != 4096 && !finished; ++failure) {
+    std::optional<opt::CanonicalOptimizerProfileFactoryResult> published;
+    profile_fault::remaining = failure;
+    profile_fault::hit = false;
+    try {
+      published = opt::BuildCanonicalOptimizerAlternativeProfiles(
+          request, admission, availability, calibration);
+    } catch (const std::bad_alloc&) {}
+    profile_fault::remaining = -1;
+    if (!profile_fault::hit) {
+      passed &= Require(published && published->accepted && published->identity_owner &&
+                        published->candidates.size() == 2,
+                        "shared-index allocation sweep did not reach complete publication");
+      finished = true;
+    } else {
+      ++profile_fault::failures;
+      passed &= Require(!published || (!published->accepted && !published->identity_owner &&
+          published->candidates.empty() && published->inventory.catalog.alternatives.empty()),
+          "shared-index allocation failure published a partial owner or candidate set");
+    }
+  }
+  passed &= Require(finished, "shared-index allocation sweep exhausted its bound");
+  return passed;
+}
+
 bool ValidateOwnerLifetimeAndFailure() {
   using Owner = opt::CanonicalOptimizerProfileIdentityOwner;
   const auto cap = BinaryUuid("019f0000-0000-7300-8000-000000006201");
@@ -854,6 +1045,7 @@ int main() {
   passed &= ValidateCatalogRefusals();
   passed &= ValidateCompleteMgaCarrierRefusals();
   passed &= ValidateProfileIdentityOwnership();
+  passed &= ValidateSharedIndexCapabilityOwnership();
   passed &= ValidateOwnerLifetimeAndFailure();
   passed &= ValidateModelProfileOwnership();
   std::cout << checks << " profile/catalog checks, " << profile_fault::failures << " allocation faults\n";

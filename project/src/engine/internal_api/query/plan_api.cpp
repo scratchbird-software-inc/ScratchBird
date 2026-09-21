@@ -57,8 +57,9 @@
 namespace scratchbird::engine::internal_api {
 
 namespace {
-constexpr std::string_view kGenerateSeriesFunctionUuid =
-    "019dffbb-f000-7e2c-b437-ebbbc2d4f35b";
+constexpr EngineUuid kGenerateSeriesFunctionUuid{{
+    0x01, 0x9d, 0xff, 0xbb, 0xf0, 0x00, 0x7e, 0x2c,
+    0xb4, 0x37, 0xeb, 0xbb, 0xc2, 0xd4, 0xf3, 0x5b}};
 }
 
 // QOW-SOURCE-RCP080-EXACT-KEY-VALUE-OWNED-CLOSURE-V1
@@ -635,11 +636,11 @@ ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
   if (dag.wire_version != 2 ||
       dag.package_root != RelationalPackageRoot::kQueryExecute ||
       dag.nodes.size() != 3 || dag.root_node_id == 0 ||
-      dag.bound_sblr_tree_uuid.empty() || dag.bound_catalog_epoch_uuid.empty() ||
-      dag.bound_security_context_uuid.empty() || dag.statement_uuid.empty() ||
-      dag.statement_timestamp.empty() || dag.owning_transaction_uuid.empty() ||
-      dag.statement_snapshot_uuid.empty() ||
-      dag.statement_metadata_snapshot_uuid.empty() ||
+      dag.bound_sblr_tree_uuid.is_nil() || dag.bound_catalog_epoch_uuid.is_nil() ||
+      dag.bound_security_context_uuid.is_nil() || dag.statement_uuid.is_nil() ||
+      dag.statement_timestamp.empty() || dag.owning_transaction_uuid.is_nil() ||
+      dag.statement_snapshot_uuid.is_nil() ||
+      dag.statement_metadata_snapshot_uuid.is_nil() ||
       dag.local_transaction_id == 0 ||
       dag.snapshot_visible_through_local_transaction_id == 0 ||
       !dag.values_rows.empty() || !dag.grouping_sets.empty() ||
@@ -652,8 +653,8 @@ ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
       descriptors_by_id;
   descriptors_by_id.reserve(dag.descriptors.size());
   for (const auto& descriptor : dag.descriptors) {
-    if (descriptor.descriptor_id == 0 || descriptor.descriptor_uuid.empty() ||
-        descriptor.type_uuid.empty() ||
+    if (descriptor.descriptor_id == 0 || descriptor.descriptor_uuid.is_nil() ||
+        descriptor.type_uuid.is_nil() ||
         !descriptors_by_id.emplace(descriptor.descriptor_id, &descriptor)
              .second) {
       return Compatibility::kNone;
@@ -703,7 +704,7 @@ ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
             node.semantic_variant_id == "SBLR_MODEL_AGGREGATE_V1") &&
            node.input_node_ids.empty() && node.values_row_ids.empty() &&
            node.required_object_uuids.size() == 1 &&
-           !node.required_object_uuids.front().empty() &&
+           core::uuid::IsEngineIdentityUuid(node.required_object_uuids.front()) &&
            node.required_property_uuids.empty() &&
            node.delivered_property_uuids.empty() &&
            !node.output_descriptor_ids.empty() &&
@@ -810,7 +811,7 @@ ExactRcp079PairCohortCompatibilityV1(const TypedRelationalDag& dag) {
   if (!exact_root_outputs()) return Compatibility::kNone;
 
   const auto exact_identifier = [](const RelationalExpressionRecord* expression,
-                                   const std::optional<std::string>& bound) {
+                                   const std::optional<EngineUuid>& bound) {
     return expression != nullptr &&
            expression->expression_kind ==
                RelationalExpressionKind::kIdentifier &&
@@ -1227,18 +1228,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     return kind >= RelationalWindowFrameBoundKind::kUnboundedPreceding &&
            kind <= RelationalWindowFrameBoundKind::kUnboundedFollowing;
   };
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-' ||
-        value == "00000000-0000-0000-0000-000000000000") {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return true;
+  const auto canonical_uuid = [](const EngineUuid& value) {
+    return scratchbird::core::uuid::IsEngineIdentityUuid(value);
   };
   const auto canonical_statement_timestamp = [](std::string_view value) {
     if (value.size() != 20 &&
@@ -1796,13 +1787,13 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     planning_reference_count += count;
     return true;
   };
-  const bool any_planning_scope = !dag.bound_sblr_tree_uuid.empty() ||
-                                  !dag.bound_catalog_epoch_uuid.empty() ||
-                                  !dag.bound_security_context_uuid.empty() ||
-                                  !dag.statement_uuid.empty() ||
-                                  !dag.owning_transaction_uuid.empty() ||
-                                  !dag.statement_snapshot_uuid.empty() ||
-                                  !dag.statement_metadata_snapshot_uuid.empty() ||
+  const bool any_planning_scope = !dag.bound_sblr_tree_uuid.is_nil() ||
+                                  !dag.bound_catalog_epoch_uuid.is_nil() ||
+                                  !dag.bound_security_context_uuid.is_nil() ||
+                                  !dag.statement_uuid.is_nil() ||
+                                  !dag.owning_transaction_uuid.is_nil() ||
+                                  !dag.statement_snapshot_uuid.is_nil() ||
+                                  !dag.statement_metadata_snapshot_uuid.is_nil() ||
                                   dag.local_transaction_id != 0 ||
                                   dag.snapshot_visible_through_local_transaction_id != 0;
   if ((planning_wire || any_planning_scope) &&
@@ -1820,7 +1811,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
 
   std::unordered_map<std::uint32_t, const RelationalTypeDescriptor*>
       descriptors_by_id;
-  std::unordered_map<std::string, const RelationalTypeDescriptor*>
+  std::unordered_map<EngineUuid, const RelationalTypeDescriptor*, EngineUuidHash>
       descriptors_by_uuid;
   const auto carries_any_datatype_authority =
       [](const RelationalTypeDescriptor& descriptor) {
@@ -1829,8 +1820,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                descriptor.type_generation != 0 || !descriptor.codec_id.empty() ||
                descriptor.codec_version != 0 ||
                descriptor.codec_generation != 0 ||
-               !descriptor.statement_receipt_uuid.empty() ||
-               !descriptor.datatype_catalog_snapshot_uuid.empty() ||
+               !descriptor.statement_receipt_uuid.is_nil() ||
+               !descriptor.datatype_catalog_snapshot_uuid.is_nil() ||
                descriptor.datatype_catalog_generation != 0 ||
                descriptor.datatype_registry_generation != 0;
       };
@@ -2707,7 +2698,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       return refuse("SBLR.PLAN_TREE.INVALID_HANDLE", node.node_id,
                     "unexpected_argument_expression_ids");
     }
-    std::unordered_set<std::string> required_object_uuids;
+    std::unordered_set<EngineUuid, EngineUuidHash> required_object_uuids;
     for (const auto& object_uuid : node.required_object_uuids) {
       if (!canonical_uuid(object_uuid) ||
           !required_object_uuids.insert(object_uuid).second) {
@@ -2715,17 +2706,18 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                       "required_object_uuids");
       }
     }
-    std::unordered_set<std::string> node_property_references;
+    std::unordered_set<EngineUuid, EngineUuidHash> required_property_references;
+    std::unordered_set<EngineUuid, EngineUuidHash> delivered_property_references;
     for (const auto& property_uuid : node.required_property_uuids) {
       if (!canonical_uuid(property_uuid) ||
-          !node_property_references.insert("r:" + property_uuid).second) {
+          !required_property_references.insert(property_uuid).second) {
         return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1", node.node_id,
                       "required_property_uuids");
       }
     }
     for (const auto& property_uuid : node.delivered_property_uuids) {
       if (!canonical_uuid(property_uuid) ||
-          !node_property_references.insert("d:" + property_uuid).second) {
+          !delivered_property_references.insert(property_uuid).second) {
         return refuse("QOW-DIAG-LOGICAL-PROPERTY-REFERENCE-V1", node.node_id,
                       "delivered_property_uuids");
       }
@@ -2904,7 +2896,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                RelationalPropertyNullPlacement::kNullsFirst &&
            term.null_placement !=
                RelationalPropertyNullPlacement::kNullsLast) ||
-          (!term.collation_uuid.empty() &&
+          (!term.collation_uuid.is_nil() &&
            !canonical_uuid(term.collation_uuid)) ||
           std::ranges::find(node->second->bound_expression_ids,
                             term.expression_id) ==
@@ -3043,7 +3035,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
             RelationalPropertySortDirection::kAscending ||
         pattern.ordering_terms.front().null_placement !=
             RelationalPropertyNullPlacement::kNullsLast ||
-        !pattern.ordering_terms.front().collation_uuid.empty() ||
+        !pattern.ordering_terms.front().collation_uuid.is_nil() ||
         pattern.variables.size() != 1 ||
         pattern.variables.front().canonical_name_key != "a" ||
         pattern.variables.front().minimum_occurrences != 1 ||
@@ -3225,8 +3217,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
           node.semantic_variant_id !=
               "table-function.generate-series.v1" ||
           node.required_object_uuids !=
-              std::vector<std::string>{
-                  std::string(kGenerateSeriesFunctionUuid)} ||
+              std::vector<EngineUuid>{kGenerateSeriesFunctionUuid} ||
           !node.required_property_uuids.empty() ||
           !node.delivered_property_uuids.empty() ||
           node.output_descriptor_ids.size() != 1 || node_outputs.size() != 1 ||
@@ -3237,7 +3228,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
           function_expression->second->expression_kind !=
               RelationalExpressionKind::kFunctionCall ||
           function_expression->second->function_uuid !=
-              std::string(kGenerateSeriesFunctionUuid) ||
+              kGenerateSeriesFunctionUuid ||
           function_expression->second->child_expression_ids !=
               node.argument_expression_ids ||
           function_expression->second->result_descriptor_id !=
@@ -3782,8 +3773,13 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
             return true;
           }
           return expression.literal_kind == RelationalLiteralKind::kUuid &&
-                 expression.literal_or_parameter_ref.has_value() &&
-                 canonical_uuid(*expression.literal_or_parameter_ref);
+                 expression.literal_typed_value_v1.has_value() &&
+                 !expression.literal_or_parameter_ref.has_value() &&
+                 expression.literal_typed_value_v1->descriptor_uuid ==
+                     descriptor->second->descriptor_uuid &&
+                 expression.literal_typed_value_v1->descriptor_generation != 0 &&
+                 expression.literal_typed_value_v1->value_state == "value" &&
+                 expression.literal_typed_value_v1->canonical_value_bytes.size() == 16;
         });
     const bool exact_graph_set_output_lineage =
         std::ranges::none_of(dag.outputs, [&](const auto& output) {
@@ -3854,7 +3850,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     }
   }
 
-  std::unordered_map<std::string, const RelationalPropertyRecord*>
+  std::unordered_map<EngineUuid, const RelationalPropertyRecord*, EngineUuidHash>
       properties_by_uuid;
   for (const auto& property : dag.properties) {
     if (!add_planning_references(property.expression_ids.size()) ||
@@ -3892,13 +3888,13 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                RelationalPropertyNullPlacement::kNullsFirst &&
            term.null_placement !=
                RelationalPropertyNullPlacement::kNullsLast) ||
-          (!term.collation_uuid.empty() &&
+          (!term.collation_uuid.is_nil() &&
            !canonical_uuid(term.collation_uuid))) {
         return refuse("QOW-DIAG-LOGICAL-PROPERTY-ORDERING-V1",
                       property.origin_node_id, "ordering_terms");
       }
     }
-    std::unordered_set<std::string> dependencies;
+    std::unordered_set<EngineUuid, EngineUuidHash> dependencies;
     for (const auto& dependency_uuid : property.dependency_property_uuids) {
       if (!canonical_uuid(dependency_uuid) ||
           !dependencies.insert(dependency_uuid).second ||
@@ -3908,7 +3904,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                       "dependency_property_uuids");
       }
     }
-    if (!property.window_frame_descriptor_uuid.empty() &&
+    if (!property.window_frame_descriptor_uuid.is_nil() &&
         !canonical_uuid(property.window_frame_descriptor_uuid)) {
       return refuse("QOW-DIAG-LOGICAL-PROPERTY-SHAPE-V1",
                     property.origin_node_id,
@@ -3947,8 +3943,8 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         property.rewindability_kind ==
             RelationalPropertyRewindabilityKind::kNone &&
         property.locality_kind == RelationalPropertyLocalityKind::kNone &&
-        property.locality_uuid.empty() &&
-        property.security_visibility_context_uuid.empty() &&
+        property.locality_uuid.is_nil() &&
+        property.security_visibility_context_uuid.is_nil() &&
         property.security_visibility_generation == 0;
     const bool specialized_enums_known =
         property.distribution_kind >=
@@ -3971,7 +3967,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         ((ordering && property.expression_ids.empty() &&
          !property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          no_specialized_state) ||
         (expression_set &&
          property.expression_ids.size() >=
@@ -3981,7 +3977,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                   : 1U) &&
          property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          no_specialized_state) ||
         (window && property.expression_ids.empty() &&
          property.ordering_terms.empty() &&
@@ -3991,7 +3987,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
          no_specialized_state) ||
         (distribution && property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          property.distribution_kind !=
              RelationalPropertyDistributionKind::kNone &&
          ((property.distribution_kind ==
@@ -4005,13 +4001,13 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
          property.rewindability_kind ==
              RelationalPropertyRewindabilityKind::kNone &&
          property.locality_kind == RelationalPropertyLocalityKind::kNone &&
-         property.locality_uuid.empty() &&
-         property.security_visibility_context_uuid.empty() &&
+         property.locality_uuid.is_nil() &&
+         property.security_visibility_context_uuid.is_nil() &&
          property.security_visibility_generation == 0) ||
         (materialization && property.expression_ids.empty() &&
          property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          property.distribution_kind ==
              RelationalPropertyDistributionKind::kNone &&
          property.materialization_kind !=
@@ -4019,13 +4015,13 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
          property.rewindability_kind ==
              RelationalPropertyRewindabilityKind::kNone &&
          property.locality_kind == RelationalPropertyLocalityKind::kNone &&
-         property.locality_uuid.empty() &&
-         property.security_visibility_context_uuid.empty() &&
+         property.locality_uuid.is_nil() &&
+         property.security_visibility_context_uuid.is_nil() &&
          property.security_visibility_generation == 0) ||
         (rewindability && property.expression_ids.empty() &&
          property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          property.distribution_kind ==
              RelationalPropertyDistributionKind::kNone &&
          property.materialization_kind ==
@@ -4033,13 +4029,13 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
          property.rewindability_kind !=
              RelationalPropertyRewindabilityKind::kNone &&
          property.locality_kind == RelationalPropertyLocalityKind::kNone &&
-         property.locality_uuid.empty() &&
-         property.security_visibility_context_uuid.empty() &&
+         property.locality_uuid.is_nil() &&
+         property.security_visibility_context_uuid.is_nil() &&
          property.security_visibility_generation == 0) ||
         (locality && property.expression_ids.empty() &&
          property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          property.distribution_kind ==
              RelationalPropertyDistributionKind::kNone &&
          property.materialization_kind ==
@@ -4048,12 +4044,12 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
              RelationalPropertyRewindabilityKind::kNone &&
          property.locality_kind != RelationalPropertyLocalityKind::kNone &&
          canonical_uuid(property.locality_uuid) &&
-         property.security_visibility_context_uuid.empty() &&
+         property.security_visibility_context_uuid.is_nil() &&
          property.security_visibility_generation == 0) ||
         (security_visibility && property.expression_ids.empty() &&
          property.ordering_terms.empty() &&
          property.dependency_property_uuids.empty() &&
-         property.window_frame_descriptor_uuid.empty() &&
+         property.window_frame_descriptor_uuid.is_nil() &&
          property.distribution_kind ==
              RelationalPropertyDistributionKind::kNone &&
          property.materialization_kind ==
@@ -4061,7 +4057,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
          property.rewindability_kind ==
              RelationalPropertyRewindabilityKind::kNone &&
          property.locality_kind == RelationalPropertyLocalityKind::kNone &&
-         property.locality_uuid.empty() &&
+         property.locality_uuid.is_nil() &&
          property.security_visibility_context_uuid ==
              dag.bound_security_context_uuid &&
          property.security_visibility_generation != 0));
@@ -4158,7 +4154,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
     }
     return true;
   };
-  std::unordered_set<std::string> matched_window_property_uuids;
+  std::unordered_set<EngineUuid, EngineUuidHash> matched_window_property_uuids;
   for (const auto& node : dag.nodes) {
     if (node.node_kind != RelationalDagNodeKind::kWindow) continue;
     std::vector<const RelationalWindowInvocationRecord*> invocations;
@@ -4184,7 +4180,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
                     "window_property_count");
     }
 
-    std::unordered_set<std::string> expected_required_property_uuids;
+    std::unordered_set<EngineUuid, EngineUuidHash> expected_required_property_uuids;
     for (const auto* invocation : invocations) {
       const auto& effective =
           effective_window_shapes.at(invocation->window_definition_id);
@@ -4192,7 +4188,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
       for (const auto* property : window_properties) {
         if (matched_window_property_uuids.contains(property->property_uuid) ||
             property->origin_node_id != node.node_id ||
-            property->window_frame_descriptor_uuid.empty()) {
+            property->window_frame_descriptor_uuid.is_nil()) {
           continue;
         }
         const RelationalPropertyRecord* partition = nullptr;
@@ -4246,7 +4242,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
         }
       }
     }
-    const std::unordered_set<std::string> actual_required_property_uuids(
+    const std::unordered_set<EngineUuid, EngineUuidHash> actual_required_property_uuids(
         node.required_property_uuids.begin(),
         node.required_property_uuids.end());
     if (actual_required_property_uuids.size() !=
@@ -4338,431 +4334,7 @@ RelationalDagValidationResult ValidateTypedRelationalDag(
   return result;
 }
 
-// The OPT-004 access-candidate contract deliberately lives in this source
-// translation unit.  Its direct proof declares the same standard-layout
-// carriers so the source-bound leaf does not create a second public planning
-// API before the index executor packet owns that activation surface.
-struct CanonicalAccessIndexMetadataV1 {
-  std::string index_uuid;
-  std::string relation_uuid;
-  std::string alternative_uuid;
-  std::string capability_uuid;
-  std::string implementation_id;
-  std::vector<std::uint32_t> key_expression_ids;
-  std::uint64_t catalog_generation{0};
-  std::uint64_t relation_descriptor_generation{0};
-  std::uint64_t index_generation{0};
-  std::uint64_t statistics_generation{0};
-  std::uint64_t statistics_index_generation{0};
-  std::uint64_t statistics_catalog_generation{0};
-  std::uint64_t visible_generation{0};
-  bool catalog_record_current{false};
-  bool lifecycle_ready{false};
-  bool build_validation_complete{false};
-  bool profile_authoritative{false};
-  bool profile_supports_mga_visibility{false};
-  bool profile_supports_generation_visibility{false};
-  bool supports_exact_lookup{false};
-  bool supports_range_scan{false};
-  bool statistics_present{false};
-  bool statistics_current{false};
-  bool statistics_stale{false};
-  bool statistics_profile_coupled{false};
-  bool statistics_mga_visible{false};
-  bool visibility_evidence_engine_owned{false};
-  bool visible_to_statement_snapshot{false};
-  bool approximate{false};
-  bool exact_fallback{false};
-  bool residual_recheck_required{false};
-  bool data_access_observed{false};
-};
 
-struct CanonicalAccessCandidateReceiptV1 {
-  std::string alternative_uuid;
-  std::string index_uuid;
-  std::string implementation_id;
-  std::string capability_uuid;
-  std::uint32_t logical_node_id{0};
-  std::uint64_t catalog_generation{0};
-  std::uint64_t relation_descriptor_generation{0};
-  std::uint64_t index_generation{0};
-  std::uint64_t statistics_generation{0};
-  std::uint64_t visible_generation{0};
-  bool available{false};
-  bool heap_fallback{false};
-  bool capability_validated{false};
-  bool generation_validated{false};
-  bool statistics_validated{false};
-  bool visibility_validated{false};
-  bool residual_recheck_required{false};
-  std::string refusal_diagnostic_id;
-};
-
-struct CanonicalAccessCandidatePlanningRequestV1 {
-  scratchbird::engine::planner::CanonicalLogicalRelationalGraph logical_graph;
-  std::uint32_t logical_node_id{0};
-  std::string relation_uuid;
-  std::vector<std::uint32_t> predicate_expression_ids;
-  std::string predicate_kind;
-  std::string heap_alternative_uuid;
-  std::string heap_capability_uuid;
-  std::string statistics_snapshot_uuid;
-  std::uint64_t current_catalog_generation{0};
-  std::uint64_t current_relation_descriptor_generation{0};
-  std::uint64_t current_statistics_generation{0};
-  std::size_t maximum_candidate_count{0};
-  bool metadata_snapshot_engine_owned{false};
-  bool storage_descriptor_engine_owned{false};
-  bool statistics_snapshot_engine_owned{false};
-  bool data_access_observed{false};
-  bool parser_planning_authority_claimed{false};
-  bool transaction_finality_authority_claimed{false};
-  std::vector<CanonicalAccessIndexMetadataV1> indexes;
-};
-
-struct CanonicalAccessCandidatePlanningResultV1 {
-  bool accepted{false};
-  bool planning_complete_before_access{false};
-  bool data_access_allowed{false};
-  scratchbird::engine::planner::CanonicalPhysicalAlternativeCatalog catalog;
-  std::vector<CanonicalAccessCandidateReceiptV1> receipts;
-  std::string diagnostic_id;
-  std::string field_id;
-};
-
-namespace {
-
-bool QowOpt004CanonicalUuid(const std::string_view value) {
-  if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-      value[18] != '-' || value[23] != '-' ||
-      value == "00000000-0000-0000-0000-000000000000") {
-    return false;
-  }
-  for (std::size_t index = 0; index < value.size(); ++index) {
-    if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-    const auto ch = static_cast<unsigned char>(value[index]);
-    if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-  }
-  return true;
-}
-
-bool QowOpt004StableId(const std::string_view value) {
-  return !value.empty() && value.size() <= 128 &&
-         std::ranges::all_of(value, [](const unsigned char ch) {
-           return (ch >= 'a' && ch <= 'z') ||
-                  (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' ||
-                  ch == '-';
-         });
-}
-
-bool QowOpt004PredicateKeyMatches(
-    const CanonicalAccessCandidatePlanningRequestV1& request,
-    const CanonicalAccessIndexMetadataV1& index) {
-  if (request.predicate_expression_ids.empty() ||
-      index.key_expression_ids.size() <
-          request.predicate_expression_ids.size()) {
-    return false;
-  }
-  return std::equal(request.predicate_expression_ids.begin(),
-                    request.predicate_expression_ids.end(),
-                    index.key_expression_ids.begin());
-}
-
-}  // namespace
-
-// QOW-SOURCE-OPT-004-V1
-// Generate every access alternative from a single engine-owned metadata and
-// statistics snapshot before a read is permitted.  Heap remains the legal
-// fallback.  Index records remain in the catalog with an exact refusal when
-// capability, generation, statistics, predicate, or MGA visibility evidence
-// is not current; no unavailable index is silently selected as another route.
-CanonicalAccessCandidatePlanningResultV1
-QowGenerateCanonicalAccessCandidatesV1(
-    const CanonicalAccessCandidatePlanningRequestV1& request) {
-  namespace plan = scratchbird::engine::planner;
-  CanonicalAccessCandidatePlanningResultV1 result;
-  const auto refuse = [&](std::string diagnostic_id, std::string field_id) {
-    result = {};
-    result.diagnostic_id = std::move(diagnostic_id);
-    result.field_id = std::move(field_id);
-    return result;
-  };
-
-  const auto graph_validation =
-      plan::ValidateCanonicalLogicalRelationalGraph(request.logical_graph);
-  if (!graph_validation.accepted) {
-    const auto& issue = graph_validation.issues.front();
-    return refuse(issue.diagnostic_id, issue.field_id);
-  }
-  const auto node = std::ranges::find_if(
-      request.logical_graph.nodes, [&](const auto& candidate) {
-        return candidate.logical_node_id == request.logical_node_id;
-      });
-  if (node == request.logical_graph.nodes.end() ||
-      node->node_kind != plan::CanonicalLogicalRelationalNodeKind::kRelationSource ||
-      node->semantic_variant_id != "relation.source.v1" ||
-      node->required_object_uuids !=
-          std::vector<std::string>{request.relation_uuid} ||
-      !node->input_logical_node_ids.empty()) {
-    return refuse("QOW-DIAG-OPT-004-RELATION-SOURCE-V1",
-                  "logical_relation_source");
-  }
-  if (!QowOpt004CanonicalUuid(request.relation_uuid) ||
-      !QowOpt004CanonicalUuid(request.heap_alternative_uuid) ||
-      !QowOpt004CanonicalUuid(request.heap_capability_uuid) ||
-      !QowOpt004CanonicalUuid(request.statistics_snapshot_uuid) ||
-      request.current_catalog_generation == 0 ||
-      request.current_relation_descriptor_generation == 0 ||
-      request.current_statistics_generation == 0 ||
-      request.maximum_candidate_count == 0 ||
-      request.indexes.size() + 1 > request.maximum_candidate_count) {
-    return refuse("SBLR.PLAN_TREE.RESOURCE_LIMIT",
-                  "access_candidate_identity_or_bound");
-  }
-  if (!request.metadata_snapshot_engine_owned ||
-      !request.storage_descriptor_engine_owned ||
-      !request.statistics_snapshot_engine_owned ||
-      request.data_access_observed ||
-      request.parser_planning_authority_claimed ||
-      request.transaction_finality_authority_claimed) {
-    return refuse("QOW-DIAG-OPT-004-AUTHORITY-V1",
-                  "pre_access_engine_owned_authority");
-  }
-  if ((request.predicate_kind != "exact" &&
-       request.predicate_kind != "range") ||
-      request.predicate_expression_ids.empty() ||
-      std::ranges::any_of(request.predicate_expression_ids,
-                          [](const auto id) { return id == 0; })) {
-    return refuse("QOW-DIAG-OPT-004-PREDICATE-V1",
-                  "bound_predicate_profile");
-  }
-
-  result.catalog.bound_sblr_tree_uuid =
-      request.logical_graph.bound_sblr_tree_uuid;
-  result.catalog.catalog_epoch_uuid = request.logical_graph.catalog_epoch_uuid;
-  result.catalog.security_context_uuid =
-      request.logical_graph.security_context_uuid;
-  result.catalog.local_transaction_id =
-      request.logical_graph.local_transaction_id;
-  result.catalog.statement_snapshot_id =
-      request.logical_graph.statement_snapshot_id;
-  result.catalog.mga_statement_context =
-      request.logical_graph.mga_statement_context;
-
-  plan::CanonicalPhysicalAlternativeRecord heap;
-  heap.alternative_uuid = request.heap_alternative_uuid;
-  heap.logical_node_id = request.logical_node_id;
-  heap.implementation_id = "scan.heap.v1";
-  heap.capability_uuid = request.heap_capability_uuid;
-  heap.output_descriptor_ids = node->output_descriptor_ids;
-  heap.available = true;
-  result.catalog.alternatives.push_back(heap);
-  result.receipts.push_back(
-      {.alternative_uuid = heap.alternative_uuid,
-       .implementation_id = heap.implementation_id,
-       .capability_uuid = heap.capability_uuid,
-       .logical_node_id = heap.logical_node_id,
-       .catalog_generation = request.current_catalog_generation,
-       .relation_descriptor_generation =
-           request.current_relation_descriptor_generation,
-       .statistics_generation = request.current_statistics_generation,
-       .available = true,
-       .heap_fallback = true,
-       .capability_validated = true,
-       .generation_validated = true,
-       .statistics_validated = true,
-       .visibility_validated = true});
-
-  std::unordered_set<std::string> index_uuids;
-  std::unordered_set<std::string> alternative_uuids{
-      request.heap_alternative_uuid};
-  std::unordered_set<std::string> implementation_ids{"scan.heap.v1"};
-  for (const auto& index : request.indexes) {
-    if (!QowOpt004CanonicalUuid(index.index_uuid) ||
-        !QowOpt004CanonicalUuid(index.relation_uuid) ||
-        !QowOpt004CanonicalUuid(index.alternative_uuid) ||
-        !QowOpt004CanonicalUuid(index.capability_uuid) ||
-        !QowOpt004StableId(index.implementation_id) ||
-        !index.implementation_id.starts_with("scan.index.") ||
-        !index_uuids.insert(index.index_uuid).second ||
-        !alternative_uuids.insert(index.alternative_uuid).second ||
-        !implementation_ids.insert(index.implementation_id).second ||
-        index.key_expression_ids.empty() ||
-        std::ranges::any_of(index.key_expression_ids,
-                            [](const auto id) { return id == 0; })) {
-      return refuse("QOW-DIAG-OPT-004-INDEX-IDENTITY-V1",
-                    "catalog_index_record");
-    }
-
-    CanonicalAccessCandidateReceiptV1 receipt;
-    receipt.alternative_uuid = index.alternative_uuid;
-    receipt.index_uuid = index.index_uuid;
-    receipt.implementation_id = index.implementation_id;
-    receipt.capability_uuid = index.capability_uuid;
-    receipt.logical_node_id = request.logical_node_id;
-    receipt.catalog_generation = index.catalog_generation;
-    receipt.relation_descriptor_generation =
-        index.relation_descriptor_generation;
-    receipt.index_generation = index.index_generation;
-    receipt.statistics_generation = index.statistics_generation;
-    receipt.visible_generation = index.visible_generation;
-    receipt.residual_recheck_required = index.residual_recheck_required;
-
-    const bool generation_ok =
-        index.catalog_record_current && index.catalog_generation != 0 &&
-        index.catalog_generation == request.current_catalog_generation &&
-        index.relation_descriptor_generation ==
-            request.current_relation_descriptor_generation &&
-        index.index_generation != 0;
-    const bool capability_ok =
-        index.profile_authoritative &&
-        index.profile_supports_mga_visibility &&
-        index.profile_supports_generation_visibility &&
-        (request.predicate_kind == "exact" ? index.supports_exact_lookup
-                                            : index.supports_range_scan);
-    const bool lifecycle_ok =
-        index.lifecycle_ready && index.build_validation_complete;
-    const bool visibility_ok =
-        index.visibility_evidence_engine_owned &&
-        index.visible_to_statement_snapshot && index.visible_generation != 0;
-    const bool statistics_ok =
-        index.statistics_present && index.statistics_current &&
-        !index.statistics_stale && index.statistics_profile_coupled &&
-        index.statistics_mga_visible && index.statistics_generation != 0 &&
-        index.statistics_generation == request.current_statistics_generation &&
-        index.statistics_index_generation == index.index_generation &&
-        index.statistics_catalog_generation ==
-            request.current_catalog_generation;
-    const bool predicate_ok = QowOpt004PredicateKeyMatches(request, index);
-    const bool exactness_ok = !index.approximate || index.exact_fallback;
-
-    receipt.generation_validated = generation_ok;
-    receipt.capability_validated = capability_ok;
-    receipt.statistics_validated = statistics_ok;
-    receipt.visibility_validated = visibility_ok;
-    if (index.data_access_observed) {
-      receipt.refusal_diagnostic_id = "QOW-DIAG-OPT-004-PHASE-V1";
-    } else if (index.relation_uuid != request.relation_uuid) {
-      receipt.refusal_diagnostic_id = "QOW-DIAG-OPT-004-RELATION-V1";
-    } else if (!generation_ok) {
-      receipt.refusal_diagnostic_id = "QOW-DIAG-OPT-004-GENERATION-V1";
-    } else if (!lifecycle_ok) {
-      receipt.refusal_diagnostic_id = "QOW-DIAG-OPT-004-LIFECYCLE-V1";
-    } else if (!capability_ok || !exactness_ok) {
-      receipt.refusal_diagnostic_id = "QOW-DIAG-OPT-004-CAPABILITY-V1";
-    } else if (!visibility_ok) {
-      receipt.refusal_diagnostic_id = "QOW-DIAG-OPT-004-VISIBILITY-V1";
-    } else if (!statistics_ok) {
-      receipt.refusal_diagnostic_id = "QOW-DIAG-OPT-004-STATISTICS-V1";
-    } else if (!predicate_ok) {
-      receipt.refusal_diagnostic_id = "QOW-DIAG-OPT-004-PREDICATE-V1";
-    } else {
-      receipt.available = true;
-    }
-
-    plan::CanonicalPhysicalAlternativeRecord alternative;
-    alternative.alternative_uuid = index.alternative_uuid;
-    alternative.logical_node_id = request.logical_node_id;
-    alternative.implementation_id = index.implementation_id;
-    alternative.capability_uuid = index.capability_uuid;
-    alternative.output_descriptor_ids = node->output_descriptor_ids;
-    alternative.available = receipt.available;
-    alternative.refusal_diagnostic_id = receipt.refusal_diagnostic_id;
-    result.catalog.alternatives.push_back(std::move(alternative));
-    result.receipts.push_back(std::move(receipt));
-  }
-
-  const auto boundary = plan::ValidateCanonicalLogicalPhysicalBoundary(
-      request.logical_graph, result.catalog, request.maximum_candidate_count);
-  if (!boundary.accepted) {
-    const auto& issue = boundary.issues.front();
-    return refuse(issue.diagnostic_id, issue.field_id);
-  }
-  result.accepted = true;
-  result.planning_complete_before_access = true;
-  result.data_access_allowed = false;
-  return result;
-}
-
-// A selected access is causal only when the exact available alternative is
-// carried into the immutable physical node and the canonical execution result
-// reports the same node/counter after completion.  This validates a receipt;
-// it neither dispatches a read nor gains transaction-finality authority.
-bool QowValidateCanonicalSelectedAccessExecutionV1(
-    const CanonicalAccessCandidatePlanningResultV1& planning,
-    const std::string& selected_alternative_uuid,
-    const scratchbird::engine::executor::TypedPhysicalNodeDag& physical_dag,
-    const CanonicalOptimizerSelectedExecutionResult& execution,
-    std::string* diagnostic_id,
-    std::string* field_id) {
-  const auto refuse = [&](std::string diagnostic, std::string field) {
-    if (diagnostic_id != nullptr) *diagnostic_id = std::move(diagnostic);
-    if (field_id != nullptr) *field_id = std::move(field);
-    return false;
-  };
-  if (diagnostic_id != nullptr) diagnostic_id->clear();
-  if (field_id != nullptr) field_id->clear();
-  const auto receipt = std::ranges::find_if(
-      planning.receipts, [&](const auto& candidate) {
-        return candidate.alternative_uuid == selected_alternative_uuid;
-      });
-  const auto alternative = std::ranges::find_if(
-      planning.catalog.alternatives, [&](const auto& candidate) {
-        return candidate.alternative_uuid == selected_alternative_uuid;
-      });
-  if (!planning.accepted || !planning.planning_complete_before_access ||
-      planning.data_access_allowed || receipt == planning.receipts.end() ||
-      alternative == planning.catalog.alternatives.end() ||
-      !receipt->available || !alternative->available) {
-    return refuse("QOW-DIAG-OPT-004-SELECTION-V1",
-                  "available_planned_alternative");
-  }
-  if (physical_dag.abi_version != 2 || physical_dag.nodes.size() != 1 ||
-      physical_dag.root_physical_node_id !=
-          physical_dag.nodes.front().physical_node_id ||
-      physical_dag.catalog_generation != receipt->catalog_generation ||
-      physical_dag.statistics_generation != receipt->statistics_generation) {
-    return refuse("QOW-DIAG-OPT-004-PUBLICATION-V1",
-                  "selected_physical_dag_scope");
-  }
-  const auto& node = physical_dag.nodes.front();
-  if (node.relational_node_id != alternative->logical_node_id ||
-      node.implementation_id != alternative->implementation_id ||
-      node.selected_alternative_uuid != alternative->alternative_uuid ||
-      node.executor_capability_uuid != alternative->capability_uuid ||
-      node.output_descriptor_ids != alternative->output_descriptor_ids ||
-      !node.engine_capability_validated || node.causal_counter_id == 0) {
-    return refuse("QOW-DIAG-OPT-004-PUBLICATION-V1",
-                  "selected_alternative_identity");
-  }
-  if (!execution.accepted || !execution.exact_selected_nodes_executed ||
-      !execution.causal_counters_attached ||
-      !execution.canonical_result_published || execution.replan_required ||
-      !execution.issues.empty() || !execution.dispatch.diagnostic.ok ||
-      !execution.dispatch.execution_started ||
-      execution.dispatch.selected_plan_uuid !=
-          physical_dag.selected_plan_uuid ||
-      execution.dispatch.executed_steps.size() != 1 ||
-      execution.runtime_actuals.node_actuals.size() != 1) {
-    return refuse("QOW-DIAG-OPT-004-EXECUTION-V1",
-                  "canonical_selected_execution");
-  }
-  const auto& step = execution.dispatch.executed_steps.front();
-  const auto& actual = execution.runtime_actuals.node_actuals.front();
-  if (!step.execution_started || !step.execution_finished ||
-      !step.counters_captured_after_finish ||
-      step.executed_physical_node_id != node.physical_node_id ||
-      step.causal_counter_id != node.causal_counter_id ||
-      actual.physical_node_id != node.physical_node_id ||
-      actual.logical_node_id != node.relational_node_id ||
-      actual.causal_counter_id != node.causal_counter_id ||
-      !actual.execution_started || !actual.execution_finished ||
-      !actual.counters_captured_after_finish) {
-    return refuse("QOW-DIAG-OPT-004-CAUSAL-RECEIPT-V1",
-                  "executed_node_and_counter");
-  }
-  return true;
-}
 
 // QOW-SOURCE-302-PROPERTY-BRIDGE-V1
 CanonicalRelationalBridgeResult
@@ -4778,11 +4350,11 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
     result.data_access_allowed = false;
     result.logical_graph = {};
     result.property_catalog = {};
-    result.catalog_epoch_uuid.clear();
-    result.statement_uuid.clear();
-    result.owning_transaction_uuid.clear();
-    result.statement_snapshot_uuid.clear();
-    result.statement_metadata_snapshot_uuid.clear();
+    result.catalog_epoch_uuid = {};
+    result.statement_uuid = {};
+    result.owning_transaction_uuid = {};
+    result.statement_snapshot_uuid = {};
+    result.statement_metadata_snapshot_uuid = {};
     result.local_transaction_id = 0;
     result.snapshot_visible_through_local_transaction_id = 0;
     result.issues.push_back({std::move(diagnostic_id), node_id,
@@ -5108,7 +4680,7 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
   graph.mga_statement_context.visible_committed_high_watermark =
       engine_scope.snapshot_visible_through_local_transaction_id;
 #ifndef SCRATCHBIRD_QOW_RELATIONAL_DAG_CONTRACT_ONLY
-  const auto snapshot_uuid = scratchbird::core::uuid::ParseTypedUuid(
+  const auto snapshot_uuid = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
       scratchbird::core::platform::UuidKind::object,
       engine_scope.statement_snapshot_uuid);
   if (!snapshot_uuid.ok()) {
@@ -5119,8 +4691,7 @@ PopulateCanonicalLogicalGraphFromAdmittedTypedRelationalDag(
       scratchbird::transaction::mga::ResolvePublishedSnapshotVector(
           snapshot_uuid.value);
   if (!resolved_snapshot.ok() ||
-      scratchbird::core::uuid::UuidToString(
-          resolved_snapshot.descriptor.owning_transaction_uuid.value) !=
+      resolved_snapshot.descriptor.owning_transaction_uuid.value !=
           engine_scope.owning_transaction_uuid ||
       resolved_snapshot.descriptor.owning_transaction.value !=
           engine_scope.local_transaction_id ||
@@ -5454,17 +5025,8 @@ CanonicalRuntimeOptimizerStatisticsResult BuildRuntimeOptimizerStatistics(
                              std::move(field_id)});
     return result;
   };
-  const auto canonical_uuid = [](const std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') {
-      return false;
-    }
-    for (std::size_t index = 0; index < value.size(); ++index) {
-      if (index == 8 || index == 13 || index == 18 || index == 23) continue;
-      const auto ch = static_cast<unsigned char>(value[index]);
-      if (!std::isxdigit(ch) || std::isupper(ch)) return false;
-    }
-    return true;
+  const auto canonical_uuid = [](const EngineUuid& value) {
+    return core::uuid::IsEngineIdentityUuid(value);
   };
 
   if (request.abi_version != 1) {
@@ -5901,7 +5463,7 @@ ExecuteCanonicalExecutablePlanCacheHit(
             stored.descriptor_uuid ||
         binding.published_descriptor->type_uuid != stored.type_uuid ||
         binding.published_descriptor->nullability != expected_nullability ||
-        binding.published_descriptor->collation_uuid.value_or("") !=
+        binding.published_descriptor->collation_uuid.value_or(EngineUuid{}) !=
             stored.collation_uuid ||
         binding.published_descriptor->timezone_profile_id.value_or("") !=
             stored.timezone_uuid) {
@@ -6011,7 +5573,7 @@ ExecuteCanonicalExecutablePlanCacheHit(
         published.descriptor_uuid != stored.descriptor_uuid ||
         published.type_uuid != stored.type_uuid ||
         published.nullability != expected_nullability ||
-        published.collation_uuid.value_or("") != stored.collation_uuid ||
+        published.collation_uuid.value_or(EngineUuid{}) != stored.collation_uuid ||
         published.timezone_profile_id.value_or("") !=
             stored.timezone_uuid) {
       result.dispatch = std::move(execution.dispatch);
@@ -6233,15 +5795,15 @@ RenderCanonicalStoredPlanExplain(
       disclosure.recovery_authority_claimed) {
     return refuse("disclosure_authority");
   }
-  const auto canonical_uuid = [](const std::string& value) {
+  const auto canonical_uuid = [](const EngineUuid& value) {
     return cache::CanonicalExecutablePlanUuid(value);
   };
   const auto known_lifecycle = [](const auto status) {
     return status >= cache::CanonicalExecutablePlanStatus::kValid &&
            status <= cache::CanonicalExecutablePlanStatus::kBlocked;
   };
-  const auto optional_uuid = [&](const std::string& value) {
-    return value.empty() || canonical_uuid(value);
+  const auto optional_uuid = [&](const EngineUuid& value) {
+    return value.is_nil() || canonical_uuid(value);
   };
   const auto valid_implementation_id = [](const std::string_view value) {
     return !value.empty() && value.size() <= 128 &&
@@ -6285,11 +5847,11 @@ RenderCanonicalStoredPlanExplain(
       (!request.cache_hit || request.cache_entry_present) &&
       (!request.reprepare_succeeded || request.reprepare_attempted) &&
       (request.reprepare_succeeded ||
-       request.replacement_prepared_plan_uuid.empty()) &&
+       request.replacement_prepared_plan_uuid.is_nil()) &&
       (request.reprepare_attempted
            ? request.reprepare_attempt_count == 1
            : (request.reprepare_attempt_count == 0 &&
-              request.replacement_prepared_plan_uuid.empty())) &&
+              request.replacement_prepared_plan_uuid.is_nil())) &&
       (!request.reprepare_succeeded ||
        cache::CanonicalExecutablePlanUuid(
            request.replacement_prepared_plan_uuid));
@@ -6347,9 +5909,9 @@ RenderCanonicalStoredPlanExplain(
   std::uint64_t retained_selected_scalar_score = 0;
   for (const auto& node : plan.nodes) {
     std::unordered_set<std::uint32_t> node_output_descriptors;
-    std::unordered_set<std::string> required_properties;
-    std::unordered_set<std::string> delivered_properties;
-    std::unordered_set<std::string> enforced_properties;
+    std::unordered_set<EngineUuid, EngineUuidHash> required_properties;
+    std::unordered_set<EngineUuid, EngineUuidHash> delivered_properties;
+    std::unordered_set<EngineUuid, EngineUuidHash> enforced_properties;
     const auto valid_properties = [&](const auto& properties, auto* unique) {
       return std::ranges::all_of(properties, [&](const auto& property_uuid) {
         return canonical_uuid(property_uuid) &&
@@ -6434,9 +5996,9 @@ RenderCanonicalStoredPlanExplain(
                     &cache::CanonicalPreparedPhysicalNode::relational_node_id);
   std::string retained_selected_plan_signature;
   for (const auto* node : canonical_nodes) {
-    retained_selected_plan_signature +=
-        std::to_string(node->relational_node_id) + "=" +
-        node->selected_alternative_uuid + ";";
+    metric::AppendPhysicalSelectedAlternativeBinding(
+        retained_selected_plan_signature, node->relational_node_id,
+        node->selected_alternative_uuid);
   }
   if (retained_selected_plan_signature != plan.selected_plan_signature ||
       retained_selected_scalar_score != plan.selected_scalar_score) {
@@ -6489,7 +6051,7 @@ RenderCanonicalStoredPlanExplain(
     return refuse("stored_plan_structural_coverage");
   }
   std::unordered_set<std::uint32_t> result_descriptor_ids;
-  std::unordered_set<std::string> result_descriptor_uuids;
+  std::unordered_set<EngineUuid, EngineUuidHash> result_descriptor_uuids;
   for (std::size_t index = 0; index < plan.result_descriptors.size(); ++index) {
     const auto& descriptor = plan.result_descriptors[index];
     if (descriptor.ordinal != index + 1 || descriptor.descriptor_id == 0 ||
@@ -6510,7 +6072,7 @@ RenderCanonicalStoredPlanExplain(
     return refuse("stored_dependency_evidence");
   }
   std::uint8_t previous_dependency_kind{0};
-  std::string previous_dependency_uuid;
+  EngineUuid previous_dependency_uuid;
   for (const auto& dependency : plan.dependencies) {
     const auto kind =
         static_cast<std::uint8_t>(dependency.dependency_kind);
@@ -6556,7 +6118,9 @@ RenderCanonicalStoredPlanExplain(
     previous_estimate_node = estimate.physical_node_id;
   }
   std::unordered_set<std::uint32_t> selected_logical_ids;
-  std::string previous_candidate;
+  using CandidateKey = std::tuple<std::uint32_t, std::string, EngineUuid,
+                                  std::uint8_t>;
+  std::optional<CandidateKey> previous_candidate;
   for (const auto& candidate : evidence.candidates) {
     const auto known_disposition =
         candidate.disposition ==
@@ -6565,17 +6129,16 @@ RenderCanonicalStoredPlanExplain(
             cache::CanonicalPreparedExplainCandidateDisposition::kRejected ||
         candidate.disposition ==
             cache::CanonicalPreparedExplainCandidateDisposition::kPruned;
-    const auto key = std::to_string(candidate.logical_node_id) + ":" +
-                     candidate.candidate_family_id + ":" +
-                     candidate.alternative_uuid + ":" +
-                     std::to_string(static_cast<std::uint8_t>(
-                         candidate.disposition));
+    const CandidateKey key{candidate.logical_node_id,
+                           candidate.candidate_family_id,
+                           candidate.alternative_uuid,
+                           static_cast<std::uint8_t>(candidate.disposition)};
     if (!known_disposition ||
         !logical_ids.contains(candidate.logical_node_id) ||
         candidate.candidate_family_id.empty() ||
         !canonical_uuid(candidate.alternative_uuid) ||
         candidate.confidence_id.empty() ||
-        (!previous_candidate.empty() && key <= previous_candidate) ||
+        (previous_candidate && key <= *previous_candidate) ||
         (candidate.disposition !=
              cache::CanonicalPreparedExplainCandidateDisposition::kSelected &&
          candidate.reason_id.empty())) {
@@ -6619,7 +6182,7 @@ RenderCanonicalStoredPlanExplain(
     }
     previous_barrier = key;
   }
-  std::string previous_statistic;
+  EngineUuid previous_statistic;
   for (const auto& statistic : evidence.statistics) {
     const auto known_state =
         statistic.state == cache::CanonicalPreparedExplainStatisticState::kUsed ||
@@ -6629,7 +6192,7 @@ RenderCanonicalStoredPlanExplain(
             cache::CanonicalPreparedExplainStatisticState::kNotApplicable;
     if (!canonical_uuid(statistic.statistic_uuid) || !known_state ||
         statistic.confidence_id.empty() ||
-        (!previous_statistic.empty() &&
+        (!previous_statistic.is_nil() &&
          statistic.statistic_uuid <= previous_statistic)) {
       return refuse("stored_explain_statistic_evidence");
     }
@@ -6679,7 +6242,7 @@ RenderCanonicalStoredPlanExplain(
                                     : "redacted.route";
   if (!disclosure.route_detail_authorized) {
     document.selected_plan_signature.clear();
-    document.bound_sblr_tree_uuid.clear();
+    document.bound_sblr_tree_uuid = {};
     document.redacted = true;
     warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
   }
@@ -6725,10 +6288,10 @@ RenderCanonicalStoredPlanExplain(
         (candidate.protected_detail &&
          !disclosure.security_detail_authorized)) {
       rendered.candidate_family_id = "redacted.candidate";
-      rendered.alternative_uuid.clear();
+      rendered.alternative_uuid = {};
       rendered.reason_id.clear();
-      rendered.retained_cost.cost_vector_uuid.clear();
-      rendered.retained_cost.calibration_profile_uuid.clear();
+      rendered.retained_cost.cost_vector_uuid = {};
+      rendered.retained_cost.calibration_profile_uuid = {};
       rendered.identity_state = cache::CanonicalExplainFieldState::kRedacted;
       document.redacted = true;
       warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
@@ -6764,7 +6327,7 @@ RenderCanonicalStoredPlanExplain(
     }
     auto rendered = statistic;
     if (!disclosure.object_names_authorized) {
-      rendered.statistic_uuid.clear();
+      rendered.statistic_uuid = {};
       document.redacted = true;
       warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
     }
@@ -6800,19 +6363,19 @@ RenderCanonicalStoredPlanExplain(
     warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
   } else if (!disclosure.object_names_authorized) {
     for (auto& dependency : document.dependencies) {
-      dependency.dependency_uuid = "redacted.dependency";
+      dependency.dependency_uuid = {};
       dependency.definition_digest.clear();
     }
   }
   if (!disclosure.object_names_authorized) {
-    document.result_schema_uuid.clear();
+    document.result_schema_uuid = {};
     for (auto& descriptor : document.result_descriptors) {
       descriptor.name_utf8 = "redacted.column";
-      descriptor.descriptor_uuid.clear();
-      descriptor.type_uuid.clear();
-      descriptor.domain_uuid.clear();
-      descriptor.collation_uuid.clear();
-      descriptor.timezone_uuid.clear();
+      descriptor.descriptor_uuid = {};
+      descriptor.type_uuid = {};
+      descriptor.domain_uuid = {};
+      descriptor.collation_uuid = {};
+      descriptor.timezone_uuid = {};
       descriptor.type_modifier_digest.clear();
       descriptor.encoded_descriptor.clear();
     }
@@ -6822,16 +6385,16 @@ RenderCanonicalStoredPlanExplain(
   if (document.invalidation.has_value() &&
       !disclosure.invalidation_detail_authorized) {
     document.invalidation->field_id = "protected_generation";
-    document.invalidation->prepared_plan_uuid.clear();
+    document.invalidation->prepared_plan_uuid = {};
     document.redacted = true;
     warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
   }
   if (!disclosure.invalidation_detail_authorized) {
-    if (!document.replacement_prepared_plan_uuid.empty()) {
+    if (!document.replacement_prepared_plan_uuid.is_nil()) {
       document.redacted = true;
       warning("SB_DIAG_OPT_EXPLAIN_REDACTED");
     }
-    document.replacement_prepared_plan_uuid.clear();
+    document.replacement_prepared_plan_uuid = {};
   }
 
   std::unordered_map<std::uint64_t, const metric::CanonicalPhysicalDispatchStepResult*>
@@ -6940,15 +6503,15 @@ RenderCanonicalStoredPlanExplain(
         !disclosure.route_detail_authorized) {
       rendered.implementation_id = "redacted.implementation";
       rendered.logical_semantic_variant_id = "redacted.semantic";
-      rendered.selected_alternative_uuid.clear();
-      rendered.transformation_uuid.clear();
+      rendered.selected_alternative_uuid = {};
+      rendered.transformation_uuid = {};
       rendered.transformation_rule_id.clear();
-      rendered.executor_capability_uuid.clear();
+      rendered.executor_capability_uuid = {};
       rendered.required_property_uuids.clear();
       rendered.delivered_property_uuids.clear();
       rendered.enforced_property_uuids.clear();
-      rendered.estimated_cost.cost_vector_uuid.clear();
-      rendered.estimated_cost.calibration_profile_uuid.clear();
+      rendered.estimated_cost.cost_vector_uuid = {};
+      rendered.estimated_cost.calibration_profile_uuid = {};
       rendered.identity_state = cache::CanonicalExplainFieldState::kRedacted;
       document.redacted = true;
       warning("SB_DIAG_OPT_EXPLAIN_REDACTED");

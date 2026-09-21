@@ -42,10 +42,6 @@ platform::TypedUuid GeneratedUuid(platform::UuidKind kind,
   return generated.value;
 }
 
-std::string UuidText(platform::UuidKind kind, platform::u64 salt) {
-  return uuid::UuidToString(GeneratedUuid(kind, salt).value);
-}
-
 std::string Key(char group, char suffix) {
   std::string key = "SBKO";
   key.push_back(static_cast<char>(0x7f));
@@ -60,8 +56,8 @@ idx::SortedBulkIndexRowInput Row(char group,
                                  std::string payload = "payload") {
   idx::SortedBulkIndexRowInput row;
   row.encoded_key = Key(group, suffix);
-  row.row_uuid = UuidText(platform::UuidKind::row, salt);
-  row.version_uuid = UuidText(platform::UuidKind::row, salt + 1000);
+  row.row_uuid = GeneratedUuid(platform::UuidKind::row, salt).value;
+  row.version_uuid = GeneratedUuid(platform::UuidKind::row, salt + 1000).value;
   row.payload_value = std::move(payload);
   row.source_ordinal = salt;
   return row;
@@ -258,7 +254,7 @@ void FailClosedInvalidInputs() {
   Require(result.unsafe_key_refused, "unsafe key refusal flag missing");
 
   auto invalid_uuid = Request({Row('a', '1', 402)});
-  invalid_uuid.rows[0].row_uuid = "not-a-uuid";
+  invalid_uuid.rows[0].row_uuid = {};
   result = idx::BuildSortedExactBulkIndex(invalid_uuid);
   Require(!result.ok(), "invalid row uuid was accepted");
   Require(result.invalid_descriptor_refused,
@@ -298,6 +294,54 @@ void FailClosedInvalidInputs() {
           "covering missing payload refusal flag missing");
 }
 
+void BinaryIdentityAdmissionAndOrdering() {
+  auto low = Row('a', '1', 900);
+  low.row_uuid.bytes.fill(0);
+  low.row_uuid.bytes[6] = 0x70;
+  low.row_uuid.bytes[8] = 0x80;
+  low.version_uuid = low.row_uuid;
+  for (const bool by_version : {false, true}) {
+    for (std::size_t byte = 0; byte < 16; ++byte) {
+      auto high = low;
+      auto& identity = by_version ? high.version_uuid : high.row_uuid;
+      identity.bytes[byte] |= (byte == 6 || byte == 8) ? 1 : 0x80;
+      auto request = Request({high, low});
+      const auto result = idx::BuildSortedExactBulkIndex(request);
+      Require(result.ok() && result.entries.size() == 2,
+              "binary identity sort refused valid equal-key rows");
+      Require(result.entries[0].row_uuid == low.row_uuid &&
+                  result.entries[0].version_uuid == low.version_uuid &&
+                  result.entries[1].row_uuid == high.row_uuid &&
+                  result.entries[1].version_uuid == high.version_uuid,
+              "binary identity bytes were reordered, truncated or reformatted");
+    }
+  }
+  for (const bool version_identity : {false, true}) {
+    for (const std::size_t byte : {std::size_t{6}, std::size_t{8}}) {
+      for (unsigned value = 0; value < 256; ++value) {
+        auto row = low;
+        auto& identity = version_identity ? row.version_uuid : row.row_uuid;
+        identity.bytes[byte] = static_cast<platform::byte>(value);
+        const bool valid = byte == 6 ? (value >> 4) == 7 : (value >> 6) == 2;
+        const auto result = idx::BuildSortedExactBulkIndex(Request({row}));
+        Require(result.ok() == valid, "non-v7 or non-RFC system identity admitted");
+        if (!valid) Require(result.entries.empty(), "invalid identity published entries");
+      }
+    }
+  }
+  for (const auto member : {&idx::SortedBulkIndexMetadata::index_uuid,
+                            &idx::SortedBulkIndexMetadata::table_uuid}) {
+    auto request = Request({low});
+    (request.metadata.*member).kind = platform::UuidKind::transaction;
+    Require(!idx::BuildSortedExactBulkIndex(request).ok(),
+            "wrong metadata identity kind accepted");
+    request = Request({low});
+    (request.metadata.*member).value.bytes[6] = 0x40;
+    Require(!idx::BuildSortedExactBulkIndex(request).ok(),
+            "v4 metadata identity accepted");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -305,6 +349,7 @@ int main() {
   CoveringPayloadLayoutConsumedButNotRouted();
   UniqueProofStillRequiredForUniqueFamily();
   FailClosedInvalidInputs();
+  BinaryIdentityAdmissionAndOrdering();
   std::cout << "sorted_bulk_leaf_branch_builder_gate=passed\n";
   return 0;
 }

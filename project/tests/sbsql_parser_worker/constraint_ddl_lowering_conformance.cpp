@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -37,10 +38,10 @@ void DumpDiagnostics(const sbsql::MessageVectorSet& messages) {
 sbsql::SessionContext Session() {
   sbsql::SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000000001";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000000002";
-  session.database_uuid = "019f0000-0000-7000-8000-000000000003";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuid(1103, 1);
+  session.connection_uuid = scratchbird::tests::FixtureUuid(1103, 2);
+  session.database_uuid = scratchbird::tests::FixtureUuid(1103, 3);
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1103, 5);
   session.catalog_epoch = 11;
   session.security_policy_epoch = 12;
   session.descriptor_epoch = 13;
@@ -65,7 +66,7 @@ bool HasAuthorityStep(const sbsql::SblrEnvelope& envelope,
 
 sbsql::SblrEnvelope LowerRefused(
     std::string sql,
-    std::vector<std::string> resolver_fixture_uuids = {}) {
+    std::vector<scratchbird::core::platform::Uuid> resolver_fixture_uuids = {}) {
   const auto cst = sbsql::BuildCst(sql);
   Require(!cst.messages.has_errors(), "constraint DDL CST failed");
   const auto ast = sbsql::BuildAst(cst);
@@ -159,7 +160,7 @@ int main() {
   const auto alter = LowerRefused(
       "ALTER TABLE orders ADD CONSTRAINT orders_customer_fk FOREIGN KEY "
       "(customer_id) REFERENCES customers(id) DEFERRABLE",
-      {"019f0000-0000-7000-8000-000000000201"});
+      {scratchbird::tests::FixtureUuid(1103, 201)});
   RequireConstraintRefusal(alter, "engine.op.ddl_alter_table",
                            "SBLR_DDL_ALTER_TABLE");
 

@@ -4,6 +4,7 @@
 #include "query/expression_api.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "canonical_utf8.hpp"
+#include "resource_seed_pack.hpp"
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
@@ -19,13 +20,22 @@ void* operator new(std::size_t size) {
   throw std::bad_alloc();
 }
 void* operator new[](std::size_t size) { return ::operator new(size); }
+void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
+  try { return ::operator new(size); } catch (...) { return nullptr; }
+}
+void* operator new[](std::size_t size, const std::nothrow_t&) noexcept {
+  try { return ::operator new(size); } catch (...) { return nullptr; }
+}
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+void operator delete(void* p, const std::nothrow_t&) noexcept { std::free(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { std::free(p); }
 
 namespace api = scratchbird::engine::internal_api;
 namespace dt = scratchbird::core::datatypes;
+namespace resources = scratchbird::core::resources;
 using Uuid = api::EngineUuid;
 namespace {
 void Require(bool condition, const char* message) {
@@ -64,7 +74,20 @@ api::EngineTypedValue Value(std::string bytes, std::uint8_t suffix = 5) {
   return value;
 }
 dt::DatatypeTextSeedAuthority Seed() {
+  // Real qualified immutable input; fixture UUIDs below are component bindings,
+  // not a claim of live transaction/catalog or SQL/IPC admission.
+  static const auto image = [] {
+    resources::ResourceSeedLoadConfig config;
+    config.seed_pack_root = SB_COLLATION_TEST_SEED_ROOT;
+    auto loaded = resources::LoadResourceSeedPack(config);
+    Require(loaded.ok() && loaded.image.unicode_collation, "qualified collation input failed admission");
+    return std::move(loaded.image);
+  }();
   dt::DatatypeTextSeedAuthority result;
+  result.database_uuid=Id(9);result.charset_uuid=Id(8);result.collation_uuid=Id(1);
+  result.resource_epoch=31;result.collation_epoch=17;
+  result.comparison_profile=resources::CollationProfile::uca17_root_primary;
+  result.unicode_collation=image.unicode_collation;
   result.active = true; result.seed_pack_name = "qow_core_resource_catalog";
   result.seed_pack_version = "2026.07"; result.charset_name = "UTF-8";
   result.collation_name = "unicode_ci_ai";
@@ -84,6 +107,8 @@ void TestComparison() {
   Compare("z", "a", Seed(), 1); Compare("", "", Seed(), 0); Compare("", "x", Seed(), -1);
   auto exact = Seed(); exact.collation_case_insensitive = false;
   exact.collation_accent_insensitive = false; exact.collation_name = "unicode_cs";
+  exact.comparison_profile=resources::CollationProfile::utf8_binary;
+  exact.unicode_collation.reset();
   Compare("A", "a", exact, -1);
 }
 void TestUnicodeComparison() {
@@ -92,6 +117,61 @@ void TestUnicodeComparison() {
   Compare("\xce\xa3", "\xcf\x82", Seed(), 0);  // Greek final sigma
   Compare("\xd0\x90", "\xd0\xb0", Seed(), 0);  // Cyrillic a
   Compare("e\xcc\x81", "e", Seed(), 0);         // combining acute
+}
+void TestKeysAndHashes() {
+  const std::vector<std::pair<std::string,std::string>> pairs{
+      {"A","a"},{"e","\xc3\xa9"},{"\xc3\xa9","e\xcc\x81"},
+      {"\xce\x91","\xce\xb1"},{"\xce\xa3","\xcf\x82"},
+      {"Stra\xc3\x9f" "e","STRASSE"},{std::string("a\0b",3),"a"},
+      {"",""},{"", "x"},{"\xea\xb0\x81","\xe1\x84\x80\xe1\x85\xa1\xe1\x86\xa8"}};
+  for(unsigned profile=1;profile<=5;++profile) {
+    auto seed=Seed();seed.comparison_profile=static_cast<resources::CollationProfile>(profile);
+    seed.collation_case_insensitive=profile==2||profile==3;
+    seed.collation_accent_insensitive=profile==2;
+    if(profile==1)seed.unicode_collation.reset();
+    for(std::size_t i=0;i<pairs.size();++i) {
+      dt::DatatypeComparisonRequest compare;
+      compare.left={dt::CanonicalTypeId::character,pairs[i].first,false};
+      compare.right={dt::CanonicalTypeId::character,pairs[i].second,false};compare.text_seed=seed;
+      const auto order=dt::CompareDatatypeValues(compare);Require(order.ok(),"profile comparison failed");
+      dt::DatatypeSortKeyRequest sort;sort.text_seed=seed;sort.value=compare.left;
+      const auto a=dt::MakeDatatypeSortKey(sort);sort.value=compare.right;
+      const auto b=dt::MakeDatatypeSortKey(sort);
+      Require(a.ok()&&b.ok(),"profile sort failed");
+      const int sign=a.sort_key<b.sort_key?-1:a.sort_key>b.sort_key?1:0;
+      Require(sign==order.comparison,"sort/compare equivalence drift");
+      dt::DatatypeHashRequest hash;hash.text_seed=seed;hash.value=compare.left;
+      const auto x=dt::HashDatatypeValue(hash);hash.value=compare.right;
+      const auto y=dt::HashDatatypeValue(hash);
+      Require(x.ok()&&y.ok(),"profile hash failed");
+      if(order.comparison==0)Require(x.stable_hash_hex==y.stable_hash_hex,"equal TEXT hashed differently");
+      if(i==0)Require((order.comparison==0)==(profile==2||profile==3),"wrong case strength");
+      if(i==1)Require((order.comparison==0)==(profile==2),"wrong accent strength");
+      if(i==2||i==9)Require((order.comparison==0)==(profile!=1),"wrong canonical equivalence");
+      auto renamed=seed;renamed.seed_pack_name.clear();renamed.seed_pack_version.clear();
+      renamed.charset_name="renamed";renamed.collation_name.clear();
+      sort.text_seed=renamed;hash.text_seed=renamed;
+      const auto renamed_key=dt::MakeDatatypeSortKey(sort);const auto renamed_hash=dt::HashDatatypeValue(hash);
+      Require(renamed_key.ok()&&renamed_key.sort_key==b.sort_key&&renamed_hash.ok()&&
+          renamed_hash.stable_hash_hex==y.stable_hash_hex,"display metadata changed key authority");
+      if(profile==1) {
+        // Independent Core prefix oracle: raw identities, then three LE u64s.
+        std::string expected="20:";
+        for(auto id:{Id(9),Id(8),Id(1)})expected.append(reinterpret_cast<const char*>(id.bytes.data()),16);
+        for(auto number:{31u,17u,1u})for(unsigned n=0;n<8;++n)
+          expected.push_back(static_cast<char>(std::uint64_t(number)>>(8*n)));
+        expected+=pairs[i].first;
+        Require(a.sort_key==expected,"binary cohort key byte oracle mismatch");
+      }
+    }
+  }
+  dt::DatatypeOperationValue text{dt::CanonicalTypeId::character,"valid",false};
+  dt::DatatypeComparisonRequest comparison;comparison.left=text;comparison.right=text;
+  dt::DatatypeSortKeyRequest sort;sort.value=text;
+  dt::DatatypeHashRequest hash;hash.value=text;
+  Require(!dt::CompareDatatypeValues(comparison).ok(),"unbound TEXT comparison silently used binary");
+  Require(!dt::MakeDatatypeSortKey(sort).ok(),"unbound TEXT sort silently used binary");
+  Require(!dt::HashDatatypeValue(hash).ok(),"unbound TEXT hash silently used spelling");
 }
 void TestRefusal() {
   const auto left = Value("alpha"); const auto right = Value("ALPHA", 6);
@@ -108,12 +188,19 @@ void TestRefusal() {
     auto id = Id(1); id.bytes[i] ^= 1; refuse(left, right, id, 31, 17, Seed());
   }
   refuse(left, right, Id(1), 0, 17, Seed()); refuse(left, right, Id(1), 31, 0, Seed());
-  for (auto member : {&dt::DatatypeTextSeedAuthority::seed_pack_name,
-                     &dt::DatatypeTextSeedAuthority::seed_pack_version,
-                     &dt::DatatypeTextSeedAuthority::charset_name,
-                     &dt::DatatypeTextSeedAuthority::collation_name}) {
-    auto seed = Seed(); (seed.*member).clear(); refuse(left, right, Id(1), 31, 17, seed);
+  for (auto member : {&dt::DatatypeTextSeedAuthority::database_uuid,
+                     &dt::DatatypeTextSeedAuthority::charset_uuid,
+                     &dt::DatatypeTextSeedAuthority::collation_uuid}) {
+    auto seed = Seed(); (seed.*member)={}; refuse(left, right, Id(1), 31, 17, seed);
+    seed=Seed();(seed.*member).bytes[6]=0x40;refuse(left,right,Id(1),31,17,seed);
   }
+  auto wrong=Seed();++wrong.resource_epoch;refuse(left,right,Id(1),31,17,wrong);
+  wrong=Seed();++wrong.collation_epoch;refuse(left,right,Id(1),31,17,wrong);
+  wrong=Seed();wrong.unicode_collation.reset();refuse(left,right,Id(1),31,17,wrong);
+  wrong=Seed();wrong.comparison_profile=resources::CollationProfile::unbound;
+  refuse(left,right,Id(1),31,17,wrong);
+  wrong=Seed();wrong.comparison_profile=static_cast<resources::CollationProfile>(6);
+  refuse(left,right,Id(1),31,17,wrong);
   auto seed = Seed(); seed.active = false; refuse(left, right, Id(1), 31, 17, seed);
   for (bool mutate_left : {false,true}) {
     const auto changed_value = [&](const api::EngineTypedValue& value) {
@@ -304,7 +391,7 @@ int main(int argc, char** argv) {
       return EXIT_SUCCESS;
     }
     if (argc == 2 && std::string_view(argv[1]) == "--unicode") {
-      TestUnicodeComparison();
+      TestUnicodeComparison();TestKeysAndHashes();
       std::cout << "PASS Unicode collation checks=" << checks << '\n';
       return EXIT_SUCCESS;
     }

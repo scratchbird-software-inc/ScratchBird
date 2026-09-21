@@ -13,6 +13,7 @@
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/name_registry.hpp"
+#include "catalog/temporary_name_visibility.hpp"
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -38,13 +39,6 @@ struct TemporaryFilteredNameMatches {
   std::vector<NameRegistryEntry> temporary_matches;
   std::vector<NameRegistryEntry> durable_matches;
 };
-
-bool IsExactCanonicalSessionUuid(const std::string& value) {
-  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(
-      scratchbird::core::platform::UuidKind::session, value);
-  return parsed.ok() &&
-         scratchbird::core::uuid::UuidToString(parsed.value.value) == value;
-}
 
 std::string LowerResourceClass(std::string value) {
   std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
@@ -86,94 +80,13 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
         "catalog.resource.name_invalid",
         "resource_names_must_be_unqualified_and_nonempty");
   }
-  auto admission = OpenEngineResourceCatalog(request.context);
-  if (!admission.ok()) {
+  auto lookup = LookupEngineResourceDescriptorByName(request.context,
+      request.sql_object_reference.object_name.raw_text, resource_class);
+  if (!lookup.ok) {
     return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
-        request.context, "catalog.resolve_name", std::move(admission.diagnostic));
+        request.context, "catalog.resolve_name", std::move(lookup.diagnostic));
   }
-  const auto& image = admission.state->resource_seed_catalog;
-
-  EngineResolvedResourceDescriptor descriptor;
-  descriptor.present = true;
-  descriptor.resource_family = resource_class;
-  descriptor.seed_pack_name = image.seed_pack_name;
-  descriptor.seed_pack_version = image.seed_pack_version;
-  descriptor.resource_epoch = image.resource_epoch;
-  const std::string& requested_name =
-      request.sql_object_reference.object_name.raw_text;
-  const auto alias_ambiguity = [&](scratchbird::core::resources::ResourceSeedFamily family)
-      -> std::optional<EngineResolveNameResult> {
-    const auto alias = scratchbird::core::resources::ResolveResourceSeedAlias(
-        image, family, requested_name);
-    if (alias.ok() || alias.diagnostic.diagnostic_code != "SB_RESOURCE_ALIAS_AMBIGUOUS")
-      return std::nullopt;
-    auto failure = ResourceResolutionFailure(request, alias.diagnostic.diagnostic_code,
-                                            alias.diagnostic.message_key, {});
-    for (const auto& argument : alias.diagnostic.arguments)
-      failure.diagnostics.front().fields.push_back({argument.key, argument.value});
-    return failure;
-  };
-  if (resource_class == "charset") {
-    const auto* charset =
-        scratchbird::core::resources::FindResourceSeedCharset(image,
-                                                               requested_name);
-    if (charset == nullptr) {
-      if (const auto ambiguity = alias_ambiguity(scratchbird::core::resources::ResourceSeedFamily::charset))
-        return *ambiguity;
-      return ResourceResolutionFailure(
-          request,
-          "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE",
-          "message_vector.item_not_found_or_does_not_exist",
-          "charset_not_found_or_not_visible");
-    }
-    descriptor.canonical_name = charset->canonical_name;
-    descriptor.resource_uuid = charset->resource_uuid;
-    descriptor.default_collation_uuid =
-        charset->default_collation_uuid;
-    descriptor.default_collation_name = charset->default_collation_name;
-    descriptor.family_epoch = charset->family_epoch;
-    descriptor.family_version = charset->family_version;
-    descriptor.min_bytes = charset->min_bytes;
-    descriptor.max_bytes = charset->max_bytes;
-    descriptor.variable_width = charset->variable_width;
-  } else {
-    const auto* collation =
-        scratchbird::core::resources::FindResourceSeedCollation(image,
-                                                                 requested_name);
-    if (collation == nullptr) {
-      if (const auto ambiguity = alias_ambiguity(scratchbird::core::resources::ResourceSeedFamily::collation))
-        return *ambiguity;
-      return ResourceResolutionFailure(
-          request,
-          "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE",
-          "message_vector.item_not_found_or_does_not_exist",
-          "collation_not_found_or_not_visible");
-    }
-    descriptor.canonical_name = collation->canonical_name;
-    descriptor.resource_uuid = collation->resource_uuid;
-    descriptor.parent_resource_uuid = collation->charset_uuid;
-    descriptor.parent_canonical_name = collation->charset_name;
-    descriptor.family_epoch = collation->family_epoch;
-    descriptor.family_version = collation->family_version;
-    descriptor.default_for_parent = collation->default_for_charset;
-    descriptor.case_insensitive = collation->case_insensitive;
-    descriptor.accent_insensitive = collation->accent_insensitive;
-  }
-
-  if (descriptor.resource_uuid.is_nil() ||
-      descriptor.resource_epoch == 0 || descriptor.family_epoch == 0 ||
-      descriptor.family_version.empty() ||
-      (resource_class == "charset" &&
-       (descriptor.min_bytes == 0 ||
-        descriptor.max_bytes < descriptor.min_bytes)) ||
-      (resource_class == "collation" &&
-       descriptor.parent_resource_uuid.is_nil())) {
-    return ResourceResolutionFailure(
-        request,
-        "CATALOG.INVALID_INPUT",
-        "catalog.resource.descriptor_invalid",
-        descriptor.canonical_name);
-  }
+  const auto& descriptor = lookup.resource_descriptor;
 
   auto result = MakeApiBehaviorSuccess<EngineResolveNameResult>(
       request.context, "catalog.resolve_name");
@@ -218,77 +131,6 @@ bool NameRegistryMatchCanBeTemporaryTable(const NameRegistryEntry& match) {
   return ObjectClassCanBeTemporaryTable(match.object_class);
 }
 
-enum class TemporaryNameCandidateKind {
-  kNotVisible,
-  kCatalog,
-  kOwnedPrivate,
-};
-
-struct TemporaryNameCandidateClassification {
-  bool ok = false;
-  EngineApiDiagnostic diagnostic;
-  TemporaryNameCandidateKind kind = TemporaryNameCandidateKind::kNotVisible;
-};
-
-TemporaryNameCandidateClassification ClassifyTemporaryNameCandidate(
-    const EngineResolveNameRequest& request,
-    const std::string& object_uuid,
-    const MgaTemporaryTableVisibilityResult& visibility) {
-  TemporaryNameCandidateClassification classified;
-  if (!visibility.table_visible) {
-    classified.ok = true;
-    if (!visibility.known_temporary &&
-        !visibility.hidden_by_temporary_visibility) {
-      classified.kind = TemporaryNameCandidateKind::kCatalog;
-    }
-    return classified;
-  }
-  if (!visibility.table.temporary) {
-    if (!visibility.table.temporary_scope.empty() ||
-        !visibility.table.temporary_session_uuid.empty()) {
-      classified.diagnostic = MakeInvalidRequestDiagnostic(
-          "catalog.resolve_name",
-          "durable_table_namespace_invalid:" + object_uuid);
-      return classified;
-    }
-    classified.ok = true;
-    classified.kind = TemporaryNameCandidateKind::kCatalog;
-    return classified;
-  }
-  if (visibility.table.temporary_scope == "global" &&
-      visibility.table.temporary_session_uuid.empty()) {
-    if (!visibility.visible_to_session) {
-      classified.diagnostic = MakeInvalidRequestDiagnostic(
-          "catalog.resolve_name",
-          "global_temporary_table_namespace_not_visible:" + object_uuid);
-      return classified;
-    }
-    classified.ok = true;
-    classified.kind = TemporaryNameCandidateKind::kCatalog;
-    return classified;
-  }
-  if (visibility.table.temporary_scope == "private" &&
-      IsExactCanonicalSessionUuid(
-          visibility.table.temporary_session_uuid)) {
-    if (!IsExactCanonicalSessionUuid(
-            request.context.session_uuid)) {
-      classified.diagnostic = MakeInvalidRequestDiagnostic(
-          "catalog.resolve_name",
-          "temporary_table_session_namespace_invalid:" + object_uuid);
-      return classified;
-    }
-    classified.ok = true;
-    if (visibility.table.temporary_session_uuid ==
-        request.context.session_uuid) {
-      classified.kind = TemporaryNameCandidateKind::kOwnedPrivate;
-    }
-    return classified;
-  }
-  classified.diagnostic = MakeInvalidRequestDiagnostic(
-      "catalog.resolve_name",
-      "temporary_table_namespace_invalid:" + object_uuid);
-  return classified;
-}
 
 TemporaryFilteredNameMatches FilterTemporaryNameMatches(
     const EngineResolveNameRequest& request,
@@ -307,7 +149,7 @@ TemporaryFilteredNameMatches FilterTemporaryNameMatches(
       return filtered;
     }
     const auto classified = ClassifyTemporaryNameCandidate(
-        request, match.object_uuid, visibility);
+        request.context, match.object_uuid, visibility);
     if (!classified.ok) {
       filtered.ok = false;
       filtered.diagnostic = classified.diagnostic;
@@ -396,12 +238,8 @@ bool SafeSemanticOutputName(std::string_view name) {
   return true;
 }
 
-bool CanonicalSemanticObjectUuid(std::string_view value) {
-  const auto parsed = scratchbird::core::uuid::ParseTypedUuid(
-      scratchbird::core::platform::UuidKind::object,
-      std::string(value));
-  return parsed.ok() &&
-         scratchbird::core::uuid::UuidToString(parsed.value.value) == value;
+bool CanonicalSemanticObjectUuid(const EngineUuid& value) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(value);
 }
 
 EngineApiDiagnostic AttachRelationProjectionViewSemanticProjection(
@@ -446,7 +284,7 @@ EngineApiDiagnostic AttachRelationProjectionViewSemanticProjection(
         "catalog.resolve_name",
         "relation_projection_view_semantic_descriptor_invalid");
   }
-  std::set<std::string> semantic_identities = {
+  std::set<EngineUuid> semantic_identities = {
       view.view_uuid, semantic.descriptor_uuid};
   for (std::size_t index = 0; index < outputs.size(); ++index) {
     const auto& output = outputs[index];
@@ -658,7 +496,7 @@ EngineResolveNameResult EngineResolveName(const EngineResolveNameRequest& reques
             visibility.diagnostic);
       }
       const auto classified = ClassifyTemporaryNameCandidate(
-          request,
+          request.context,
           catalog_resolved.primary_object.uuid,
           visibility);
       if (!classified.ok) {

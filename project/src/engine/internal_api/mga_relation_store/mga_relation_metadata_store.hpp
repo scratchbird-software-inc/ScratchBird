@@ -27,7 +27,7 @@ namespace scratchbird::engine::internal_api {
 // Persisted relation metadata is decoded and cached here. Visibility remains
 // a projection supplied by the canonical MGA transaction/savepoint authority.
 using DescriptorFieldsByRelation =
-    std::map<std::string,
+    std::map<EngineUuid,
              std::vector<std::pair<std::string, std::string>>>;
 
 // Transitional MGA text sidecars must be completely readable before their
@@ -38,7 +38,7 @@ bool ReadCompleteMgaTextRecords(const std::string& path,
                                std::vector<std::string>* records);
 
 struct MgaMetadataCacheKey {
-  std::string database_uuid;
+  EngineUuid database_uuid;
   std::string metadata_path;
   std::uintmax_t metadata_file_size = 0;
   std::int64_t metadata_file_mtime_ticks = 0;
@@ -72,7 +72,7 @@ struct MgaMetadataCacheEntry {
   std::vector<CrudIndexRecord> indexes;
   std::vector<CrudSealedRelationDescriptorSnapshot>
       sealed_relation_descriptor_snapshots;
-  std::set<std::string> known_temporary_relation_uuids;
+  std::set<EngineUuid> known_temporary_relation_uuids;
   std::uint64_t max_event_sequence = 0;
 };
 
@@ -87,10 +87,10 @@ struct MgaMetadataSnapshotLoadResult {
 std::shared_ptr<const DescriptorFieldsByRelation>
 LoadDescriptorFieldsSnapshot(
     const EngineRequestContext& context,
-    std::string_view required_relation_uuid = {});
+    const EngineUuid& required_relation_uuid = {});
 DescriptorFieldsByRelation LoadDescriptorFieldsByRelation(
     const EngineRequestContext& context,
-    std::string_view required_relation_uuid = {});
+    const EngineUuid& required_relation_uuid = {});
 EngineApiDiagnostic PersistDescriptorFields(
     const EngineRequestContext& context,
     const std::string& relation_uuid,

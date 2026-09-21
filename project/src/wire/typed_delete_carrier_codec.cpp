@@ -17,6 +17,9 @@ bool Fail(TypedDeleteCarrierError* error, std::string_view field,
 bool Present(std::span<const byte> value) {
   return std::any_of(value.begin(), value.end(), [](byte b) { return b != 0; });
 }
+bool SystemUuid(const TypedUpdateUuid& value) {
+  return (value[6] & 0xf0u) == 0x70u && (value[8] & 0xc0u) == 0x80u;
+}
 void Put(std::vector<byte>& out, std::size_t offset, u64 value, unsigned width = 8) {
   for (unsigned i = 0; i < width; ++i) out[offset + i] = static_cast<byte>(value >> (i * 8));
 }
@@ -57,24 +60,24 @@ constexpr std::string_view result_domain = "ScratchBird.SblrDmlDeleteRowsResult.
 constexpr std::string_view journal_domain = "ScratchBird.SblrDmlDeleteRowsJournalRecord.V1";
 
 bool DescriptorValid(const TypedDeleteDescriptorCarrier& v, TypedDeleteCarrierError* e) {
-  if (!Present(v.descriptor_uuid)) return Fail(e, "descriptor_uuid");
-  if (!Present(v.authenticated_statement_receipt_uuid)) return Fail(e, "authenticated_statement_receipt_uuid");
-  if (!Present(v.operation_uuid)) return Fail(e, "operation_uuid");
-  if (!Present(v.owning_transaction_uuid)) return Fail(e, "owning_transaction_uuid");
-  if (!Present(v.statement_snapshot_uuid)) return Fail(e, "statement_snapshot_uuid");
-  if (!Present(v.catalog_snapshot_uuid)) return Fail(e, "catalog_snapshot_uuid");
-  if (!Present(v.security_context_uuid)) return Fail(e, "security_context_uuid");
-  if (!Present(v.security_snapshot_uuid)) return Fail(e, "security_snapshot_uuid");
-  if (!Present(v.target_relation_uuid)) return Fail(e, "target_relation_uuid");
-  if (!Present(v.target_relation_occurrence_uuid)) return Fail(e, "target_relation_occurrence_uuid");
-  if (!Present(v.predicate_expression_uuid)) return Fail(e, "predicate_expression_uuid");
-  if (!Present(v.row_policy_set_uuid)) return Fail(e, "row_policy_set_uuid");
-  if (!Present(v.constraint_set_uuid)) return Fail(e, "constraint_set_uuid");
-  if (!Present(v.trigger_set_uuid)) return Fail(e, "trigger_set_uuid");
-  if (!Present(v.deterministic_target_order_uuid)) return Fail(e, "deterministic_target_order_uuid");
-  if (!Present(v.resource_budget_uuid)) return Fail(e, "resource_budget_uuid");
-  if (!Present(v.recovery_token_uuid)) return Fail(e, "recovery_token_uuid");
-  if (!Present(v.builtin_operator_snapshot_uuid)) return Fail(e, "builtin_operator_snapshot_uuid");
+  if (!SystemUuid(v.descriptor_uuid)) return Fail(e, "descriptor_uuid");
+  if (!SystemUuid(v.authenticated_statement_receipt_uuid)) return Fail(e, "authenticated_statement_receipt_uuid");
+  if (!SystemUuid(v.operation_uuid)) return Fail(e, "operation_uuid");
+  if (!SystemUuid(v.owning_transaction_uuid)) return Fail(e, "owning_transaction_uuid");
+  if (!SystemUuid(v.statement_snapshot_uuid)) return Fail(e, "statement_snapshot_uuid");
+  if (!SystemUuid(v.catalog_snapshot_uuid)) return Fail(e, "catalog_snapshot_uuid");
+  if (!SystemUuid(v.security_context_uuid)) return Fail(e, "security_context_uuid");
+  if (!SystemUuid(v.security_snapshot_uuid)) return Fail(e, "security_snapshot_uuid");
+  if (!SystemUuid(v.target_relation_uuid)) return Fail(e, "target_relation_uuid");
+  if (!SystemUuid(v.target_relation_occurrence_uuid)) return Fail(e, "target_relation_occurrence_uuid");
+  if (!SystemUuid(v.predicate_expression_uuid)) return Fail(e, "predicate_expression_uuid");
+  if (!SystemUuid(v.row_policy_set_uuid)) return Fail(e, "row_policy_set_uuid");
+  if (!SystemUuid(v.constraint_set_uuid)) return Fail(e, "constraint_set_uuid");
+  if (!SystemUuid(v.trigger_set_uuid)) return Fail(e, "trigger_set_uuid");
+  if (!SystemUuid(v.deterministic_target_order_uuid)) return Fail(e, "deterministic_target_order_uuid");
+  if (!SystemUuid(v.resource_budget_uuid)) return Fail(e, "resource_budget_uuid");
+  if (!SystemUuid(v.recovery_token_uuid)) return Fail(e, "recovery_token_uuid");
+  if (!SystemUuid(v.builtin_operator_snapshot_uuid)) return Fail(e, "builtin_operator_snapshot_uuid");
   if (!v.descriptor_generation) return Fail(e, "descriptor_generation");
   if (!v.structural_occurrence_id) return Fail(e, "structural_occurrence_id");
   if (!v.operation_generation) return Fail(e, "operation_generation");
@@ -107,10 +110,10 @@ bool DescriptorValid(const TypedDeleteDescriptorCarrier& v, TypedDeleteCarrierEr
   return true;
 }
 bool ResultValid(const TypedDeleteResultCarrier& v, TypedDeleteCarrierError* e) {
-  if (!Present(v.delete_descriptor_uuid) || !v.delete_descriptor_generation ||
-      !Present(v.operation_uuid) || !Present(v.owning_transaction_uuid) ||
-      !v.owning_local_transaction_id || !Present(v.relation_uuid) ||
-      !v.relation_generation || !Present(v.publication_barrier_uuid) ||
+  if (!SystemUuid(v.delete_descriptor_uuid) || !v.delete_descriptor_generation ||
+      !SystemUuid(v.operation_uuid) || !SystemUuid(v.owning_transaction_uuid) ||
+      !v.owning_local_transaction_id || !SystemUuid(v.relation_uuid) ||
+      !v.relation_generation || !SystemUuid(v.publication_barrier_uuid) ||
       !v.publication_barrier_generation || !Present(v.effect_set_sha256) ||
       !Present(v.executor_evidence_sha256) || v.matched_count != v.deleted_count ||
       v.deleted_count > kTypedUpdateMaximumCandidateRows)
@@ -249,15 +252,16 @@ bool JournalBytes(const TypedDeleteJournalRecord& v, std::vector<byte>* out, Typ
   const auto state = v.lifecycle_state;
   const bool has_sp = Present(v.statement_savepoint_uuid);
   if (state < State::bound || state > State::aborted || !v.journal_sequence ||
-      !Present(v.database_uuid) || !Present(v.authenticated_statement_receipt_uuid) ||
-      !Present(v.owning_transaction_uuid) || !v.owning_local_transaction_id ||
-      !Present(v.operation_uuid) || !Present(v.recovery_token_uuid) || !v.recovery_generation ||
+      !SystemUuid(v.database_uuid) || !SystemUuid(v.authenticated_statement_receipt_uuid) ||
+      !SystemUuid(v.owning_transaction_uuid) || !v.owning_local_transaction_id ||
+      !SystemUuid(v.operation_uuid) || !SystemUuid(v.recovery_token_uuid) || !v.recovery_generation ||
       v.authenticated_statement_receipt_uuid != d.authenticated_statement_receipt_uuid ||
       v.owning_transaction_uuid != d.owning_transaction_uuid ||
       v.owning_local_transaction_id != d.owning_local_transaction_id ||
       v.operation_uuid != d.operation_uuid || v.recovery_token_uuid != d.recovery_token_uuid ||
       v.recovery_generation != d.recovery_generation ||
       has_sp != (v.statement_savepoint_generation != 0) ||
+      (has_sp && !SystemUuid(v.statement_savepoint_uuid)) ||
       (state == State::bound && has_sp) ||
       ((state == State::intent || state == State::prepared || state == State::published) && !has_sp) ||
       v.prior_result.has_value() != (state == State::prepared || state == State::published))

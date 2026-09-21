@@ -33,32 +33,32 @@ struct EngineDmlUpdateDatatypeOperatorAuthorityCaptureResultV1;
 struct EngineDmlUpdateDatatypeOperatorBindingRequestV1 {
   EngineRequestContext context;
   bool equality_required = false;
-  std::string left_descriptor_uuid;
+  EngineUuid left_descriptor_uuid;
   std::uint64_t left_descriptor_generation = 0;
-  std::string left_type_uuid;
+  EngineUuid left_type_uuid;
   std::uint64_t left_type_generation = 0;
-  std::string right_descriptor_uuid;
+  EngineUuid right_descriptor_uuid;
   std::uint64_t right_descriptor_generation = 0;
-  std::string right_type_uuid;
+  EngineUuid right_type_uuid;
   std::uint64_t right_type_generation = 0;
 };
 
 struct EngineDmlUpdateDatatypeOperatorBindingResultV1 {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
-  std::string datatype_snapshot_uuid;
+  EngineUuid datatype_snapshot_uuid;
   std::uint64_t datatype_catalog_generation = 0;
   std::uint64_t datatype_registry_generation = 0;
-  std::string boolean_descriptor_uuid;
+  EngineUuid boolean_descriptor_uuid;
   std::uint64_t boolean_descriptor_generation = 0;
-  std::string boolean_type_uuid;
+  EngineUuid boolean_type_uuid;
   std::uint64_t boolean_type_generation = 0;
   std::string boolean_codec_id;
   std::uint16_t boolean_codec_version = 0;
   std::uint64_t boolean_codec_generation = 0;
-  std::string builtin_operator_snapshot_uuid;
+  EngineUuid builtin_operator_snapshot_uuid;
   std::uint64_t builtin_operator_registry_generation = 0;
-  std::string equality_operator_uuid;
+  EngineUuid equality_operator_uuid;
   std::uint64_t equality_operator_generation = 0;
 };
 
@@ -104,7 +104,7 @@ class EngineDmlUpdateBuiltinOperatorSnapshotHandleV1 final {
 
 struct EngineDmlUpdateDatatypeOperatorAuthorityCaptureRequestV1 {
   EngineRequestContext context;
-  std::string authenticated_statement_receipt_uuid;
+  EngineUuid authenticated_statement_receipt_uuid;
   std::vector<std::uint8_t> exact_descriptor_dudc;
   std::vector<std::uint8_t> exact_assignment_vector_duav;
   std::vector<std::uint8_t> exact_predicate_vector_duev;

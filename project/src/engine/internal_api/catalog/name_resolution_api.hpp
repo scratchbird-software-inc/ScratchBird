@@ -10,6 +10,11 @@
 
 #include "api_types.hpp"
 #include "catalog/relation_projection_view.hpp"
+#include "datatype_operations.hpp"
+#include "../../../core/resources/collation_profile.hpp"
+#include <memory>
+
+namespace scratchbird::core::resources { class UnicodeCollationData; }
 
 namespace scratchbird::engine::internal_api {
 
@@ -18,6 +23,10 @@ namespace scratchbird::engine::internal_api {
 // result but never own, synthesize, or persist these descriptors.
 struct EngineResolvedResourceDescriptor {
   bool present = false;
+  EngineUuid database_uuid;
+  scratchbird::core::resources::CollationProfile comparison_profile =
+      scratchbird::core::resources::CollationProfile::unbound;
+  std::shared_ptr<const scratchbird::core::resources::UnicodeCollationData> unicode_collation;
   std::string resource_family;
   std::string canonical_name;
   EngineUuid resource_uuid;
@@ -38,6 +47,26 @@ struct EngineResolvedResourceDescriptor {
   bool accent_insensitive = false;
 };
 
+inline scratchbird::core::datatypes::DatatypeTextSeedAuthority TextSeedFromResource(
+    const EngineResolvedResourceDescriptor& resource) {
+  scratchbird::core::datatypes::DatatypeTextSeedAuthority seed;
+  seed.active = resource.present && resource.resource_family == "collation";
+  seed.database_uuid = resource.database_uuid;
+  seed.charset_uuid = resource.parent_resource_uuid;
+  seed.collation_uuid = resource.resource_uuid;
+  seed.resource_epoch = resource.resource_epoch;
+  seed.collation_epoch = resource.family_epoch;
+  seed.comparison_profile = resource.comparison_profile;
+  seed.unicode_collation = resource.unicode_collation;
+  seed.seed_pack_name = resource.seed_pack_name;
+  seed.seed_pack_version = resource.seed_pack_version;
+  seed.charset_name = resource.parent_canonical_name;
+  seed.collation_name = resource.canonical_name;
+  seed.collation_case_insensitive = resource.case_insensitive;
+  seed.collation_accent_insensitive = resource.accent_insensitive;
+  return seed;
+}
+
 // Engine-internal UUID lookup used when an already-bound descriptor is
 // admitted by DDL.  The lookup revalidates the database-scoped resource UUID
 // against the durable resource catalog and the exact active MGA transaction;
@@ -51,6 +80,14 @@ struct EngineResourceDescriptorLookupResult {
 EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
     const EngineRequestContext& context,
     const EngineUuid& resource_uuid,
+    const std::string& expected_resource_family);
+
+// Catalog-facing name lookup. Alias resolution and executable descriptor
+// projection share one admitted node/transaction/resource snapshot. It does
+// not grant SQL visibility or bypass the server's name/disclosure policy.
+EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByName(
+    const EngineRequestContext& context,
+    const std::string& name,
     const std::string& expected_resource_family);
 
 struct EngineTimezoneSeedAuthorityDescriptor {

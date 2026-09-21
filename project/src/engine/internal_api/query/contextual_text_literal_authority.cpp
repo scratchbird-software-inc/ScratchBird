@@ -126,6 +126,10 @@ bool SameTextSeed(
     const scratchbird::core::datatypes::DatatypeTextSeedAuthority& left,
     const scratchbird::core::datatypes::DatatypeTextSeedAuthority& right) {
   return left.active == right.active &&
+         left.database_uuid == right.database_uuid && left.charset_uuid == right.charset_uuid &&
+         left.collation_uuid == right.collation_uuid && left.resource_epoch == right.resource_epoch &&
+         left.collation_epoch == right.collation_epoch && left.comparison_profile == right.comparison_profile &&
+         bool(left.unicode_collation) == bool(right.unicode_collation) &&
          left.seed_pack_name == right.seed_pack_name &&
          left.seed_pack_version == right.seed_pack_version &&
          left.charset_name == right.charset_name &&
@@ -140,6 +144,8 @@ bool SameResolvedResourceDescriptor(
     const EngineResolvedResourceDescriptor& left,
     const EngineResolvedResourceDescriptor& right) {
   return left.present == right.present &&
+         left.database_uuid == right.database_uuid && left.comparison_profile == right.comparison_profile &&
+         bool(left.unicode_collation) == bool(right.unicode_collation) &&
          left.resource_family == right.resource_family &&
          left.canonical_name == right.canonical_name &&
          left.resource_uuid == right.resource_uuid &&
@@ -163,11 +169,27 @@ bool SameResolvedResourceDescriptor(
 }
 
 bool ValidComparisonResources(
+    const EngineRequestContext& context,
     const EngineContextualTextComparisonResourceSnapshotV2& resources,
     const sblr::ContextualTextLiteralDemandV2& demand,
     const sblr::ContextualTextLiteralProfileV2& profile,
     const EngineResolvedContextualTextTargetV2& target) {
-  return resources.charset_uuid == profile.charset_uuid &&
+  return resources.text_seed.database_uuid == context.database_uuid &&
+         core::uuid::IsEngineIdentityUuid(context.database_uuid) &&
+         resources.charset_resource.database_uuid == context.database_uuid &&
+         resources.collation_resource.database_uuid == context.database_uuid &&
+         resources.text_seed.charset_uuid == resources.charset_identity &&
+         resources.text_seed.collation_uuid == resources.collation_identity &&
+         resources.text_seed.resource_epoch == profile.resource_epoch &&
+         resources.text_seed.collation_epoch == profile.collation_generation &&
+         resources.text_seed.comparison_profile == resources.collation_resource.comparison_profile &&
+         resources.text_seed.comparison_profile != core::resources::CollationProfile::unbound &&
+         core::resources::ValidCollationProfile(resources.text_seed.comparison_profile,
+             resources.text_seed.collation_case_insensitive,resources.text_seed.collation_accent_insensitive) &&
+         bool(resources.text_seed.unicode_collation) ==
+             core::resources::UsesUnicodeRoot(resources.text_seed.comparison_profile) &&
+         bool(resources.collation_resource.unicode_collation) == bool(resources.text_seed.unicode_collation) &&
+         resources.charset_uuid == profile.charset_uuid &&
          resources.charset_generation == profile.charset_generation &&
          !resources.charset_name.empty() &&
          resources.charset_identity.bytes == profile.charset_uuid &&
@@ -355,19 +377,7 @@ bool ResolveLiveComparisonResources(
       collation.resource_descriptor.resource_epoch;
   resolved.collation_family_epoch =
       collation.resource_descriptor.family_epoch;
-  resolved.text_seed.active = true;
-  resolved.text_seed.seed_pack_name =
-      collation.resource_descriptor.seed_pack_name;
-  resolved.text_seed.seed_pack_version =
-      collation.resource_descriptor.seed_pack_version;
-  resolved.text_seed.charset_name =
-      collation.resource_descriptor.parent_canonical_name;
-  resolved.text_seed.collation_name =
-      collation.resource_descriptor.canonical_name;
-  resolved.text_seed.collation_case_insensitive =
-      collation.resource_descriptor.case_insensitive;
-  resolved.text_seed.collation_accent_insensitive =
-      collation.resource_descriptor.accent_insensitive;
+  resolved.text_seed = TextSeedFromResource(collation.resource_descriptor);
   resolved.charset_resource = charset.resource_descriptor;
   resolved.collation_resource = collation.resource_descriptor;
   resolved.target_projection_sha256 = profile.target_projection_sha256;
@@ -376,7 +386,7 @@ bool ResolveLiveComparisonResources(
   resolved.exact_public_relation_projection_v3 =
       target.exact_public_relation_projection_v3;
   resolved.exact_sbtltd02 = target.exact_sbtltd02;
-  if (!ValidComparisonResources(resolved, demand, profile, target)) {
+  if (!ValidComparisonResources(context, resolved, demand, profile, target)) {
     if (diagnostic != nullptr) {
       *diagnostic = Diagnostic(
           "CTB.TEXT.RESOURCE_EPOCH_MISMATCH",
@@ -400,7 +410,7 @@ bool ResolveComparisonResources(
   EngineContextualTextComparisonResourceSnapshotV2 retained;
   if (resolver.CopyComparisonResourceSnapshot(context, demand, target, profile,
                                               &retained)) {
-    if (!ValidComparisonResources(retained, demand, profile, target)) {
+    if (!ValidComparisonResources(context, retained, demand, profile, target)) {
       if (diagnostic != nullptr) {
         *diagnostic = Diagnostic(
             "CTB.TEXT.RESOURCE_EPOCH_MISMATCH",

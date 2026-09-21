@@ -10,7 +10,8 @@
 
 // SEARCH_KEY: SB_METRICS_HISTORY_BOOTSTRAP
 // Catalog/bootstrap descriptors for metric history objects and baseline
-// retention policies installed into new databases.
+// identity-free retention templates. Installation and UUID assignment belong
+// to the native catalog writer, not these definitions.
 
 #include "metric_retention_policy.hpp"
 
@@ -27,12 +28,12 @@ struct MetricCatalogBootstrapObject {
   bool engine_owned = true;
 };
 
-struct MetricRetentionBootstrapPolicyRow {
+struct MetricRetentionBootstrapDefinition {
   std::string catalog_path = "sys.metrics.retention_policies";
-  scratchbird::core::metrics::MetricRetentionPolicy policy;
+  scratchbird::core::metrics::MetricRetentionPolicyDefinition definition;
 };
 
 std::vector<MetricCatalogBootstrapObject> MetricHistoryBootstrapObjects();
-std::vector<MetricRetentionBootstrapPolicyRow> MetricRetentionBootstrapPolicyRows();
+std::vector<MetricRetentionBootstrapDefinition> MetricRetentionBootstrapDefinitions();
 
 }  // namespace scratchbird::catalog::bootstrap

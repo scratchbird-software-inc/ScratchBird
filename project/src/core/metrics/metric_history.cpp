@@ -41,15 +41,6 @@ MetricHistoryConfig& Config() {
   return config;
 }
 
-u64 Fnva64(const std::string& value) {
-  u64 hash = 1469598103934665603ull;
-  for (unsigned char c : value) {
-    hash ^= c;
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
 std::string HexEncode(const std::string& value) {
   std::ostringstream out;
   out << std::hex << std::setfill('0');
@@ -299,119 +290,6 @@ void WriteEvidence(std::ostream& out, const MetricRetentionEvidenceRecord& evide
 u64 MetricHistoryNowMicroseconds() {
   const auto now = std::chrono::system_clock::now().time_since_epoch();
   return static_cast<u64>(std::chrono::duration_cast<std::chrono::microseconds>(now).count());
-}
-
-std::string CanonicalMetricLabels(const MetricLabelSet& labels) {
-  std::vector<std::pair<std::string, std::string>> sorted;
-  for (const auto& label : labels) {
-    sorted.push_back({label.key, label.value});
-  }
-  std::sort(sorted.begin(), sorted.end());
-  std::ostringstream out;
-  for (const auto& label : sorted) {
-    out << label.first << '=' << label.second << ';';
-  }
-  return out.str();
-}
-
-std::string StableV7LikeMetricUuid(const std::string& key) {
-  const u64 h1 = Fnva64(key);
-  const u64 h2 = Fnva64("scratchbird.metric.history:" + key);
-  std::ostringstream out;
-  out << std::hex << std::setfill('0')
-      << std::setw(8) << static_cast<unsigned int>((h1 >> 32) & 0xffffffffu) << '-'
-      << std::setw(4) << static_cast<unsigned int>((h1 >> 16) & 0xffffu) << '-'
-      << std::setw(4) << static_cast<unsigned int>(0x7000u | (h1 & 0x0fffu)) << '-'
-      << std::setw(4) << static_cast<unsigned int>(0x8000u | ((h2 >> 48) & 0x3fffu)) << '-'
-      << std::setw(12) << (h2 & 0x0000ffffffffffffull);
-  return out.str();
-}
-
-std::string StableMetricSeriesKey(const MetricDescriptor& descriptor,
-                                  const MetricLabelSet& labels,
-                                  const std::string& database_uuid,
-                                  const std::string& node_uuid,
-                                  const std::string& cluster_uuid) {
-  std::ostringstream out;
-  out << descriptor.family << '|'
-      << descriptor.namespace_path << '|'
-      << descriptor.producer_owner << '|'
-      << (descriptor.cluster_only ? "cluster" : "local") << '|'
-      << database_uuid << '|'
-      << node_uuid << '|'
-      << cluster_uuid << '|'
-      << CanonicalMetricLabels(labels);
-  return out.str();
-}
-
-MetricSeriesIdentity MakeMetricSeriesIdentity(const MetricDescriptor& descriptor,
-                                              MetricLabelSet labels,
-                                              const MetricRetentionPolicy& policy,
-                                              std::string database_uuid,
-                                              std::string node_uuid,
-                                              std::string cluster_uuid) {
-  MetricSeriesIdentity series;
-  series.metric_family = descriptor.family;
-  series.namespace_path = descriptor.namespace_path;
-  series.producer_owner = descriptor.producer_owner;
-  series.scope_class = descriptor.cluster_only ? "cluster" : "local";
-  series.database_uuid = std::move(database_uuid);
-  series.node_uuid = std::move(node_uuid);
-  series.cluster_uuid = std::move(cluster_uuid);
-  series.labels = std::move(labels);
-  series.label_hash = StableV7LikeMetricUuid(CanonicalMetricLabels(series.labels));
-  bool sensitive = false;
-  for (const auto& label : descriptor.labels) {
-    sensitive = sensitive || label.sensitive;
-  }
-  series.redaction_class = sensitive ? "contains_sensitive_labels" : "none";
-  series.retention_policy_uuid = policy.policy_uuid;
-  series.series_key = StableMetricSeriesKey(descriptor, series.labels, series.database_uuid, series.node_uuid, series.cluster_uuid);
-  series.series_uuid = StableV7LikeMetricUuid(series.series_key);
-  return series;
-}
-
-MetricRawSampleRecord MakeMetricRawSampleRecord(const MetricSeriesIdentity& series,
-                                                const MetricValue& value,
-                                                u64 observation_time_microseconds) {
-  const u64 now = MetricHistoryNowMicroseconds();
-  MetricRawSampleRecord sample;
-  sample.series_uuid = series.series_uuid;
-  sample.metric_family = series.metric_family;
-  sample.labels = series.labels;
-  sample.observation_time_microseconds = observation_time_microseconds == 0 ? now : observation_time_microseconds;
-  sample.collection_time_microseconds = now;
-  sample.publish_time_microseconds = now;
-  sample.clock_quality = "local_monotonic";
-  sample.freshness_class = "current";
-  sample.value = value;
-  sample.sample_uuid = StableV7LikeMetricUuid(series.series_uuid + ":" + std::to_string(sample.observation_time_microseconds) + ":" + std::to_string(sample.value.value) + ":" + sample.value.state_text);
-  return sample;
-}
-
-MetricRetentionEvidenceRecord MakeMetricRetentionEvidenceRecord(std::string operation,
-                                                                std::string policy_uuid,
-                                                                std::string series_uuid,
-                                                                std::string metric_family,
-                                                                u64 cutoff_time_microseconds,
-                                                                u64 rows_affected,
-                                                                std::string actor_uuid,
-                                                                std::string transaction_uuid,
-                                                                std::string decision,
-                                                                std::string detail) {
-  MetricRetentionEvidenceRecord evidence;
-  evidence.operation = std::move(operation);
-  evidence.policy_uuid = std::move(policy_uuid);
-  evidence.series_uuid = std::move(series_uuid);
-  evidence.metric_family = std::move(metric_family);
-  evidence.cutoff_time_microseconds = cutoff_time_microseconds;
-  evidence.rows_affected = rows_affected;
-  evidence.actor_uuid = std::move(actor_uuid);
-  evidence.transaction_uuid = std::move(transaction_uuid);
-  evidence.decision = std::move(decision);
-  evidence.detail = std::move(detail);
-  evidence.evidence_uuid = StableV7LikeMetricUuid(evidence.operation + ":" + evidence.policy_uuid + ":" + std::to_string(MetricHistoryNowMicroseconds()) + ":" + evidence.detail);
-  return evidence;
 }
 
 MetricValidationResult ConfigureMetricHistoryPersistence(std::string history_path,
@@ -679,8 +557,12 @@ MetricValidationResult WriteMetricHistoryStore(const std::string& path, const Me
 }
 
 MetricValidationResult GenerateMetricRollups(const std::string& path, MetricRollupGrain grain) {
+  const u64 window_seconds = MetricRollupGrainWindowSeconds(grain);
+  if (window_seconds == 0) {
+    return MetricError("METRIC.RETENTION_POLICY_INVALID", "invalid_rollup_grain");
+  }
   MetricHistoryStore store = LoadOrSeedStore(path, BaselineMetricRetentionPolicies());
-  const u64 window_microseconds = MetricRollupGrainWindowSeconds(grain) * 1000000ull;
+  const u64 window_microseconds = window_seconds * 1000000ull;
   std::map<std::pair<std::string, u64>, std::vector<MetricRawSampleRecord>> groups;
   for (const auto& sample : store.raw_samples) {
     const u64 window = (sample.observation_time_microseconds / window_microseconds) * window_microseconds;
@@ -756,9 +638,9 @@ MetricValidationResult ApplyMetricRetentionCleanup(const std::string& path,
       kept_samples.push_back(sample);
       continue;
     }
-    const u64 retention_microseconds = policy.raw_retention_seconds * static_cast<u64>(1000000);
-    const u64 cutoff = now_microseconds - std::min<u64>(now_microseconds, retention_microseconds);
-    if (sample.observation_time_microseconds < cutoff && removed < policy.purge_batch_limit) {
+    if (MetricRetentionTimeExpired(sample.observation_time_microseconds,
+                                   now_microseconds, policy.raw_retention_seconds) &&
+        removed < policy.purge_batch_limit) {
       ++removed;
       continue;
     }

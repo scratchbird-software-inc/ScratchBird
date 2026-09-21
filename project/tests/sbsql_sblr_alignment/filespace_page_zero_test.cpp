@@ -5,6 +5,7 @@
 #include "native_index_btree_page.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "catalog_schema_definition.hpp"
+#include "catalog_metric_retention_policy.hpp"
 #include "transaction_inventory_page.hpp"
 #include "database_dirty_manifest.hpp"
 #include "native_checkpoint_selection.hpp"
@@ -2379,6 +2380,93 @@ void CanonicalCatalogLeafStaging(){using E=db::NativeCatalogLeafStageError;using
     Check(bytes()==expected&&db::DecodeNativeCatalogLeaf(bytes()).ok(),"reopened canonical rows and metadata");empty(stage(budget));Check(bytes()==expected,"read-only destination unchanged");
   }
 }
+void CanonicalRowDataStaging(){using E=db::NativeRowDataStageError;using S=page::NativeAllocationState;
+  for(unsigned p=0;p<5;++p)for(unsigned role:{5u,8u,10u}){const unsigned q=(p+1)%5;const bool primary=role<=4;
+    Fixture fixture;disk::FileDevice first,second;auto z1=Example(p,primary?role:1),z2=Example(q,role);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
+    z1.free_pages=z2.free_pages=z1.preallocated_pages=z2.preallocated_pages=0;
+    const auto path1=(fixture.root/"row-stage-primary").string(),path2=(fixture.root/"row-stage-secondary").string();
+    Check(first.Open(path1,disk::FileOpenMode::create_new).ok()&&second.Open(path2,disk::FileOpenMode::create_new).ok(),"own row-data staging filespaces");
+    const byte pad=0;Check(first.WriteAt(64*sizes[p]-1,&pad,1).ok()&&second.WriteAt(64*sizes[q]-1,&pad,1).ok(),"actual row-data staging capacity");
+    auto& target=primary?first:second;const auto profile=primary?p:q;const auto fs=primary?Id(2):Id(7);const auto& zero=primary?z1:z2;
+    auto inv=InventoryExample(p);inv.inventory.next_local_transaction_id=18;inv.inventory.next_commit_sequence=2;
+    auto& active=inv.inventory.entries[0];active.identity.local_id=mga::MakeLocalTransactionId(13);active.identity.transaction_uuid.value=Id(162);active.state=mga::TransactionState::active;active.commit_sequence=0;
+    auto committed=active;committed.identity.local_id=mga::MakeLocalTransactionId(17);committed.identity.transaction_uuid.value=Id(98);committed.state=mga::TransactionState::committed;committed.commit_sequence=1;inv.inventory.entries.push_back(committed);
+    const auto owner=inv.inventory.entries.front().identity;auto cp=CheckpointExample(p);const auto seed=LeafExample(profile);page::NativeRowDataPage leaf{seed.header,seed.body};leaf.header.page_type=0x0100;leaf.header.filespace_uuid=fs;
+    page::NativeAllocationMap map;map.header={sizes[profile],3,Id(1),fs,Id(70),13,103,0,Profile(profile)};map.object_uuid=Id(43);map.map_generation=5;map.capacity_generation=6;map.total_pages=64;map.creator_transaction_uuid=Id(98);map.creator_local_transaction_id=17;map.states.assign(64,S::quarantined);
+    for(unsigned n:{0u,13u,21u}){page::NativeAllocationRecord r;r.page_number=n;r.allocation_uuid=Id(120+n);r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;map.states[n]=S::allocated;
+      if(n==0){r.page_uuid=zero.page_uuid;r.page_generation=zero.page_generation;r.page_type=primary?1:2;r.owner_uuid=fs;}
+      if(n==13){r.page_uuid=map.header.page_uuid;r.page_generation=103;r.page_type=3;r.owner_uuid=map.object_uuid;}
+      if(n==21){r.page_uuid=leaf.header.page_uuid;r.page_generation=7;r.page_type=0x0100;r.owner_uuid=leaf.body.relation_uuid.value;r.creator_transaction_uuid=Id(162);r.creator_local_transaction_id=13;map.states[n]=S::reserved;}
+      map.records.push_back(r);}
+    page::NativeFilespaceDirectory directory;directory.header={sizes[p],9,Id(1),Id(2),Id(80),15,105,0,Profile(p)};directory.object_uuid=Id(45);directory.directory_generation=5;directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=2;
+    for(const auto* z:{&z1,&z2})directory.records.push_back({z->bootstrap,Id(z==&z1?190:191),z->page_uuid,z->page_generation,z->root_set_generation,z->total_pages,0,{}});
+    const auto put=[&](auto& file,u64 number,unsigned size,const Bytes& bytes){const auto io=file.WriteAt(number*size,bytes.data(),bytes.size());Check(io.ok()&&io.bytes_transferred==bytes.size()&&file.Sync().ok(),"persist row-data staging fixture bytes");};
+    const auto persist=[&](){const auto ib=InventoryOracle(inv,13,13,13),ab=AllocationOracle(map),dbb=DirectoryOracle(directory);
+      cp.roots[0].page=InventoryRef(inv);cp.roots[0].object_uuid=inv.object_uuid;cp.roots[0].sha256=WholeRootHash(ib);
+      cp.roots[2].page={Id(2),15,105,Profile(p)};cp.roots[2].object_uuid=Id(45);cp.roots[2].sha256=WholeRootHash(dbb);
+      if(primary){cp.roots[3].page={fs,13,103,Profile(profile)};cp.roots[3].object_uuid=Id(43);cp.roots[3].sha256=WholeRootHash(ab);}
+      put(first,0,sizes[p],Oracle(z1));put(second,0,sizes[q],Oracle(z2));put(first,14,sizes[p],ib);put(first,15,sizes[p],dbb);put(target,13,sizes[profile],ab);put(first,19,sizes[p],CheckpointOracle(cp));};
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}};
+    const u64 budget=3*sizes[p]+3*sizes[profile];const Bytes blank(sizes[profile],0),expected=LeafOracle({leaf.header,leaf.body});
+    const auto reset=[&](){put(target,21,sizes[profile],blank);};
+    const auto stage=[&](u64 limit){return db::StageNativeRowDataPageFromOpenDevices(devices,CheckpointRef(cp),owner,leaf,limit);};
+    const auto empty=[&](const auto& r){Check(!r.ok()&&!r.receipt,"failed stage returns no receipt");};
+    const auto bytes=[&](){Bytes b(sizes[profile]);const auto r=target.ReadAt(21*sizes[profile],b.data(),b.size());Check(r.ok()&&r.bytes_transferred==b.size(),"independent actual staged bytes");return b;};
+    persist();reset();reads=observed_full_digests=0;observed_allocations=0;stage_writes=stage_syncs=0;track_reads=count_allocations=count_full_digests=true;
+    auto result=stage(budget);track_reads=count_allocations=count_full_digests=false;const auto nr=reads,nf=observed_full_digests;const auto na=observed_allocations;
+    if(!result.ok())std::cerr<<"stage error="<<static_cast<int>(result.error)<<" checkpoint="<<static_cast<int>(result.checkpoint_error)<<" allocation="<<static_cast<int>(result.allocation_error)<<" leaf="<<static_cast<int>(result.page_error)<<std::endl;
+    Check(result.ok()&&stage_writes==1&&stage_syncs==1&&result.receipt->allocation_uuid==Id(141)&&result.receipt->page_uuid==leaf.header.page_uuid&&result.receipt->transaction.transaction_uuid.value==Id(162)&&result.receipt->page.filespace_uuid==fs&&result.receipt->sha256==WholeRootHash(expected)&&bytes()==expected,"actual reserved canonical row-data receipt and independent bytes");
+    stage_writes=stage_syncs=0;result=stage(budget);Check(result.ok()&&!stage_writes&&stage_syncs==1,"exact idempotent stage retry still syncs");
+    auto conflicting=expected;conflicting.back()^=1;put(target,21,sizes[profile],conflicting);empty(stage(budget));Check(bytes()==conflicting,"different nonzero destination preserved");
+    reset();empty(stage(budget-1));Check(bytes()==blank,"budget exhausted before any write");
+    if(p==0&&role==5){
+      for(unsigned long n=0;n<=na;++n){reset();allocation_budget=n;result=stage(budget);allocation_budget=-1;if(result.ok())Check(bytes()==expected,"allocation recovery exact staging");else{empty(result);const auto actual=bytes();Check(actual==blank||actual==expected,"allocation failure preserves reserved preimage or written staging, never grants publication");}if(n==na)Check(result.ok(),"allocation sweep terminal staging success");}
+      for(unsigned n=1;n<=nr;++n){reset();reads=0;read_fault=n;track_reads=true;result=stage(budget);track_reads=false;Check(!read_fault,"staging read failure consumed");empty(result);}
+      for(unsigned n=1;n<=nf;++n){reset();full_digest_fault=n;result=stage(budget);Check(!full_digest_fault,"staging full hash fault consumed");empty(result);Check(bytes()==blank,"hash failure before write");}
+      for(unsigned mode=1;mode<=5;++mode){reset();hash_fault=mode;result=stage(budget);Check(!hash_fault,"staging multipart provider fault consumed");empty(result);Check(bytes()==blank,"provider failure before write");}
+      for(unsigned mode=1;mode<=2;++mode){reset();stage_write_fault=mode;result=stage(budget);Check(!stage_write_fault,"actual write fault consumed");empty(result);if(mode==2){const auto partial=bytes();empty(stage(budget));Check(bytes()==partial,"partial destination preserved for recovery");}}
+      reset();stage_sync_fault=1;result=stage(budget);Check(!stage_sync_fault,"actual stage sync failure consumed");empty(result);Check(bytes()==expected&&stage(budget).ok(),"sync failure retry revalidates existing exact image");
+      reset();reads=0;stage_corrupt_read=nr;track_reads=true;result=stage(budget);track_reads=false;Check(!stage_corrupt_read,"actual final readback corruption injected");empty(result);Check(result.error==E::readback_mismatch&&bytes()==expected,"readback corruption never certifies written image");
+      std::cout<<"row-data stage allocations="<<na<<" reads="<<nr<<" full digests="<<nf<<std::endl;
+    }
+    reset();const auto original_map=map;
+    for(const auto state:{S::free,S::allocated,S::reusable_pending_mga,S::reusable_free,S::compacting,S::quarantined,S::preallocated}){map=original_map;map.states[21]=state;if(state==S::free)map.records.pop_back();persist();empty(stage(budget));Check(bytes()==blank,"only actual reservation grants stage");}
+    map=original_map;for(unsigned n=0;n<5;++n){map=original_map;auto& r=map.records.back();if(n==0)r.owner_uuid=Id(201);if(n==1)r.page_uuid=Id(202);if(n==2)r.page_generation++;if(n==3)r.page_type=512;if(n==4){r.creator_transaction_uuid=Id(98);r.creator_local_transaction_id=17;}persist();result=stage(budget);empty(result);Check(result.error==E::reservation_mismatch&&bytes()==blank,"exact reserved owner/page/type/creator binding");}
+    map=original_map;persist();auto wrong_owner=owner;wrong_owner.transaction_uuid.value=Id(203);empty(db::StageNativeRowDataPageFromOpenDevices(devices,CheckpointRef(cp),wrong_owner,leaf,budget));Check(bytes()==blank,"wrong active owner cannot stage");
+    for(unsigned n=0;n<4;++n){map=original_map;auto changed=leaf;if(n==0)map.records.back().allocation_uuid=map.records.front().allocation_uuid;else{const auto id=n==1?map.records.front().page_uuid:n==2?cp.header.page_uuid:directory.header.page_uuid;map.records.back().page_uuid=changed.header.page_uuid=id;}persist();result=db::StageNativeRowDataPageFromOpenDevices(devices,CheckpointRef(cp),owner,changed,budget);empty(result);Check(result.error==E::reservation_mismatch&&bytes()==blank,"duplicate allocation/page and known control UUIDs cannot stage");}map=original_map;
+    map.records.back().creator_transaction_uuid=Id(98);map.records.back().creator_local_transaction_id=17;persist();result=db::StageNativeRowDataPageFromOpenDevices(devices,CheckpointRef(cp),committed.identity,leaf,budget);empty(result);Check(result.error==E::creator_not_active&&bytes()==blank,"committed transaction cannot perform new staging");map=original_map;persist();
+    inv.inventory.entries[0].rollback_only=true;persist();result=stage(budget);empty(result);Check(result.error==E::creator_rollback_only&&bytes()==blank,"rollback-only active owner cannot stage");inv.inventory.entries[0].rollback_only=false;persist();
+    const auto pristine=leaf;
+    for(unsigned fault=0;fault<4;++fault){leaf=pristine;auto& row=leaf.body.rows.back();
+      if(fault==0)row.transaction_uuid.value=Id(203);
+      if(fault==1)row.local_transaction_id=99;
+      if(fault==2){row.deleted=true;row.transaction_uuid.value=Id(203);}
+      if(fault==3){row.deleted=true;row.cells[0].value.type_id=static_cast<scratchbird::core::datatypes::CanonicalTypeId>(0xffffffffu);}
+      stage_writes=stage_syncs=0;result=stage(budget);empty(result);
+      Check(result.error==(fault==3?E::page_failure:E::row_creator_mismatch)&&!stage_writes&&!stage_syncs&&bytes()==blank,"all retained rows validated before staging");}
+    leaf=pristine;
+    for(unsigned flag:{1u,2u,4u,8u}){leaf.header.flags=flag;result=stage(budget);empty(result);Check(result.error==E::header_requires_authority&&bytes()==blank,"row header flags cannot grant policy");}
+    leaf=pristine;leaf.body.next_page_number=1;result=stage(budget);empty(result);Check(result.error==E::page_failure&&bytes()==blank,"prototype unbound page links cannot stage");leaf=pristine;
+    leaf.body.rows.back().transaction_uuid.value=Id(98);leaf.body.rows.back().local_transaction_id=17;
+    result=stage(budget);Check(result.ok()&&bytes()==LeafOracle({leaf.header,leaf.body}),"retained committed row creator need not be active");reset();
+    const auto current_inventory=inv;auto rolled_back=inv.inventory.entries.front();rolled_back.identity.local_id=mga::MakeLocalTransactionId(18);
+    rolled_back.identity.transaction_uuid.value=Id(204);rolled_back.state=mga::TransactionState::rolled_back;rolled_back.commit_sequence=0;
+    inv.inventory.next_local_transaction_id=19;inv.inventory.entries.push_back(rolled_back);persist();
+    leaf.body.rows.back().transaction_uuid=rolled_back.identity.transaction_uuid;leaf.body.rows.back().local_transaction_id=18;leaf.body.rows.back().deleted=true;
+    result=stage(budget);Check(result.ok()&&bytes()==LeafOracle({leaf.header,leaf.body}),"retained rolled-back row is preserved without a visibility claim");
+    reset();inv=current_inventory;persist();leaf=pristine;
+    result=stage(budget);Check(result.ok(),"final actual row-data staging");const auto target_path=primary?path1:path2;
+    Check(target.Close().ok()&&target.Open(target_path,disk::FileOpenMode::open_existing_read_only).ok(),"independent read-only stage reopen");
+    Check(bytes()==expected&&page::DecodeNativeRowDataPage(bytes()).ok(),"reopened canonical row-data image");
+    const page::NativeRowDataReference reference{leaf.body.relation_uuid.value,{fs,21,7,Profile(profile)},leaf.header.page_uuid};
+    const auto retained=page::ReadNativeRowDataPageFromOpenDevice(target,Id(1),reference);
+    Check(retained.ok()&&retained.bytes==expected,"actual reopened native row reader");
+    auto wrong_reference=reference;wrong_reference.relation_uuid=Id(200);
+    const auto denied=page::ReadNativeRowDataPageFromOpenDevice(target,Id(1),wrong_reference);
+    Check(denied.error==page::NativeRowDataError::binding_mismatch&&!denied.page&&denied.bytes.empty(),"reopened relation identity bound to caller");
+empty(stage(budget));Check(bytes()==expected,"read-only destination unchanged");
+  }
+}
 Bytes SelectionOracle(const db::NativeCheckpointSelection&);
 void CanonicalCatalogRootStaging(){using E=db::NativeCatalogRootStageError;using S=page::NativeAllocationState;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=4;++role)for(unsigned kind:{2u,6u,7u,8u}){
@@ -2968,7 +3056,7 @@ struct CatalogTestPin {
   }
   ~CatalogTestPin(){mga::RevokePublishedSnapshotVector(published.descriptor.snapshot_uuid);mga::ReleasePublishedSnapshotVector(published.descriptor.snapshot_uuid);}
 };
-void CanonicalCatalogVersionStaging(){using E=db::NativeCatalogVersionStageError;using S=page::NativeAllocationState;
+void CanonicalCatalogVersionStaging(bool metric_policy=false){using E=db::NativeCatalogVersionStageError;using S=page::NativeAllocationState;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=5;++role){const unsigned q=(p+1)%5;const bool primary=role<=4;
     Fixture fixture;disk::FileDevice first,second;auto z1=Example(p,primary?role:1),z2=Example(q,5);z2.bootstrap.filespace_uuid=Id(7);z2.page_uuid=Id(8);for(auto& root:z2.roots)root.filespace_uuid=Id(7);
     z1.free_pages=z2.free_pages=z1.preallocated_pages=z2.preallocated_pages=0;
@@ -2981,6 +3069,18 @@ void CanonicalCatalogVersionStaging(){using E=db::NativeCatalogVersionStageError
     auto committed=active;committed.identity.local_id=mga::MakeLocalTransactionId(17);committed.identity.transaction_uuid.value=Id(98);committed.state=mga::TransactionState::committed;committed.commit_sequence=1;inv.inventory.entries.push_back(committed);
     const auto owner=inv.inventory.entries.front().identity;auto cp=CheckpointExample(p);auto leaf=LeafExample(profile);leaf.header.filespace_uuid=fs;
     auto source_leaf=LeafExample(p);source_leaf.header.page_number=source_leaf.body.page_number=30;source_leaf.header.page_uuid=Id(151);
+    const auto bind_policy=[](auto& metadata,const catalog::CatalogMetricRetentionPolicy* prior=nullptr){
+      catalog::CatalogMetricRetentionPolicy record;
+      if(prior)record=*prior;
+      else {record.origin_transaction_uuid=metadata.creator_transaction_uuid;record.origin_local_transaction_id=metadata.creator_local_transaction_id;record.policy.policy_name="actual-native-policy";}
+      record.policy.policy_uuid=metadata.record.header.object_uuid.value;record.policy.generation=metadata.definition_version;
+      metadata.record.header.kind=catalog::CatalogRecordKind::policy;metadata.record.header.parent_uuid.kind=platform::UuidKind::object;
+      metadata.default_name_uuid={platform::UuidKind::object,Id(231)};metadata.name_vector_uuid={platform::UuidKind::object,Id(232)};metadata.object_subtype="metric_retention";
+      const auto payload=catalog::EncodeCatalogMetricRetentionPolicy(record);Check(payload.ok(),"encode actual metric policy definition");
+      metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
+    };
+    if(metric_policy){auto metadata=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(metadata.ok(),"source metadata for native policy");
+      bind_policy(metadata.record);const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"native metric family source binding");source_leaf.body.rows[0].cells[0].value.payload=encoded.bytes;}
     auto catalog_root=RootExample(p);catalog_root.creator_transaction_uuid=Id(98);
     catalog_root.roots[0].page.page_number=30;
     leaf.body.rows.clear();
@@ -3011,6 +3111,7 @@ void CanonicalCatalogVersionStaging(){using E=db::NativeCatalogVersionStageError
     auto decoded=catalog::DecodeCatalogMetadataVersion(source_leaf.body.rows[0].cells[0].value.payload);Check(decoded.ok(),"decode source metadata fixture");
     db::NativeCatalogVersionMutation request;request.relation_uuid=leaf.body.relation_uuid;request.page_number=21;request.transaction=owner;request.metadata=decoded.record;
     request.metadata.record.header.row_uuid.value=Id(210);request.metadata.record.header.object_uuid.value=Id(211);
+    if(metric_policy)bind_policy(request.metadata);
     const auto create=request;const auto source_bytes=actual(first,30,sizes[p]);const auto root_bytes=actual(first,12,sizes[p]);const auto zero_bytes=actual(first,0,sizes[p]);
     const auto stage=[&](u64 limit){return db::StageNativeCatalogVersionFromOpenDevices(devices,CheckpointRef(cp),2,1,{Id(101),{}},snapshot.pin,request,leaf,limit);};
     const auto empty=[&](const auto& r){Check(!r.ok()&&!r.row&&!r.stage.receipt,"failed version staging returns no receipt");};
@@ -3030,9 +3131,38 @@ void CanonicalCatalogVersionStaging(){using E=db::NativeCatalogVersionStageError
     };
     reset();auto result=stage(budget);verify(result,1,platform::Uuid{},false);
     reset();request.metadata=decoded.record;request.expected_version_uuid=Id(170);request.metadata.definition_version=2;
+    if(metric_policy){const auto origin=catalog::DecodeCatalogMetricRetentionPolicy(decoded.record.record.payload);Check(origin.ok(),"load persisted policy origin");bind_policy(request.metadata,&*origin.record);}
     result=stage(budget);verify(result,2,Id(170),false);
     reset();request.metadata.record.header.deleted=true;request.metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;request.metadata.status=catalog::CatalogObjectStatus::retired;request.metadata.retired_transaction_uuid=owner.transaction_uuid;
     result=stage(budget);verify(result,2,Id(170),true);
+    if(metric_policy){
+      const auto original=catalog::DecodeCatalogMetricRetentionPolicy(decoded.record.record.payload);Check(original.ok(),"retained metric origin");
+      request.metadata=decoded.record;request.metadata.definition_version=2;bind_policy(request.metadata,&*original.record);
+      const auto replacement=request;
+      for(unsigned bad=0;bad<4;++bad){reset();request=replacement;
+        auto changed=catalog::DecodeCatalogMetricRetentionPolicy(request.metadata.record.payload);Check(changed.ok(),"replacement metric payload");
+        if(bad==0)changed.record->origin_transaction_uuid.value=Id(240);
+        if(bad==1)--changed.record->origin_local_transaction_id;
+        if(bad==2)changed.record->policy.scope="node";
+        if(bad==3){request.metadata.object_subtype="generic";request.metadata.record.payload="opaque-other-policy";}
+        else {const auto payload=catalog::EncodeCatalogMetricRetentionPolicy(*changed.record);Check(payload.ok(),"changed origin individually well-formed");request.metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());}
+        Check(catalog::EncodeCatalogMetadataVersion(request.metadata).ok(),"origin attack has valid common envelope");
+        const auto refused=stage(budget);empty(refused);Check(refused.error==E::stale_version&&actual(target,21,sizes[profile])==blank,"native checkpoint writer rejects changed policy origin/scope/family before writes");unchanged();
+      }
+      reset();request=replacement;request.metadata.authority_scope=catalog::CatalogAuthorityScope::cluster;
+      empty(stage(budget));Check(actual(target,21,sizes[profile])==blank,"local native writer cannot create cluster policy authority");
+      request=replacement;
+      if(p==0&&role==1){
+        for(unsigned mode=1;mode<=2;++mode){reset();stage_write_fault=mode;empty(stage(budget));Check(!stage_write_fault,"policy physical write failure consumed");unchanged();}
+        reset();stage_sync_fault=1;empty(stage(budget));Check(!stage_sync_fault,"policy physical sync failure consumed");unchanged();
+      }
+      reset();result=stage(budget);verify(result,2,Id(170),false);
+      const auto retained=db::DecodeNativeCatalogLeaf(actual(target,21,sizes[profile]));
+      const auto final_policy=catalog::DecodeCatalogMetricRetentionPolicy(retained.metadata.begin()->second.record.payload);
+      Check(final_policy.ok()&&final_policy.record->policy.generation==2&&final_policy.record->policy.policy_uuid==original.record->policy.policy_uuid&&
+        final_policy.record->origin_transaction_uuid.value==original.record->origin_transaction_uuid.value&&final_policy.record->origin_local_transaction_id==13,"actual stored policy preserves binary identity and original creator");
+      continue;
+    }
     for(unsigned bad=0;bad<7;++bad){reset();request=create;
       if(bad==0)request.metadata.record.header.object_uuid.value=Id(180);
       if(bad==1)request.metadata.record.header.row_uuid.value=Id(160);
@@ -4209,6 +4339,10 @@ int main(int argc,char** argv) {
   if(argc==2&&std::string_view(argv[1])=="--catalog-version-stage-only"){
     try{CanonicalCatalogVersionStaging();std::cout<<"catalog version stage checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+  if(argc==2&&std::string_view(argv[1])=="--row-data-stage-only"){
+    try {CanonicalRowDataStaging();std::cout<<"PASS row-data-stage checks="<<checks<<'\n';return 0;}
+    catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}
+  }
   if(argc==2&&std::string_view(argv[1])=="--catalog-stage-only"){
     try{CanonicalCatalogLeafStaging();std::cout<<"catalog stage checks="<<checks<<" failures=0\n";return 0;}
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}

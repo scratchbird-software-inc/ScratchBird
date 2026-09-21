@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include "dml/mga_relation_read_view.hpp"
+#include "crud_support/crud_store.hpp"
 #include "dml/insert_api.hpp"
 
 #include <cstddef>
@@ -18,6 +18,8 @@
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
+
+struct MgaRelationReadView;
 
 // SEARCH_KEY: SB_INSERT_BATCH_ARCHITECTURE_CORE
 // Engine-owned insert optimization context. This is not SQL authority and never
@@ -87,7 +89,7 @@ struct InsertBatchTraceEvent {
 
 struct BoundInsertRowTemplate {
   std::string template_id;
-  std::string table_uuid;
+  EngineUuid table_uuid;
   std::vector<std::pair<std::string, std::string>> columns;
   std::size_t descriptor_count = 0;
   bool has_opaque_render_only_column = false;
@@ -111,7 +113,7 @@ struct InsertRowEncoderColumnPlan {
 
 struct InsertRowEncoderPlan {
   std::string plan_id;
-  std::string table_uuid;
+  EngineUuid table_uuid;
   std::string row_shape_signature;
   std::string validator_signature;
   std::string default_signature;
@@ -141,7 +143,7 @@ struct IndexMaintenancePlanEntry {
 
 struct IndexMaintenancePlan {
   std::string plan_id;
-  std::string table_uuid;
+  EngineUuid table_uuid;
   std::vector<IndexMaintenancePlanEntry> entries;
   bool has_unique_exact = false;
   bool has_delta_eligible = false;
@@ -202,18 +204,18 @@ struct StrictBulkLoadPolicy {
 };
 
 struct InsertBatchContext {
-  std::string statement_uuid;
+  EngineUuid statement_uuid;
   std::uint64_t local_transaction_id = 0;
-  std::string transaction_uuid;
-  std::string database_uuid;
-  std::string schema_uuid;
-  std::string target_object_uuid;
+  EngineUuid transaction_uuid;
+  EngineUuid database_uuid;
+  EngineUuid schema_uuid;
+  EngineUuid target_object_uuid;
   std::uint64_t estimated_row_count = 0;
   std::uint64_t actual_row_count = 0;
   InsertBatchMode insert_mode = InsertBatchMode::singleton;
   InsertDuplicateMode duplicate_mode = InsertDuplicateMode::error;
-  std::string security_context_uuid;
-  std::string policy_snapshot_uuid;
+  EngineUuid security_context_uuid;
+  EngineUuid policy_snapshot_uuid;
   InsertFeatureGates feature_gates;
   InsertBatchMemoryPolicy memory_policy;
   BoundInsertRowTemplate row_template;
@@ -224,12 +226,15 @@ struct InsertBatchContext {
   SecondaryIndexDeltaLedgerPolicy delta_ledger_policy;
   StrictBulkLoadPolicy bulk_load_policy;
   InsertAdaptiveBatchPlan adaptive_batch_plan;
+  // Private exact content key. Never publish its authorization preimage in
+  // evidence; prepared_descriptor_cache_key below is a diagnostic digest.
+  std::vector<std::uint8_t> prepared_descriptor_content_key;
   std::string prepared_descriptor_cache_key;
   std::string prepared_descriptor_id;
   std::string prepared_descriptor_authorization_digest;
-  std::string prepared_descriptor_principal_uuid;
-  std::string prepared_descriptor_role_uuid;
-  std::string prepared_descriptor_session_uuid;
+  EngineUuid prepared_descriptor_principal_uuid;
+  EngineUuid prepared_descriptor_role_uuid;
+  EngineUuid prepared_descriptor_session_uuid;
   std::uint64_t prepared_descriptor_generation = 0;
   std::uint64_t prepared_descriptor_catalog_epoch = 0;
   std::uint64_t prepared_descriptor_security_epoch = 0;
@@ -258,7 +263,7 @@ struct InsertBatchContext {
   std::uint64_t memory_arena_granted_bytes = 0;
   std::uint64_t memory_arena_peak_bytes = 0;
   std::uint64_t memory_arena_leak_count = 0;
-  std::set<std::string> unique_request_keys;
+  std::set<std::pair<EngineUuid, std::string>> unique_request_keys;
   std::vector<InsertBatchTraceEvent> trace_events;
   std::uint64_t trace_event_count = 0;
   std::uint64_t trace_event_compacted_count = 0;
@@ -272,7 +277,7 @@ struct InsertBatchContext {
 
 struct PreparedInsertRow {
   std::vector<std::pair<std::string, std::string>> values;
-  std::string row_uuid;
+  EngineUuid row_uuid;
   bool toast_required = false;
   std::uint64_t encoded_bytes = 0;
 };
@@ -337,7 +342,7 @@ bool MaterializeOmittedInsertColumns(
 EngineApiDiagnostic AppendSecondaryIndexDeltaLedgerEntries(const EngineRequestContext& request_context,
                                                            const InsertBatchContext& context,
                                                            const PreparedInsertRow& row,
-                                                           const std::string& version_uuid);
+                                                           const EngineUuid& version_uuid);
 void AddInsertTrace(InsertBatchContext* context, std::string event_name, std::string phase, std::string detail = {});
 void AddInsertBatchEvidenceToResult(const InsertBatchContext& context, EngineApiResult* result);
 void RecordInsertBatchMetric(const InsertBatchContext& context, std::string metric, double value, std::string result, std::string reason = {});

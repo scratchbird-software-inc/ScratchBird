@@ -9,54 +9,7 @@
 #include <string_view>
 
 namespace scratchbird::engine::executor {
-namespace {
-
-// Versioned content encoding, not an identity representation or allocator.
-// UUIDs enter the hash as their sixteen canonical bytes. Variable data has
-// uint64 little-endian length framing, including embedded NULs/delimiters.
-class PreparedContentEncoder {
- public:
-  explicit PreparedContentEncoder(std::uint8_t domain) : bytes_{'S', 'B', 'P', 'D', 1, domain} {}
-
-  void Number(std::uint64_t value) {
-    for (unsigned i = 0; i != 8; ++i) {
-      bytes_.push_back(static_cast<std::uint8_t>(value));
-      value >>= 8;
-    }
-  }
-
-  void Text(std::string_view value) {
-    static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
-    Number(value.size());
-    bytes_.insert(bytes_.end(), value.begin(), value.end());
-  }
-
-  void Uuid(const internal_api::EngineUuid& value) {
-    bytes_.insert(bytes_.end(), value.bytes.begin(), value.bytes.end());
-  }
-
-  void Descriptor(const internal_api::EngineDescriptor& value) {
-    Uuid(value.descriptor_uuid);
-    Uuid(value.type_uuid);
-    Uuid(value.collation_uuid);
-    Text(value.descriptor_kind);
-    Text(value.canonical_type_name);
-    Text(value.encoded_descriptor);
-  }
-
-  std::string Digest() const {
-    const auto digest = core::hash::ComputeSha256Digest(bytes_);
-    if (!digest.ok() || digest.digest_bytes != core::hash::kSha256DigestBytes) {
-      throw PreparedContentHashFailure{};
-    }
-    return "sha256:" + core::hash::HexLower(digest.digest);
-  }
-
- private:
-  std::vector<core::platform::byte> bytes_;
-};
-
-}  // namespace
+using PreparedContentEncoder = metadata::ContentEncoder;
 
 std::string PreparedTemplateStableDigest(const std::vector<std::string>& parts) {
   PreparedContentEncoder encoded(1);
@@ -68,17 +21,7 @@ std::string PreparedTemplateStableDigest(const std::vector<std::string>& parts) 
 std::string PreparedDescriptorSetDigest(
     const std::vector<internal_api::EngineDescriptor>& descriptors,
     const std::vector<internal_api::EngineColumnDefinition>& columns) {
-  PreparedContentEncoder encoded(2);
-  encoded.Number(descriptors.size());
-  for (const auto& descriptor : descriptors) encoded.Descriptor(descriptor);
-  encoded.Number(columns.size());
-  for (const auto& column : columns) {
-    encoded.Uuid(column.requested_column_uuid);
-    encoded.Number(column.ordinal);
-    encoded.Descriptor(column.descriptor);
-    encoded.Number(column.nullable ? 1 : 0);
-  }
-  return encoded.Digest();
+  return metadata::DescriptorSetDigest(descriptors, columns);
 }
 
 std::string PreparedResultShapeDigest(const PreparedResultShapeDescriptor& shape) {

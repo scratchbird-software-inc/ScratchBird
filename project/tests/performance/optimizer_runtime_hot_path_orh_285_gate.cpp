@@ -89,9 +89,9 @@ idx::ParallelIndexConstraintPublicationRequest BaseRequest() {
   for (int i = 0; i < 6; ++i) {
     idx::ParallelIndexConstraintRow row;
     row.encoded_key = "K:" + std::to_string(100 + i);
-    row.row_uuid = UuidText(platform::UuidKind::row, 285100 + i, i + 10);
+    row.row_uuid = GeneratedUuid(platform::UuidKind::row, 285100 + i, i + 10).value;
     row.version_uuid =
-        UuidText(platform::UuidKind::row, 285200 + i, i + 20);
+        GeneratedUuid(platform::UuidKind::row, 285200 + i, i + 20).value;
     row.parent_key = request.parent_keys[static_cast<std::size_t>(i % 3)];
     row.payload_value = "payload:" + std::to_string(i);
     row.check_value = i + 1;

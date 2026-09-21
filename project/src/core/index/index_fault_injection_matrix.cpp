@@ -254,8 +254,8 @@ std::string BulkKey(char group, char suffix) {
 SortedBulkIndexRowInput BulkRow(char group, char suffix, u64 salt) {
   SortedBulkIndexRowInput row;
   row.encoded_key = BulkKey(group, suffix);
-  row.row_uuid = UuidText(UuidKind::row, salt + 3000);
-  row.version_uuid = UuidText(UuidKind::row, salt + 4000);
+  row.row_uuid = GeneratedUuid(UuidKind::row, salt + 3000).value;
+  row.version_uuid = GeneratedUuid(UuidKind::row, salt + 4000).value;
   row.payload_value = "payload";
   row.source_ordinal = salt;
   return row;

@@ -11,6 +11,7 @@
 #include "sblr_admission.hpp"
 #include "sblr_local_gateway.hpp"
 #include "../server_engine_bridge/statement_context.hpp"
+#include "../server_engine_bridge/admission_token_binding.hpp"
 
 #include "../engine/sblr/sblr_ddl_create_schema_runtime.hpp"
 #include "../engine/sblr/sblr_ddl_create_index_runtime.hpp"
@@ -18,6 +19,7 @@
 #include "../engine/sblr/sblr_plan_import_rows_codec.hpp"
 #include "../engine/sblr/sblr_source_artifact_runtime.hpp"
 #include "hash_digest.hpp"
+#include "uuid.hpp"
 #include "scratchbird/engine/sblr_envelope.hpp"
 
 #include <algorithm>
@@ -2021,22 +2023,19 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
                   "dml_plan_import_rows_inline_operation_forbidden");
   }
 
-  const auto uuid_text = [](const std::uint8_t* uuid) {
-    constexpr char kHex[] = "0123456789abcdef";
-    std::string text;
-    text.reserve(36);
-    for (std::size_t i = 0; i < 16; ++i) {
-      if (i == 4 || i == 6 || i == 8 || i == 10) text.push_back('-');
-      text.push_back(kHex[uuid[i] >> 4]);
-      text.push_back(kHex[uuid[i] & 0x0f]);
-    }
-    return text;
+  const auto raw_uuid = [](const std::uint8_t* bytes) {
+    scratchbird::core::platform::Uuid value;
+    std::copy_n(bytes, value.bytes.size(), value.bytes.begin());
+    return value;
   };
-  const std::string outer_parser_uuid = uuid_text(
+  const auto outer_parser_uuid = raw_uuid(
       container.container.canonical_anchor.data() + 32);
   const auto& dialect_field = ingress.envelope.fields[10];
   const auto& user_field = ingress.envelope.fields[11];
-  if (operation.envelope.parser_package_uuid != outer_parser_uuid ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.admitted_parser_package_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.admitted_registry_snapshot_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.authenticated_principal_uuid) ||
+      operation.envelope.parser_package_uuid != outer_parser_uuid ||
       request.admitted_parser_package_uuid != outer_parser_uuid ||
       operation.envelope.parser_package_version_major !=
           request.admitted_parser_package_version_major ||
@@ -2050,7 +2049,7 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
       !std::equal(dialect_field.begin() + 1, dialect_field.end(),
                   container.container.canonical_anchor.begin() + 16) ||
       user_field.size() != 17 || user_field[0] != 1 ||
-      uuid_text(user_field.data() + 1) != request.authenticated_principal_uuid) {
+      raw_uuid(user_field.data() + 1) != request.authenticated_principal_uuid) {
     return Reject("SBLR.INGRESS_REVALIDATION_FAILED",
                   "Parser, registry, dialect, or authenticated identity binding is stale or contradictory.",
                   "ingress_identity_cross_check_failed");
@@ -2216,21 +2215,9 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
                     "source_artifact.semantic_reference_mismatch");
     }
   }
-  const auto canonical_uuid_text = [](std::string_view value) {
-    if (value.size() != 36 || value[8] != '-' || value[13] != '-' ||
-        value[18] != '-' || value[23] != '-') return false;
-    bool nonzero = false;
-    for (std::size_t i = 0; i < value.size(); ++i) {
-      if (value[i] == '-') continue;
-      if (!((value[i] >= '0' && value[i] <= '9') ||
-            (value[i] >= 'a' && value[i] <= 'f'))) return false;
-      nonzero = nonzero || value[i] != '0';
-    }
-    return nonzero;
-  };
-  if (!canonical_uuid_text(request.catalog_snapshot_uuid) ||
-      !canonical_uuid_text(request.engine_mga_statement_uuid) ||
-      !canonical_uuid_text(request.engine_mga_snapshot_uuid) ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(request.catalog_snapshot_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.engine_mga_statement_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.engine_mga_snapshot_uuid) ||
       request.catalog_epoch == 0 || request.security_epoch == 0 ||
       request.resource_epoch == 0) {
     return Reject("SBLR.INGRESS_REVALIDATION_FAILED",
@@ -2394,77 +2381,16 @@ ServerSblrAdmissionResult AdmitServerSblrEnvelope(
                   "Canonical CREATE INDEX executor evidence is not accepted.",
                   "ddl_create_index_executor_evidence_not_accepted");
   }
-  std::vector<std::uint8_t> binding;
-  constexpr std::string_view kDomain = "ScratchBird.SBLR.AdmissionToken.V1";
-  binding.insert(binding.end(), kDomain.begin(), kDomain.end());
-  binding.insert(binding.end(), token->container_sha256.begin(), token->container_sha256.end());
-  binding.insert(binding.end(), token->execution_envelope_sha256.begin(),
-                 token->execution_envelope_sha256.end());
-  binding.insert(binding.end(), token->operation_sha256.begin(), token->operation_sha256.end());
-  for (const auto* value : {&token->authenticated_principal_uuid,
-                            &token->catalog_snapshot_uuid,
-                            &token->engine_mga_statement_uuid,
-                            &token->engine_mga_snapshot_uuid}) {
-    binding.insert(binding.end(), value->begin(), value->end());
-    binding.push_back(0);
-  }
-  scratchbird::engine::SblrAppendU64(binding, token->catalog_epoch);
-  scratchbird::engine::SblrAppendU64(binding, token->security_epoch);
-  scratchbird::engine::SblrAppendU64(binding, token->resource_epoch);
+  std::optional<scratchbird::server_engine_bridge::AdmissionReservationBinding> reservation_binding;
   if (opcode_stream) {
-    scratchbird::engine::SblrAppendU64(
-        binding, token->package_reservation_handle);
-    binding.push_back(static_cast<std::uint8_t>(token->reserved_payload_kind));
-    scratchbird::engine::SblrAppendU64(binding, token->reserved_payload_size);
-    scratchbird::engine::SblrAppendU32(binding, token->reserved_record_count);
-    scratchbird::engine::SblrAppendU64(
-        binding, token->reserved_resource_policy_generation);
-    binding.push_back(
-        static_cast<std::uint8_t>(token->gateway_evidence.source));
-    binding.push_back(
-        static_cast<std::uint8_t>(token->gateway_evidence.disposition));
-    scratchbird::engine::SblrAppendU64(
-        binding, token->gateway_evidence.provider_observation_generation);
-    binding.insert(binding.end(),
-                   token->gateway_evidence.canonical_payload_sha256.begin(),
-                   token->gateway_evidence.canonical_payload_sha256.end());
-    for (const auto* value : {
-             &token->gateway_evidence.route_snapshot_uuid,
-             &token->gateway_evidence.security_snapshot_uuid}) {
-      binding.insert(binding.end(), value->begin(), value->end());
-      binding.push_back(0);
-    }
-    scratchbird::engine::SblrAppendU64(
-        binding, token->gateway_evidence.route_epoch);
-    scratchbird::engine::SblrAppendU64(
-        binding, token->gateway_evidence.route_generation);
-    scratchbird::engine::SblrAppendU64(
-        binding, token->gateway_evidence.security_epoch);
-    scratchbird::engine::SblrAppendU64(
-        binding,
-        token->gateway_evidence.security_observation_generation);
-    binding.push_back(token->gateway_evidence.cluster_context_active ? 1 : 0);
-    binding.push_back(token->gateway_evidence.cluster_transaction_active ? 1 : 0);
-    binding.push_back(token->gateway_evidence.route_fence_present ? 1 : 0);
-    for (const auto* value : {
-             &token->package_executor_evidence.begin_executor_id,
-             &token->package_executor_evidence.end_executor_id,
-             &token->package_executor_evidence.registry_snapshot_uuid}) {
-      binding.insert(binding.end(), value->begin(), value->end());
-      binding.push_back(0);
-    }
-    scratchbird::engine::SblrAppendU64(
-        binding,
-        token->package_executor_evidence.executor_evidence_generation);
-    binding.insert(
-        binding.end(),
-        token->package_executor_evidence.canonical_payload_sha256.begin(),
-        token->package_executor_evidence.canonical_payload_sha256.end());
-  } else {
-    // Preserve the version-1 non-stream binding byte. It is not gateway
-    // evidence and cannot authorize package execution.
-    binding.push_back(0);
+    reservation_binding = scratchbird::server_engine_bridge::AdmissionReservationBinding{
+        token->package_reservation_handle,
+        static_cast<std::uint8_t>(token->reserved_payload_kind),
+        token->reserved_payload_size, token->reserved_record_count,
+        token->reserved_resource_policy_generation};
   }
+  const auto binding = scratchbird::server_engine_bridge::EncodeAdmissionTokenBindingV2(
+      *token, reservation_binding);
   if (!hash_bytes(binding.data(), binding.size(), &token->admission_binding_sha256)) {
     return Reject("SBLR.INGRESS_REVALIDATION_FAILED",
                   "Admission binding hashing failed.", "sha256_unavailable");

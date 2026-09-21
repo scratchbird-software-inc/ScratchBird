@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "binder/binder.hpp"
+#include "binder/relational_property_identity.hpp"
 
 #include <algorithm>
 #include <array>
@@ -548,6 +549,7 @@ BoundNativeRelationalDocument RefusedBoundAst(
   document.window_definitions.clear();
   document.window_invocations.clear();
   document.row_patterns.clear();
+  document.property_identities.clear();
   document.outputs.clear();
   document.relations.clear();
   document.catalog_relation_sources.clear();
@@ -558,7 +560,7 @@ BoundNativeRelationalDocument RefusedBoundAst(
 } // namespace
 
 // QOW-SOURCE-QRY-001-BINDING-V1
-BoundNativeRelationalDocument BindNativeRelationalAst(
+static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
     const NativeRelationalAstDocument& ast,
     const NativeRelationalBindingContext& context) {
   BoundNativeRelationalDocument bound;
@@ -12948,6 +12950,17 @@ BoundNativeRelationalDocument BindNativeRelationalAst(
   bound.root_relation_id = ast.root_relation_id;
   bound.root_scope_id = 1;
   bound.bound = true;
+  return bound;
+}
+
+BoundNativeRelationalDocument BindNativeRelationalAst(
+    const NativeRelationalAstDocument& ast, const NativeRelationalBindingContext& context) {
+  auto bound = BindNativeRelationalAstImpl(ast, context);
+  if (bound.bound && !FinalizeRelationalPropertyIdentities(&bound)) {
+    AddBoundAstDiagnostic(&bound, "QOW-DIAG-BOUNDAST-SCOPE",
+                         "binding could not retain exact plan-local UUIDv7 property identities");
+    return RefusedBoundAst(std::move(bound));
+  }
   return bound;
 }
 

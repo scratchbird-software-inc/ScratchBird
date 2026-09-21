@@ -15,46 +15,53 @@
 #include "metric_retention_policy.hpp"
 
 #include <string>
+#include <optional>
+#include <tuple>
 #include <vector>
 
 namespace scratchbird::core::metrics {
 
 using scratchbird::core::platform::u64;
 
-struct MetricSeriesIdentity {
-  std::string series_uuid;
-  std::string series_key;
+struct MetricHistoryBinding : MetricDescriptorBinding {
+  MetricUuid database_uuid;
+  MetricUuid node_uuid;
+  MetricUuid cluster_uuid;
+  bool operator==(const MetricHistoryBinding&) const = default;
+};
+using MetricHistorySeriesKey = std::tuple<MetricUuid, MetricUuid, MetricUuid,
+    MetricUuid, MetricUuid, std::vector<std::pair<std::string, MetricLabelValue>>>;
+
+struct MetricSeriesIdentity : MetricHistoryBinding {
+  MetricUuid series_uuid;
+  MetricHistorySeriesKey series_key;
   std::string metric_family;
   std::string namespace_path;
   std::string producer_owner;
   std::string scope_class = "local";
-  std::string database_uuid;
-  std::string node_uuid;
-  std::string cluster_uuid;
   MetricLabelSet labels;
-  std::string label_hash;
   std::string redaction_class = "none";
-  std::string retention_policy_uuid;
 };
 
-struct MetricRawSampleRecord {
-  std::string sample_uuid;
-  std::string series_uuid;
+struct MetricRawSampleRecord : MetricHistoryBinding {
+  MetricUuid sample_uuid;
+  MetricUuid series_uuid;
   std::string metric_family;
   MetricLabelSet labels;
-  u64 observation_time_microseconds = 0;
-  u64 collection_time_microseconds = 0;
-  u64 publish_time_microseconds = 0;
+  u64 sample_time_utc_ns = 0;
+  u64 collection_time_utc_ns = 0;
+  u64 publication_time_utc_ns = 0;
   u64 source_sequence = 0;
-  std::string clock_quality = "local_monotonic";
-  std::string freshness_class = "current";
+  u64 revision = 0;
+  std::string clock_quality;
+  std::string freshness_class;
   MetricValue value;
-  std::string evidence_uuid;
+  MetricUuid evidence_uuid;
 };
 
 struct MetricRollupRecord {
-  std::string rollup_uuid;
-  std::string series_uuid;
+  MetricUuid rollup_uuid;
+  MetricUuid series_uuid;
   std::string metric_family;
   MetricRollupGrain grain = MetricRollupGrain::one_minute;
   u64 window_start_microseconds = 0;
@@ -70,20 +77,20 @@ struct MetricRollupRecord {
   std::string histogram_buckets;
   u64 state_transition_count = 0;
   std::string last_state_text;
-  std::string evidence_uuid;
+  MetricUuid evidence_uuid;
 };
 
 struct MetricRetentionEvidenceRecord {
-  std::string evidence_uuid;
+  MetricUuid evidence_uuid;
   std::string operation;
-  std::string policy_uuid;
-  std::string series_uuid;
+  MetricUuid policy_uuid;
+  MetricUuid series_uuid;
   std::string metric_family;
   u64 cutoff_time_microseconds = 0;
   u64 rows_affected = 0;
-  std::string actor_uuid;
-  std::string transaction_uuid;
-  std::string decision = "allowed";
+  MetricUuid actor_uuid;
+  MetricUuid transaction_uuid;
+  std::string decision;
   std::string detail;
 };
 
@@ -95,25 +102,26 @@ struct MetricHistoryStore {
   std::vector<MetricRetentionEvidenceRecord> evidence;
 };
 
-MetricSeriesIdentity MakeMetricSeriesIdentity(const MetricDescriptor& descriptor,
-                                              MetricLabelSet labels,
-                                              const MetricRetentionPolicy& policy,
-                                              std::string database_uuid = {},
-                                              std::string node_uuid = {},
-                                              std::string cluster_uuid = {});
-MetricRawSampleRecord MakeMetricRawSampleRecord(const MetricSeriesIdentity& series,
-                                                const MetricValue& value,
-                                                u64 observation_time_microseconds = 0);
-MetricRetentionEvidenceRecord MakeMetricRetentionEvidenceRecord(std::string operation,
-                                                                std::string policy_uuid,
-                                                                std::string series_uuid,
-                                                                std::string metric_family,
-                                                                u64 cutoff_time_microseconds,
-                                                                u64 rows_affected,
-                                                                std::string actor_uuid,
-                                                                std::string transaction_uuid,
-                                                                std::string decision,
-                                                                std::string detail);
+enum class MetricHistoryRecordError {
+  none, invalid_identity, invalid_binding, invalid_labels, invalid_observation,
+  identity_issuance_failed
+};
+template<class Record> struct MetricHistoryRecordResult {
+  MetricHistoryRecordError error = MetricHistoryRecordError::invalid_binding;
+  std::optional<Record> record;
+  bool ok() const { return error == MetricHistoryRecordError::none && record.has_value(); }
+};
+// Construction/shape and exact scalar admission only. Caller retains live
+// catalog, clock, aggregate and policy authority. These functions do not look
+// up names, write storage or publish data.
+MetricHistoryRecordResult<MetricSeriesIdentity> MakeMetricSeriesIdentity(
+    const MetricDescriptor&, MetricLabelSet, const MetricRetentionPolicy&,
+    const MetricHistoryBinding&, const MetricUuid& catalog_series_uuid);
+MetricHistoryRecordResult<MetricRawSampleRecord> MakeMetricRawSampleRecord(
+    const MetricDescriptor&, const MetricSeriesIdentity&, const MetricValue&,
+    u64 sample_time_utc_ns, u64 collection_time_utc_ns, u64 source_sequence);
+MetricHistoryRecordResult<MetricRetentionEvidenceRecord> MakeMetricRetentionEvidenceRecord(
+    MetricRetentionEvidenceRecord requested);
 
 MetricValidationResult ConfigureMetricHistoryPersistence(std::string history_path,
                                                          std::vector<MetricRetentionPolicy> policies = {});
@@ -137,13 +145,6 @@ MetricValidationResult UpsertMetricRetentionPolicy(const std::string& path,
                                                    std::string actor_uuid,
                                                    std::string transaction_uuid);
 
-std::string CanonicalMetricLabels(const MetricLabelSet& labels);
-std::string StableMetricSeriesKey(const MetricDescriptor& descriptor,
-                                  const MetricLabelSet& labels,
-                                  const std::string& database_uuid,
-                                  const std::string& node_uuid,
-                                  const std::string& cluster_uuid);
-std::string StableV7LikeMetricUuid(const std::string& key);
 u64 MetricHistoryNowMicroseconds();
 
 }  // namespace scratchbird::core::metrics

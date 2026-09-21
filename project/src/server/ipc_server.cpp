@@ -660,10 +660,10 @@ ParserServerEventEngineContext EventEngineContextFromSession(
       }
     }
   }
-  context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
-  context.session_uuid = UuidBytesToText(session.session_uuid);
+  context.principal_uuid.bytes = session.effective_user_uuid;
+  context.session_uuid.bytes = session.session_uuid;
   context.transaction_uuid = session.transaction_uuid;
-  context.statement_uuid = UuidBytesToText(request.header.request_uuid);
+  context.statement_uuid.bytes = request.header.request_uuid;
   context.local_transaction_id = session.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id = session.snapshot_visible_through_local_transaction_id;
   context.statement_timestamp = CurrentUtcTimestampText();
@@ -973,6 +973,14 @@ std::optional<std::array<std::uint8_t, 16>> PsNameUuidFromText(std::string_view 
   return uuid;
 }
 
+std::optional<std::array<std::uint8_t, 16>> PsNameUuidFromIdentity(
+    const engine_api::EngineUuid& identity) {
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(identity)) {
+    return std::nullopt;
+  }
+  return identity.bytes;
+}
+
 std::string PsNameLower(std::string value) {
   for (char& ch : value) {
     if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
@@ -1119,13 +1127,13 @@ engine_api::EngineRequestContext PsNameEngineContextFromSession(
       }
     }
   }
-  context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
-  context.session_uuid = UuidBytesToText(session.session_uuid);
+  context.principal_uuid.bytes = session.effective_user_uuid;
+  context.session_uuid.bytes = session.session_uuid;
   if (!sbps::IsZeroUuid(session.active_role_uuid)) {
-    context.current_role_uuid = UuidBytesToText(session.active_role_uuid);
+    context.current_role_uuid.bytes = session.active_role_uuid;
   }
   context.transaction_uuid = session.transaction_uuid;
-  context.statement_uuid = UuidBytesToText(frame.header.request_uuid);
+  context.statement_uuid.bytes = frame.header.request_uuid;
   context.local_transaction_id = session.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id =
       session.snapshot_visible_through_local_transaction_id;
@@ -1965,11 +1973,12 @@ bool PsEncodedDescriptorHasExactField(std::string_view descriptor,
 
 PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
     const engine_api::EngineRequestContext& context,
-    std::string_view resolved_relation_uuid) {
+    const engine_api::EngineUuid& resolved_relation_uuid) {
   PsPublicRelationProjectionResult result;
   if (context.local_transaction_id == 0 ||
       context.transaction_uuid.is_nil() ||
-      context.resource_epoch == 0 || resolved_relation_uuid.empty()) {
+      context.resource_epoch == 0 ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(resolved_relation_uuid)) {
     result.diagnostic = PsRelationProjectionDiagnostic(
         "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_REQUEST_INVALID",
         "parser_server_ipc.relation_descriptor_request_invalid",
@@ -1978,7 +1987,7 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
     return result;
   }
   const auto loaded = engine_api::LoadMgaRelationStorageDescriptor(
-      context, std::string(resolved_relation_uuid));
+      context, resolved_relation_uuid);
   if (!loaded.ok) {
     result.diagnostic = PsRelationProjectionEngineDiagnostic(
         loaded.diagnostic,
@@ -1987,11 +1996,11 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
         "The persisted MGA relation descriptor is unavailable at the selected transaction snapshot.");
     return result;
   }
-  const auto descriptor_uuid = PsNameUuidFromText(
+  const auto descriptor_uuid = PsNameUuidFromIdentity(
       loaded.descriptor.descriptor_uuid);
-  const auto relation_uuid = PsNameUuidFromText(
+  const auto relation_uuid = PsNameUuidFromIdentity(
       loaded.descriptor.relation_uuid);
-  const auto schema_uuid = PsNameUuidFromText(
+  const auto schema_uuid = PsNameUuidFromIdentity(
       loaded.descriptor.schema_uuid);
   if (!descriptor_uuid || !relation_uuid || !schema_uuid ||
       loaded.descriptor.relation_uuid != resolved_relation_uuid ||
@@ -2023,13 +2032,11 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
   result.projection.descriptor_generation =
       loaded.descriptor.descriptor_generation;
   result.projection.validated_resource_epoch = context.resource_epoch;
-  constexpr std::string_view kDatatypeCatalogSnapshotUuid =
-      "019d0000-0000-7000-8000-00000000d701";
-  constexpr std::uint64_t kDatatypeCatalogGeneration = 1;
-  constexpr std::uint64_t kDatatypeRegistryGeneration = 1;
   const auto datatype_catalog_snapshot_uuid =
-      PsNameUuidFromText(kDatatypeCatalogSnapshotUuid);
-  if (!datatype_catalog_snapshot_uuid) {
+      PsNameUuidFromIdentity(context.datatype_catalog_snapshot_uuid);
+  if (!datatype_catalog_snapshot_uuid ||
+      context.datatype_catalog_generation == 0 ||
+      context.datatype_registry_generation == 0) {
     result.diagnostic = PsRelationProjectionDiagnostic(
         "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
         "parser_server_ipc.relation_descriptor_invalid",
@@ -2040,16 +2047,16 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
   result.projection.datatype_catalog_snapshot_uuid =
       *datatype_catalog_snapshot_uuid;
   result.projection.datatype_catalog_generation =
-      kDatatypeCatalogGeneration;
+      context.datatype_catalog_generation;
   result.projection.datatype_registry_generation =
-      kDatatypeRegistryGeneration;
+      context.datatype_registry_generation;
   result.projection.columns.reserve(loaded.descriptor.columns.size());
-  std::set<std::string> column_uuids;
+  std::set<engine_api::EngineUuid> column_uuids;
   std::set<std::uint32_t> ordinals;
   for (const auto& source : loaded.descriptor.columns) {
     const auto column_uuid =
-        PsNameUuidFromText(source.column_uuid);
-    const auto type_descriptor_uuid = PsNameUuidFromText(
+        PsNameUuidFromIdentity(source.column_uuid);
+    const auto type_descriptor_uuid = PsNameUuidFromIdentity(
         source.value_descriptor.descriptor_uuid);
     if (!column_uuid || !type_descriptor_uuid ||
         source.canonical_name_key.empty() ||
@@ -2089,58 +2096,36 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
     column.identity_column = source.identity_column;
     column.character_length = source.character_length;
 
-    std::string datatype_descriptor_uuid =
-        source.value_descriptor.descriptor_uuid;
-    bool datatype_descriptor_uuid_seen = false;
-    std::size_t descriptor_field_offset = 0;
-    while (descriptor_field_offset <=
-           source.value_descriptor.encoded_descriptor.size()) {
-      const auto delimiter = source.value_descriptor.encoded_descriptor.find(
-          ';', descriptor_field_offset);
-      const auto field = std::string_view(
-          source.value_descriptor.encoded_descriptor)
-          .substr(descriptor_field_offset,
-                  delimiter == std::string::npos
-                      ? std::string::npos
-                      : delimiter - descriptor_field_offset);
-      constexpr std::string_view prefix = "datatype_descriptor_uuid=";
-      if (field.starts_with(prefix)) {
-        if (datatype_descriptor_uuid_seen || field.size() == prefix.size()) {
-          result.diagnostic = PsRelationProjectionDiagnostic(
-              "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
-              "parser_server_ipc.relation_descriptor_invalid",
-              "A persisted datatype descriptor identity was ambiguous.",
-              "datatype_descriptor_identity_ambiguous");
-          return result;
-        }
-        datatype_descriptor_uuid.assign(field.substr(prefix.size()));
-        datatype_descriptor_uuid_seen = true;
-      }
-      if (delimiter == std::string::npos) break;
-      descriptor_field_offset = delimiter + 1;
-    }
-    const auto canonical_datatype_descriptor =
-        PsNameUuidFromText(datatype_descriptor_uuid);
-    if (!canonical_datatype_descriptor) {
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(source.value_descriptor.datatype_descriptor_uuid) ||
+        source.value_descriptor.datatype_descriptor_generation == 0 ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(source.value_descriptor.type_uuid)) {
       result.diagnostic = PsRelationProjectionDiagnostic(
           "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
           "parser_server_ipc.relation_descriptor_invalid",
-          "A persisted datatype descriptor identity was malformed.",
-          "datatype_descriptor_identity_invalid");
+          "A persisted datatype descriptor has no exact binary catalog binding.",
+          "binary_datatype_binding_required");
       return result;
     }
     const auto datatype_identity =
         scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
-            std::string(kDatatypeCatalogSnapshotUuid),
-            kDatatypeCatalogGeneration,
-            kDatatypeRegistryGeneration,
-            datatype_descriptor_uuid,
-            1);
+            context.datatype_catalog_snapshot_uuid,
+            context.datatype_catalog_generation,
+            context.datatype_registry_generation,
+            source.value_descriptor.datatype_descriptor_uuid,
+            source.value_descriptor.datatype_descriptor_generation);
+    if (!datatype_identity.ok || datatype_identity.row.type_uuid != source.value_descriptor.type_uuid) {
+      result.diagnostic = PsRelationProjectionDiagnostic(
+          "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_INVALID",
+          "parser_server_ipc.relation_descriptor_invalid",
+          "The persisted datatype binding is unavailable in the exact catalog snapshot.",
+          "datatype_catalog_binding_mismatch");
+      return result;
+    }
     if (datatype_identity.ok) {
       const bool exact_variable_width_text = scratchbird::core::datatypes::
           IsExactCanonicalTextTypeCodecIdentityV1(datatype_identity.row);
       const auto type_uuid =
-          PsNameUuidFromText(datatype_identity.row.type_uuid);
+          PsNameUuidFromIdentity(datatype_identity.row.type_uuid);
       if (!type_uuid || datatype_identity.row.descriptor_generation == 0 ||
           datatype_identity.row.type_generation == 0 ||
           datatype_identity.row.codec_id.empty() ||
@@ -2175,8 +2160,8 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
           datatype_identity.row.null_encoding_code;
     }
 
-    if (!source.charset_uuid.empty()) {
-      const auto charset_uuid = PsNameUuidFromText(source.charset_uuid);
+    if (!source.charset_uuid.is_nil()) {
+      const auto charset_uuid = PsNameUuidFromIdentity(source.charset_uuid);
       if (!charset_uuid) {
         result.diagnostic = PsRelationProjectionDiagnostic(
             "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RESOURCE_MISMATCH",
@@ -2185,10 +2170,8 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
             "charset_uuid_invalid");
         return result;
       }
-      engine_api::EngineUuid engine_charset_uuid;
-      engine_charset_uuid = source.charset_uuid;
       const auto charset = engine_api::LookupEngineResourceDescriptorByUuid(
-          context, engine_charset_uuid, "charset");
+          context, source.charset_uuid, "charset");
       if (!charset.ok) {
         result.diagnostic = PsRelationProjectionEngineDiagnostic(
             charset.diagnostic,
@@ -2224,7 +2207,7 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
       column.charset_min_bytes = resource.min_bytes;
       column.charset_max_bytes = resource.max_bytes;
       column.charset_variable_width = resource.variable_width;
-    } else if (!source.collation_uuid.empty() ||
+    } else if (!source.collation_uuid.is_nil() ||
                source.character_length != 0) {
       result.diagnostic = PsRelationProjectionDiagnostic(
           "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RESOURCE_MISMATCH",
@@ -2234,10 +2217,10 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
       return result;
     }
 
-    if (!source.collation_uuid.empty()) {
+    if (!source.collation_uuid.is_nil()) {
       const auto collation_uuid =
-          PsNameUuidFromText(source.collation_uuid);
-      if (!collation_uuid || source.charset_uuid.empty()) {
+          PsNameUuidFromIdentity(source.collation_uuid);
+      if (!collation_uuid || source.charset_uuid.is_nil()) {
         result.diagnostic = PsRelationProjectionDiagnostic(
             "PARSER_SERVER_IPC.RELATION_DESCRIPTOR_RESOURCE_MISMATCH",
             "parser_server_ipc.relation_descriptor_resource_mismatch",
@@ -2245,10 +2228,8 @@ PsPublicRelationProjectionResult BuildPsPublicRelationProjection(
             "collation_uuid_invalid");
         return result;
       }
-      engine_api::EngineUuid engine_collation_uuid;
-      engine_collation_uuid = source.collation_uuid;
       const auto collation = engine_api::LookupEngineResourceDescriptorByUuid(
-          context, engine_collation_uuid, "collation");
+          context, source.collation_uuid, "collation");
       if (!collation.ok) {
         result.diagnostic = PsRelationProjectionEngineDiagnostic(
             collation.diagnostic,
@@ -2667,8 +2648,10 @@ PsNameV3PayloadResult BuildPsNameResolvedPayloadV3(
   PsNameV3PayloadResult result;
   std::optional<PsPublicRelationProjection> projection;
   if (decoded.include_persisted_relation_descriptor) {
+    engine_api::EngineUuid relation_uuid;
+    relation_uuid.bytes = object_uuid;
     const auto built = BuildPsPublicRelationProjection(
-        context, UuidBytesToText(object_uuid));
+        context, relation_uuid);
     if (!built.ok) {
       result.diagnostic = built.diagnostic;
       return result;
@@ -3073,7 +3056,7 @@ std::vector<std::uint8_t> ResolveNamePublicFrame(const sbps::Frame& frame,
         PsNameIdentifierAtom(parts->back(), identifier_profile);
     const auto resolved = engine_api::EngineResolveName(request);
     if (resolved.ok && !resolved.primary_object.uuid.is_nil()) {
-      const auto object_uuid = PsNameUuidFromText(resolved.primary_object.uuid);
+      const auto object_uuid = PsNameUuidFromIdentity(resolved.primary_object.uuid);
       if (object_uuid) {
         const auto catalog_epoch =
             resolved.bound_object_identity.catalog_generation_id != 0

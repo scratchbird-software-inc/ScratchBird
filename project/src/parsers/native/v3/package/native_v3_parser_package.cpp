@@ -227,6 +227,10 @@ NativeV3ParserPackageResult ExecuteNativeV3ParserPackageRequest(const NativeV3Pa
   dispatch_request.envelope = engine_envelope;
   dispatch_request.api_request = MakeBaseApiRequest(request, logical_envelope);
   const sblr::SblrDispatchResult dispatch_result = sblr::DispatchSblrOperation(dispatch_request);
+  if (dispatch_result.resource_exhausted) {
+    Fail(&result, "dispatch", "engine resource exhaustion");
+    return result;
+  }
   result.dispatched_to_engine_api = dispatch_result.dispatched_to_api;
   result.dispatch_json = sblr::SerializeSblrDispatchResultToJson(dispatch_result);
   if (!dispatch_result.dispatched_to_api) {

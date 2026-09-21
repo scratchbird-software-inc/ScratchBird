@@ -43,6 +43,9 @@ api::EngineApiResult Base() {
   result.transaction_uuid = Id(3);
   result.local_transaction_id = 42;
   result.evidence.push_back({"owner_evidence", "retained"});
+  result.evidence.push_back({"owner_identity", Id(6)});
+  result.evidence.push_back({"owner_optional_identity", api::EngineUuid{}});
+  result.evidence.push_back({"owner_text", "019d0000-0000-7000-8000-000000000006"});
   api::EngineRowValue row;
   row.requested_row_uuid = Id(4);
   api::EngineTypedValue value;
@@ -59,8 +62,12 @@ api::EngineApiResult Base() {
 void CheckOwner(const api::EngineApiResult& result, const api::EngineApiResult& base) {
   Check(result.transaction_uuid == base.transaction_uuid &&
         result.local_transaction_id == base.local_transaction_id, "transaction changed");
-  Check(result.evidence.size() == 1 && result.evidence[0].evidence_kind == "owner_evidence" &&
-        result.evidence[0].evidence_id == "retained", "fabricated or erased evidence");
+  Check(result.evidence.size() == base.evidence.size(), "fabricated or erased evidence");
+  for (std::size_t n = 0; n < base.evidence.size(); ++n) {
+    Check(result.evidence[n].evidence_kind == base.evidence[n].evidence_kind &&
+          result.evidence[n].evidence_id == base.evidence[n].evidence_id,
+          "owner evidence tag or bytes changed");
+  }
   Check(result.result_shape.rows.size() == 1 &&
         result.result_shape.rows[0].requested_row_uuid == Id(4) &&
         result.result_shape.rows[0].fields.size() == 1 &&

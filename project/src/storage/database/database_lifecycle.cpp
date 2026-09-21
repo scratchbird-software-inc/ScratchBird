@@ -3787,6 +3787,7 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
     record.default_for_charset=collation.default_for_charset;
     record.default_authority=collation.default_authority;
     record.case_insensitive=collation.case_insensitive; record.accent_insensitive=collation.accent_insensitive;
+    record.comparison_profile=collation.comparison_profile;
     record.language=collation.language; record.description=collation.description;
     record.supported_by=collation.supported_by; record.source_path=collation.source_path;
     record.resource_epoch=collation.resource_epoch; record.family_epoch=collation.family_epoch;
@@ -4221,6 +4222,7 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
     collation.charset_uuid=r.charset_uuid.value;
     collation.default_for_charset=r.default_for_charset; collation.default_authority=r.default_authority;
     collation.case_insensitive=r.case_insensitive; collation.accent_insensitive=r.accent_insensitive;
+    collation.comparison_profile=r.comparison_profile;
     collation.language=r.language; collation.description=r.description; collation.supported_by=r.supported_by;
     collation.source_path=r.source_path; collation.resource_epoch=r.resource_epoch;
     collation.family_epoch=r.family_epoch; collation.family_version=r.family_version;
@@ -7820,12 +7822,15 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
                           config.path);
   }
   if (seed_catalog_present) {
-    const auto resource_seed_validation =
+    auto resource_seed_validation =
         ValidateResourceSeedCatalogImage(resource_seed_catalog,
                                          resource_seed_catalog.minimal_bootstrap);
     if (!resource_seed_validation.ok()) {
       return PropagateDiagnostic(resource_seed_validation.status, resource_seed_validation.diagnostic);
     }
+    // Admission also constructs immutable, node-owned derived resource tables.
+    // Keep that admitted image, not the deserialized pre-validation snapshot.
+    resource_seed_catalog = std::move(resource_seed_validation.image);
   }
   const auto policy_seed_validation =
       ValidatePolicySeedCatalogImage(policy_seed_catalog, config.path);
@@ -8057,7 +8062,7 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
                            config.decryption_available,
                            config.read_only,
                            open_health.snapshot,
-                           resource_seed_catalog,
+                           std::move(resource_seed_catalog),
                            policy_seed_catalog,
                            catalog_summary,
                            local_transaction_inventory,

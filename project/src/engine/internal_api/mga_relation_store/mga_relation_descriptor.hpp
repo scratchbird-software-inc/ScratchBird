@@ -10,9 +10,12 @@
 
 #include "api_types.hpp"
 #include "crud_support/crud_store.hpp"
+#include "mga_relation_store/mga_binary_identity_codec.hpp"
 
 #include <cstdint>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -26,7 +29,7 @@ struct MgaRelationColumnStorageDescriptor {
   // Exact catalog-object generation for this column.  This is distinct from
   // the enclosing storage descriptor generation and is carried into bound
   // DML occurrence records; a zero value is never executable authority.
-  std::uint64_t column_generation = 1;
+  std::uint64_t column_generation = 0;
   std::uint32_t ordinal = 0;
   std::string canonical_name_key;
   EngineDescriptor value_descriptor;
@@ -34,12 +37,35 @@ struct MgaRelationColumnStorageDescriptor {
   bool generated = false;
   bool identity_column = false;
   std::string storage_class = "inline_row_value";
-  std::string charset_uuid;
-  std::string collation_uuid;
+  EngineUuid charset_uuid;
+  EngineUuid collation_uuid;
   std::uint32_t character_length = 0;
   std::uint64_t max_inline_bytes = 4096;
   std::string overflow_policy = "mga_large_value_locator";
+  bool operator==(const MgaRelationColumnStorageDescriptor&) const = default;
 };
+
+// Transfer an already-bound column into a staged storage projection. The
+// generation is supplied by catalog publication, not a metadata event counter.
+// This does not reserve identities, validate a live catalog or publish storage.
+inline bool BindMgaColumnStorageIdentity(const EngineColumnDefinition& source,
+    std::uint64_t published_generation, MgaRelationColumnStorageDescriptor* output) {
+  if (!output || !published_generation || !core::uuid::IsEngineIdentityUuid(source.requested_column_uuid) ||
+      !core::uuid::IsEngineIdentityUuid(source.descriptor.descriptor_uuid) ||
+      !HasMgaColumnResourceIdentities(source.descriptor) ||
+      !HasMgaColumnDatatypeBinding(source.descriptor)) return false;
+  auto staged = *output;
+  staged.column_uuid = source.requested_column_uuid;
+  staged.column_generation = published_generation;
+  staged.ordinal = source.ordinal;
+  staged.value_descriptor = source.descriptor;
+  staged.charset_uuid = source.descriptor.charset_uuid;
+  staged.collation_uuid = source.descriptor.collation_uuid;
+  staged.nullable = source.nullable;
+  static_assert(std::is_nothrow_move_assignable_v<MgaRelationColumnStorageDescriptor>);
+  *output = std::move(staged);
+  return true;
+}
 
 struct MgaRelationIndexStorageDescriptor {
   EngineUuid index_uuid;
@@ -53,6 +79,7 @@ struct MgaRelationIndexStorageDescriptor {
   std::string predicate_column;
   std::string predicate_value;
   std::string residency_policy = "page_cache_policy";
+  bool operator==(const MgaRelationIndexStorageDescriptor&) const = default;
 };
 
 struct MgaRelationStorageDescriptor {
@@ -63,7 +90,7 @@ struct MgaRelationStorageDescriptor {
   // Exact catalog-object generation for the relation.  Descriptor generation
   // versions this storage projection; it must not be substituted for the
   // relation object's own generation at a DML authority boundary.
-  std::uint64_t relation_generation = 1;
+  std::uint64_t relation_generation = 0;
   EngineUuid primary_filespace_uuid;
   std::string relation_kind = "table";
   std::string storage_profile = "local_mga_rowstore_v1";
@@ -81,6 +108,7 @@ struct MgaRelationStorageDescriptor {
   std::vector<MgaRelationColumnStorageDescriptor> columns;
   std::vector<MgaRelationIndexStorageDescriptor> indexes;
   std::vector<std::string> required_evidence_kinds;
+  bool operator==(const MgaRelationStorageDescriptor&) const = default;
 };
 
 EngineApiDiagnostic ValidateMgaRelationStorageDescriptor(const MgaRelationStorageDescriptor& descriptor);

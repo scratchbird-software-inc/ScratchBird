@@ -1687,58 +1687,40 @@ struct BoundSecurityPolicySnapshot {
   std::uint64_t runtime_security_epoch;
   std::uint64_t runtime_policy_epoch;
 };
-std::unordered_map<std::string, BoundSecurityPolicySnapshot>
+std::unordered_map<EngineUuid, BoundSecurityPolicySnapshot, EngineUuidHash>
     g_security_policy_snapshot_authorities;
-std::uint64_t g_security_policy_snapshot_ordinal = 0;
 
-bool ExactNonzeroUuid(std::string_view text) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == text;
+bool ExactNonzeroUuid(const EngineUuid& identity) noexcept {
+  return core::uuid::IsEngineIdentityUuid(identity);
 }
 
-std::string TypedUpdateUuidText(
-    const scratchbird::wire::TypedUpdateUuid& bytes) {
-  if (std::all_of(bytes.begin(), bytes.end(),
-                  [](std::uint8_t value) { return value == 0; })) {
-    return {};
-  }
-  scratchbird::core::platform::Uuid value{};
-  std::copy(bytes.begin(), bytes.end(), value.bytes.begin());
-  return scratchbird::core::uuid::UuidToString(value);
+EngineUuid TypedUpdateUuidValue(
+    const scratchbird::wire::TypedUpdateUuid& bytes) noexcept {
+  return EngineUuid{bytes};
 }
 
-std::string FreshSecurityPolicySnapshotUuid() {
+EngineUuid FreshSecurityPolicySnapshotUuid() {
   const auto now = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch())
           .count());
   const auto generated = scratchbird::core::uuid::GenerateEngineIdentityV7(
       scratchbird::core::platform::UuidKind::object,
-      now + (++g_security_policy_snapshot_ordinal));
-  return generated.ok()
-      ? scratchbird::core::uuid::UuidToString(generated.value.value)
-      : std::string{};
+      now);
+  return generated.ok() ? generated.value.value : EngineUuid{};
 }
 
 bool PolicyIdentityLess(
     const EngineSecurityPolicyCatalogRowIdentityV1& left,
     const EngineSecurityPolicyCatalogRowIdentityV1& right) {
   if (left.phase != right.phase) return left.phase < right.phase;
-  const auto left_uuid = scratchbird::core::uuid::ParseUuid(left.policy_uuid);
-  const auto right_uuid = scratchbird::core::uuid::ParseUuid(right.policy_uuid);
-  if (!left_uuid.ok() || !right_uuid.ok()) {
-    return left.policy_uuid < right.policy_uuid;
-  }
-  if (left_uuid.value.bytes != right_uuid.value.bytes) {
-    return left_uuid.value.bytes < right_uuid.value.bytes;
-  }
+  if (left.policy_uuid != right.policy_uuid) return left.policy_uuid < right.policy_uuid;
   return left.policy_generation < right.policy_generation;
 }
 
 EngineApiDiagnostic ResolveSecurityPolicySnapshotSource(
     const EngineRequestContext& context,
-    const std::string& target_relation_uuid,
+    const EngineUuid& target_relation_uuid,
     EngineSecurityPolicySnapshotAuthorityV1* snapshot) {
   if (snapshot == nullptr || !context.security_context_present ||
       !context.statement_metadata_snapshot_engine_owned ||
@@ -1913,7 +1895,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadSecurityPrincipalLifecycleSt
 EngineSecurityPolicySnapshotAuthorityResultV1
 IssueEngineSecurityPolicySnapshotAuthorityV1(
     const EngineRequestContext& context,
-    const std::string& target_relation_uuid) {
+    const EngineUuid& target_relation_uuid) {
   EngineSecurityPolicySnapshotAuthorityResultV1 result;
   EngineSecurityPolicySnapshotAuthorityV1 snapshot;
   result.diagnostic = ResolveSecurityPolicySnapshotSource(
@@ -1931,13 +1913,15 @@ IssueEngineSecurityPolicySnapshotAuthorityV1(
         "policy_snapshot_identity_issue_failed");
     return result;
   }
+  // Prepare the complete response before publishing discoverable authority.
+  // Diagnostic metadata and policy-vector copies may allocate.
+  result.diagnostic = OkDiagnostic();
+  result.snapshot = snapshot;
   g_security_policy_snapshot_authorities.emplace(
-      snapshot.snapshot_uuid,
-      BoundSecurityPolicySnapshot{snapshot, context.security_epoch,
+      result.snapshot.snapshot_uuid,
+      BoundSecurityPolicySnapshot{std::move(snapshot), context.security_epoch,
                                   context.authorization_context.policy_epoch});
   result.ok = true;
-  result.diagnostic = OkDiagnostic();
-  result.snapshot = std::move(snapshot);
   return result;
 }
 
@@ -2009,30 +1993,30 @@ RecoverEngineSecurityPolicySnapshotFromValidatedDmlUpdateDurableAuthorityV1(
     return refuse("validated_durable_security_carrier_invalid:" +
                   error.field + ":" + error.detail);
   }
-  const std::string snapshot_uuid =
-      TypedUpdateUuidText(proof.security_snapshot_uuid);
-  const std::string target_relation_uuid =
-      TypedUpdateUuidText(proof.target_relation_uuid);
+  const EngineUuid snapshot_uuid =
+      TypedUpdateUuidValue(proof.security_snapshot_uuid);
+  const EngineUuid target_relation_uuid =
+      TypedUpdateUuidValue(proof.target_relation_uuid);
   if (!ExactNonzeroUuid(snapshot_uuid) ||
       proof.security_snapshot_generation == 0 ||
       !ExactNonzeroUuid(target_relation_uuid) ||
       source.records.size() != proof.source_policy_count ||
       durable.identity.database_uuid !=
-          TypedUpdateUuidText(proof.database_uuid) ||
+          TypedUpdateUuidValue(proof.database_uuid) ||
       durable.identity.authenticated_statement_receipt_uuid !=
-          TypedUpdateUuidText(proof.authenticated_statement_receipt_uuid) ||
+          TypedUpdateUuidValue(proof.authenticated_statement_receipt_uuid) ||
       durable.identity.owning_transaction_uuid !=
-          TypedUpdateUuidText(proof.owning_transaction_uuid) ||
+          TypedUpdateUuidValue(proof.owning_transaction_uuid) ||
       durable.identity.owning_local_transaction_id !=
           proof.owning_local_transaction_id ||
       durable.identity.operation_uuid !=
-          TypedUpdateUuidText(proof.operation_uuid) ||
+          TypedUpdateUuidValue(proof.operation_uuid) ||
       durable.identity.operation_generation != proof.operation_generation ||
       durable.identity.descriptor_uuid !=
-          TypedUpdateUuidText(proof.descriptor_uuid) ||
+          TypedUpdateUuidValue(proof.descriptor_uuid) ||
       durable.identity.descriptor_generation != proof.descriptor_generation ||
       durable.identity.recovery_token_uuid !=
-          TypedUpdateUuidText(proof.recovery_token_uuid) ||
+          TypedUpdateUuidValue(proof.recovery_token_uuid) ||
       durable.identity.recovery_generation != proof.recovery_generation) {
     return refuse("validated_durable_security_identity_mismatch");
   }
@@ -2045,7 +2029,7 @@ RecoverEngineSecurityPolicySnapshotFromValidatedDmlUpdateDurableAuthorityV1(
     return result;
   }
   if (current.security_context_uuid !=
-          TypedUpdateUuidText(proof.security_context_uuid) ||
+          TypedUpdateUuidValue(proof.security_context_uuid) ||
       current.security_context_generation !=
           proof.security_context_generation ||
       current.security_generation != proof.security_epoch ||
@@ -2059,26 +2043,26 @@ RecoverEngineSecurityPolicySnapshotFromValidatedDmlUpdateDurableAuthorityV1(
     const auto& admitted = current.admitted_policy_rows[index];
     if (encoded.source_policy_ordinal != index + 1 ||
         encoded.phase != admitted.phase || encoded.source_state != 1 ||
-        TypedUpdateUuidText(encoded.policy_uuid) != admitted.policy_uuid ||
+        TypedUpdateUuidValue(encoded.policy_uuid) != admitted.policy_uuid ||
         encoded.policy_generation != admitted.policy_generation ||
-        TypedUpdateUuidText(encoded.policy_version_uuid) !=
+        TypedUpdateUuidValue(encoded.policy_version_uuid) !=
             admitted.policy_version_uuid ||
         encoded.effective_transaction_number !=
             admitted.effective_transaction_number ||
-        TypedUpdateUuidText(encoded.target_relation_uuid) !=
+        TypedUpdateUuidValue(encoded.target_relation_uuid) !=
             admitted.target_relation_uuid ||
         encoded.target_relation_generation !=
             admitted.target_relation_generation ||
-        TypedUpdateUuidText(encoded.source_expression_uuid) !=
+        TypedUpdateUuidValue(encoded.source_expression_uuid) !=
             admitted.source_expression_uuid ||
         encoded.source_expression_generation !=
             admitted.source_expression_generation ||
         encoded.source_expression_evidence_sha256 !=
             admitted.source_expression_evidence_sha256 ||
-        TypedUpdateUuidText(encoded.catalog_snapshot_uuid) !=
+        TypedUpdateUuidValue(encoded.catalog_snapshot_uuid) !=
             admitted.catalog_snapshot_uuid ||
         encoded.catalog_generation != admitted.catalog_generation ||
-        TypedUpdateUuidText(encoded.security_snapshot_uuid) != snapshot_uuid ||
+        TypedUpdateUuidValue(encoded.security_snapshot_uuid) != snapshot_uuid ||
         encoded.security_snapshot_generation !=
             proof.security_snapshot_generation) {
       return refuse("durable_security_policy_source_row_stale:" +
@@ -2099,15 +2083,16 @@ RecoverEngineSecurityPolicySnapshotFromValidatedDmlUpdateDurableAuthorityV1(
             context.authorization_context.policy_epoch) {
       return refuse("durable_security_snapshot_identity_conflict");
     }
-  } else {
+  }
+  result.diagnostic = OkDiagnostic();
+  result.snapshot = current;
+  if (found == g_security_policy_snapshot_authorities.end()) {
     g_security_policy_snapshot_authorities.emplace(
         snapshot_uuid,
-        BoundSecurityPolicySnapshot{current, context.security_epoch,
+        BoundSecurityPolicySnapshot{std::move(current), context.security_epoch,
                                     context.authorization_context.policy_epoch});
   }
   result.ok = true;
-  result.diagnostic = OkDiagnostic();
-  result.snapshot = std::move(current);
   return result;
 }
 
@@ -2115,7 +2100,6 @@ void ResetEngineSecurityPolicySnapshotAuthorityForTestV1() {
   std::lock_guard<std::mutex> guard(
       g_security_policy_snapshot_authority_mutex);
   g_security_policy_snapshot_authorities.clear();
-  g_security_policy_snapshot_ordinal = 0;
 }
 
 EngineOwnedSysarchRoleIdentityResult ResolveEngineOwnedSysarchRoleIdentity(

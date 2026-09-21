@@ -1,6 +1,9 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_record_codec.hpp"
+#include "catalog_metric_descriptor.hpp"
+#include "catalog_metric_label_schema.hpp"
+#include "catalog_metric_series.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
@@ -74,7 +77,10 @@ void Roundtrip(const cat::CatalogTypedRecord& record) {
         "writer still uses text identity header");
 }
 void DecodeAdmission(const cat::CatalogTypedRecord& base) {
-  auto row = cat::EncodeCatalogTypedRecord(base, 17).row;
+  const auto encoded = cat::EncodeCatalogTypedRecord(base, 17);
+  Check(encoded.ok(), "decode admission fixture did not encode");
+  if (!encoded.ok()) return;
+  auto row = encoded.row;
   const auto valid = row.payload;
   for (std::size_t length = 0; length < valid.size(); ++length) {
     row.payload = valid.substr(0, length);
@@ -139,6 +145,64 @@ void PageContainer(const cat::CatalogTypedRecord& record) {
   Check(!page::ParseCatalogPageBody(corrupted, 10).ok(), "enclosing page accepted altered identity");
 }
 
+bool HasTypedMetricPayload(cat::CatalogRecordKind kind) {
+  return kind == cat::CatalogRecordKind::metric_descriptor ||
+      kind == cat::CatalogRecordKind::metric_label_schema ||
+      kind == cat::CatalogRecordKind::metric_series;
+}
+void SetFamilyPayload(cat::CatalogTypedRecord& record, const std::string& annotation) {
+  if (!HasTypedMetricPayload(record.header.kind)) {
+    record.payload = annotation;
+    return;
+  }
+  namespace m = scratchbird::core::metrics;
+  // Independent identity fixtures. They do not claim persisted policy/schema
+  // existence; this test concerns the actual binary common-header owner only.
+  const auto identity = [](unsigned tag) {
+    p::Uuid id; id.bytes[6] = 0x70; id.bytes[8] = 0x80; id.bytes[15] = tag; return id;
+  };
+  cat::CatalogValueEncodeResult encoded;
+  if (record.header.kind == cat::CatalogRecordKind::metric_descriptor) {
+    cat::CatalogMetricDescriptor descriptor;
+    descriptor.binding.metric_uuid = record.header.object_uuid.value;
+    descriptor.binding.descriptor_generation = 1;
+    descriptor.binding.retention_policy_uuid = identity(1);
+    descriptor.binding.retention_policy_generation = 1;
+    descriptor.binding.visibility_policy_uuid = identity(2);
+    descriptor.binding.visibility_policy_generation = 1;
+    descriptor.definition.family = "header-test";
+    descriptor.definition.namespace_path = "sys.metrics.header.test";
+    descriptor.definition.producer_owner = "header-test";
+    descriptor.definition.type = m::MetricType::gauge;
+    descriptor.definition.value_type = m::MetricScalarType::uint64;
+    descriptor.definition.help = annotation;
+    descriptor.origin_transaction_uuid = {UuidKind::transaction, identity(3)};
+    descriptor.origin_local_transaction_id = 1;
+    encoded = cat::EncodeCatalogMetricDescriptor(descriptor);
+  } else if (record.header.kind == cat::CatalogRecordKind::metric_series) {
+    cat::CatalogMetricSeries series;
+    series.series_uuid=record.header.object_uuid.value;series.generation=1;
+    series.binding.database_uuid=identity(4);series.binding.node_uuid=identity(5);
+    series.binding.metric_uuid=identity(6);series.binding.descriptor_generation=1;
+    series.binding.label_schema_uuid=identity(7);series.binding.label_schema_generation=1;
+    series.binding.retention_policy_uuid=identity(1);series.binding.retention_policy_generation=1;
+    series.binding.visibility_policy_uuid=identity(2);series.binding.visibility_policy_generation=1;
+    series.labels={{"annotation",m::MetricLabelType::text,annotation}};
+    series.origin_transaction_uuid={UuidKind::transaction,identity(3)};series.origin_local_transaction_id=1;
+    encoded=cat::EncodeCatalogMetricSeries(series);
+  } else {
+    cat::CatalogMetricLabelSchema schema;
+    schema.label_schema_uuid = record.header.object_uuid.value;
+    schema.generation = 1;
+    schema.labels = {{annotation, false, false, m::MetricLabelType::text}};
+    schema.origin_transaction_uuid = {UuidKind::transaction, identity(3)};
+    schema.origin_local_transaction_id = 1;
+    encoded = cat::EncodeCatalogMetricLabelSchema(schema);
+  }
+  Check(encoded.ok(), "typed metric payload fixture failed admission");
+  record.payload.assign(encoded.bytes.begin(), encoded.bytes.end());
+}
+
 int main() {
   const auto millis = static_cast<p::u64>(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
@@ -152,6 +216,8 @@ int main() {
   const auto& descriptors = cat::BuiltinCatalogRecordDescriptors();
   for (const auto& descriptor : descriptors) {
     base.header.kind = descriptor.kind;
+    SetFamilyPayload(base, HasTypedMetricPayload(descriptor.kind) ?
+        "ordinary=annotation" : std::string("ordinary=value\r\nwith\0binary", 27));
     Roundtrip(base);
     DecodeAdmission(base);
     PageContainer(base);
@@ -193,6 +259,12 @@ int main() {
       user.bytes[6] = static_cast<p::byte>((user.bytes[6] & 15) | (version << 4));
       record.payload = "ordinary_uuid=" + uuid::UuidToString(user);
       record.header.deleted = true;
+      if (HasTypedMetricPayload(record.header.kind)) {
+        // A registered typed family rejects arbitrary text, even when it
+        // contains a valid UUID. Annotation text within that family is data.
+        Refused(cat::EncodeCatalogTypedRecord(record, 17));
+        SetFamilyPayload(record, record.payload);
+      }
       Roundtrip(record);
     }
   }

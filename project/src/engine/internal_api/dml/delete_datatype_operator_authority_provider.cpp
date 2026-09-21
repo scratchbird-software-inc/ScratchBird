@@ -42,7 +42,7 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& context, std::st
                         &context.transaction_uuid, &context.statement_receipt_uuid,
                         &context.statement_snapshot_uuid, &context.statement_metadata_snapshot_uuid,
                         &context.datatype_catalog_snapshot_uuid, &context.authorization_context.authority_uuid})
-    if (!projection::TypedUuid(id->canonical, &binary))
+    if (!projection::TypedUuid(*id, &binary))
       return Error("MGA.TRANSACTION.STALE", "context_identity");
   return Ok();
 }
@@ -63,8 +63,8 @@ EngineDmlDeleteDatatypeAuthorityResultV1 Project(
   const auto refuse = [&](std::string code, std::string field) {
     result.diagnostic = Error(std::move(code), std::move(field)); return result;
   };
-  const auto same_uuid = [](const wire::TypedUpdateUuid& binary, const EngineUuid& text) {
-    return projection::UuidText(binary) == text;
+  const auto same_uuid = [](const wire::TypedUpdateUuid& binary, const EngineUuid& identity) {
+    return projection::UuidValue(binary) == identity;
   };
   if (!same_uuid(descriptor.authenticated_statement_receipt_uuid, context.statement_receipt_uuid) ||
       !same_uuid(descriptor.owning_transaction_uuid, context.transaction_uuid) ||
@@ -78,7 +78,7 @@ EngineDmlDeleteDatatypeAuthorityResultV1 Project(
   // The durable security-catalog generation is not the authorization-context
   // generation. DELETE's security provider owns that independent comparison.
   const auto live = scratchbird::core::datatypes::LoadCurrentBuiltinOperatorRegistrySnapshotIdentityV1();
-  if (!live.ok || live.snapshot_uuid != projection::UuidText(descriptor.builtin_operator_snapshot_uuid) ||
+  if (!live.ok || live.snapshot_uuid != projection::UuidValue(descriptor.builtin_operator_snapshot_uuid) ||
       live.registry_generation != descriptor.builtin_operator_registry_generation)
     return refuse("MGA.TRANSACTION.STALE", "operator_snapshot");
   std::vector<projection::DatatypeReference> references;

@@ -70,13 +70,13 @@ MgaVisibleHeapRelationStreamResult StreamMgaHeapForDmlDeleteV1(
 PreparedMgaHeapReadAuthorityCohortResult
 PrepareMgaHeapReadAuthoritiesForStoreModule(
     const EngineRequestContext& context,
-    std::span<const std::string> relation_uuids,
+    std::span<const EngineUuid> relation_uuids,
     const scratchbird::transaction::mga::SnapshotVectorDescriptor*
         resolved_statement_snapshot = nullptr,
     const EngineDmlDeleteBindingAuthorityV1* delete_binding = nullptr);
 PreparedMgaHeapReadAuthorityResult PrepareMgaHeapReadAuthorityForStoreModule(
     const EngineRequestContext& context,
-    const std::string& relation_uuid);
+    const EngineUuid& relation_uuid);
 EngineApiDiagnostic ValidateMgaHeapTemporaryRelationAuthorityForStoreModule(
     const EngineRequestContext& context,
     const CrudTableRecord& table);

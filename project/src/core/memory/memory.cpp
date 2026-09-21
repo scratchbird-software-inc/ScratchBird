@@ -93,7 +93,7 @@ scratchbird::core::metrics::MetricLabelSet MemoryMetricLabels(
     if (name.empty() || value.empty()) continue;
     labels.emplace_back();
     labels.back().key = name;
-    labels.back().value = value;
+    labels.back().value = std::string(value);
   }
   return labels;
 }

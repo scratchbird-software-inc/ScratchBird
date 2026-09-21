@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "sblr_local_gateway.hpp"
+#include "uuid.hpp"
 #include <algorithm>
 #include <limits>
 #include <optional>
@@ -2296,8 +2297,8 @@ const bool exact_ddl_drop_index=request.root_opcode_code==1541&&request.root_opc
       stream.stream.operations[1].operation_id != request.root_operation_id ||
       !request.route_snapshot_engine_owned ||
       !request.security_snapshot_engine_owned ||
-      !CanonicalNonzeroUuid(request.route_snapshot_uuid) ||
-      !CanonicalNonzeroUuid(request.security_snapshot_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.route_snapshot_uuid) ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(request.security_snapshot_uuid) ||
       request.route_epoch == 0 || request.route_generation == 0 ||
       request.security_epoch == 0 ||
       request.security_observation_generation == 0) {

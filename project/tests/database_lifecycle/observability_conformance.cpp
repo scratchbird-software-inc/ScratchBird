@@ -333,12 +333,12 @@ void TestParserRendering() {
   result.ok = false;
   result.operation_id = "lifecycle.shutdown_database";
   result.primary_object.object_kind = "database";
-  result.primary_object.uuid.canonical = "019e150f-0000-7000-8000-000000000015";
+  result.primary_object.uuid = {{0x01,0x9e,0x15,0x0f,0,0,0x70,0,0x80,0,0,0,0,0,0,0x15}};
   result.diagnostics.push_back(api::MakeEngineApiDiagnostic(
-      "ENGINE.SHUTDOWN_ACK_TIMEOUT",
+      "SERVER.SHUTDOWN.DRAIN_TIMEOUT",
       "engine.shutdown.ack_timeout",
       "listener acknowledgement timeout for hidden internal route",
-      true));
+      false));
   rendering::EngineParserPackageRenderOptions options;
   options.parser_package_uuid = "019e150f-0000-7000-8000-000000000021";
   options.parser_package_version = "sbsql-observability";
@@ -353,10 +353,11 @@ void TestParserRendering() {
   Require(!envelope.parser_finality_authority && !envelope.reference_finality_authority,
           "parser rendered envelope claimed finality authority");
   Require(envelope.redaction_applied, "parser rendered envelope did not record redaction");
-  Require(!envelope.diagnostics.empty() && envelope.diagnostics.front().retryable,
-          "parser rendered lifecycle diagnostic missing retryability");
-  Require(envelope.diagnostics.front().public_shape_id == "diag.server.lifecycle.v1",
-          "parser rendered lifecycle diagnostic missing lifecycle shape");
+  Require(!envelope.diagnostics.empty() && envelope.diagnostics.front().source_metadata &&
+              envelope.diagnostics.front().source_metadata->retry_class == "false" &&
+              envelope.diagnostics.front().source_metadata->severity ==
+                  scratchbird::core::diagnostics::CanonicalSeverity::warning,
+          "renderer inferred retry or severity from timeout text instead of source metadata");
   Require(envelope.diagnostics.front().detail == "redacted",
           "parser rendered lifecycle diagnostic leaked private detail");
 }

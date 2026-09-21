@@ -22,11 +22,11 @@ std::vector<MetricCatalogBootstrapObject> MetricHistoryBootstrapObjects() {
   };
 }
 
-std::vector<MetricRetentionBootstrapPolicyRow> MetricRetentionBootstrapPolicyRows() {
-  std::vector<MetricRetentionBootstrapPolicyRow> rows;
-  for (auto policy : scratchbird::core::metrics::BaselineMetricRetentionPolicies()) {
-    MetricRetentionBootstrapPolicyRow row;
-    row.policy = std::move(policy);
+std::vector<MetricRetentionBootstrapDefinition> MetricRetentionBootstrapDefinitions() {
+  std::vector<MetricRetentionBootstrapDefinition> rows;
+  for (auto policy : scratchbird::core::metrics::MetricRetentionPolicyDefinitions()) {
+    MetricRetentionBootstrapDefinition row;
+    row.definition = std::move(policy);
     rows.push_back(std::move(row));
   }
   return rows;

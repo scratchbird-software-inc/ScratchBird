@@ -2,7 +2,30 @@
   "uca_version": "17.0.0",
   "data_version": "2026-01-28",
   "source": "Unicode UCA",
+  "unicode_version": "17.0.0",
+  "normalization_form": "NFD",
+  "normalization_source": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt",
+  "unicode_license": "resources/collations/uca/UNICODE-LICENSE.txt",
+  "property_source": "https://www.unicode.org/Public/17.0.0/ucd/PropList.txt",
   "files": [
+    {
+      "type": "unicode_properties",
+      "path": "resources/collations/uca/PropList.txt",
+      "sha256": "130dcddcaadaf071008bdfce1e7743e04fdfbc910886f017d9f9ac931d8c64dd",
+      "format": "UCD-PropList"
+    },
+    {
+      "type": "normalization",
+      "path": "resources/collations/uca/UnicodeData.txt",
+      "sha256": "2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c",
+      "format": "UnicodeData-15-fields"
+    },
+    {
+      "type": "license",
+      "path": "resources/collations/uca/UNICODE-LICENSE.txt",
+      "sha256": "e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96",
+      "format": "Unicode-License-v3"
+    },
     {
       "type": "weights",
       "path": "resources/collations/uca/allkeys.txt",

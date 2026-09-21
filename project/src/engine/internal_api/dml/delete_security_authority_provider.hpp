@@ -15,7 +15,7 @@ class EngineDmlDeleteSecurityAuthorityHandleV1 final {
   struct Authority;
   std::shared_ptr<const Authority> authority_;
   friend EngineDmlDeleteSecurityAuthorityResultV1 CaptureDmlDeleteSecurityAuthorityV1(
-      const EngineRequestContext&, const std::string&);
+      const EngineRequestContext&, const EngineUuid&);
   friend EngineApiDiagnostic RevalidateDmlDeleteSecurityAuthorityV1(
       const EngineRequestContext&, const EngineDmlDeleteSecurityAuthorityResultV1&);
 };
@@ -26,7 +26,7 @@ struct EngineDmlDeleteSecurityAuthorityResultV1 {
   EngineSecurityPolicySnapshotAuthorityV1 snapshot;
   // Privilege-source UUIDs: exact durable grants, or the independently
   // authenticated immutable SysArch bootstrap membership (never text tokens).
-  std::vector<std::string> matched_grant_uuids;
+  std::vector<EngineUuid> matched_grant_uuids;
   EngineDmlDeleteSecurityAuthorityHandleV1 handle;
 };
 
@@ -35,12 +35,12 @@ struct EngineDmlDeleteSecurityAuthorityResultV1 {
 // UPDATE USING/WITH_CHECK projections do not confer DELETE policy authority.
 // This handle alone grants neither mutation, replay nor transaction finality.
 EngineDmlDeleteSecurityAuthorityResultV1 CaptureDmlDeleteSecurityAuthorityV1(
-    const EngineRequestContext&, const std::string& target_relation_uuid);
+    const EngineRequestContext&, const EngineUuid& target_relation_uuid);
 EngineApiDiagnostic RevalidateDmlDeleteSecurityAuthorityV1(
     const EngineRequestContext&, const EngineDmlDeleteSecurityAuthorityResultV1&);
 // Read-only source comparison for an independently authenticated durable
 // owner. Does not register a snapshot, issue a handle, or authorize replay.
 EngineApiDiagnostic RevalidateRecoveredDmlDeleteSecurityProjectionV1(
     const EngineRequestContext&, const EngineSecurityPolicySnapshotAuthorityV1&,
-    const std::vector<std::string>& matched_grant_uuids);
+    const std::vector<EngineUuid>& matched_grant_uuids);
 }  // namespace scratchbird::engine::internal_api

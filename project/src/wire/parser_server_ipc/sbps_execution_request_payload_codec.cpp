@@ -79,6 +79,17 @@ bool UuidPresent(const PsRequestUuidV1& value) {
                      [](byte octet) { return octet != 0; });
 }
 
+bool SystemUuidValid(const PsRequestUuidV1& value) {
+  // System identities are RFC-variant UUIDv7 in canonical network byte order.
+  // These version/variant bits also exclude nil. This validates shape only;
+  // the owning endpoint must still establish authority for the exact bytes.
+  return (value[6] & 0xf0u) == 0x70u && (value[8] & 0xc0u) == 0x80u;
+}
+
+bool OptionalSystemUuidValid(const PsRequestUuidV1& value) {
+  return !UuidPresent(value) || SystemUuidValid(value);
+}
+
 void AppendU16(std::vector<byte>* output, std::uint16_t value) {
   output->push_back(static_cast<byte>(value & 0xffu));
   output->push_back(static_cast<byte>((value >> 8u) & 0xffu));
@@ -275,7 +286,8 @@ bool ValidCursorMode(PsExecutionCursorModeV1 mode) {
 
 PsRequestPayloadDiagnosticV1 ValidateExecuteContext(
     const PsExecuteRequestValidationContextV1& context) {
-  if (!UuidPresent(context.expected_session_uuid) ||
+  if (!SystemUuidValid(context.expected_session_uuid) ||
+      !OptionalSystemUuidValid(context.admitted_donor_execution_profile_uuid) ||
       context.expected_catalog_generation == 0 ||
       context.expected_security_epoch == 0 ||
       context.expected_policy_generation == 0) {
@@ -300,9 +312,9 @@ PsRequestPayloadDiagnosticV1 ValidateExecuteContext(
 
 PsRequestPayloadDiagnosticV1 ValidateFetchContext(
     const PsFetchRequestValidationContextV1& context) {
-  if (!UuidPresent(context.expected_session_uuid) ||
-      !UuidPresent(context.expected_cursor_uuid) ||
-      !UuidPresent(context.expected_cursor_stream_descriptor_uuid) ||
+  if (!SystemUuidValid(context.expected_session_uuid) ||
+      !SystemUuidValid(context.expected_cursor_uuid) ||
+      !SystemUuidValid(context.expected_cursor_stream_descriptor_uuid) ||
       context.expected_cursor_stream_descriptor_version != 1 ||
       context.expected_cursor_stream_descriptor_generation == 0) {
     return Error(PsRequestPayloadStatusV1::invalid_argument,
@@ -327,6 +339,12 @@ PsRequestPayloadDiagnosticV1 ValidateTransactionRequest(
     const PsTransactionRequestV1& transaction) {
   if (!ValidTransactionKind(transaction.request_kind)) {
     return SemanticError(5, "transaction_request_kind_invalid");
+  }
+  if (!OptionalSystemUuidValid(transaction.transaction_uuid) ||
+      !OptionalSystemUuidValid(transaction.savepoint_uuid) ||
+      !OptionalSystemUuidValid(transaction.requested_isolation_profile_uuid) ||
+      !OptionalSystemUuidValid(transaction.requested_sync_profile_uuid)) {
+    return SemanticError(5, "transaction_request_system_identity_invalid");
   }
   const bool transaction_present = UuidPresent(transaction.transaction_uuid);
   const bool savepoint_present = UuidPresent(transaction.savepoint_uuid);
@@ -381,6 +399,9 @@ PsRequestPayloadDiagnosticV1 ValidateExecutionOptions(
   if (options.allow_partial_result) {
     return SemanticError(6, "allow_partial_result_must_be_false");
   }
+  if (!OptionalSystemUuidValid(options.donor_execution_profile_uuid)) {
+    return SemanticError(6, "donor_execution_profile_identity_invalid");
+  }
   if (UuidPresent(options.donor_execution_profile_uuid) &&
       options.donor_execution_profile_uuid !=
           context.admitted_donor_execution_profile_uuid) {
@@ -392,10 +413,11 @@ PsRequestPayloadDiagnosticV1 ValidateExecutionOptions(
 
 PsRequestPayloadDiagnosticV1 ValidateExecuteRequest(
     const PsExecuteRequestPayloadV1& request,
-    const PsExecuteRequestValidationContextV1& context) {
+    const PsExecuteRequestValidationContextV1& context,
+    std::size_t sblr_bytes, std::size_t parameter_bytes) {
   auto validation = ValidateExecuteContext(context);
   if (!validation.ok()) return validation;
-  if (!UuidPresent(request.session_uuid) ||
+  if (!SystemUuidValid(request.session_uuid) ||
       request.session_uuid != context.expected_session_uuid) {
     return AuthorityError(kSessionMismatch, 1,
                           "execute_payload_session_does_not_match_frame");
@@ -406,11 +428,10 @@ PsRequestPayloadDiagnosticV1 ValidateExecuteRequest(
     return AuthorityError(kGenerationStale, 7,
                           "execute_generation_tuple_is_not_current");
   }
-  if (request.sblr_envelope.size() > context.maximum_sblr_bytes) {
+  if (sblr_bytes > context.maximum_sblr_bytes) {
     return ResourceError(3, "sblr_envelope_exceeds_admitted_limit");
   }
-  if (request.parameter_data_packet.size() >
-      context.maximum_parameter_packet_bytes) {
+  if (parameter_bytes > context.maximum_parameter_packet_bytes) {
     return ResourceError(4,
                          "parameter_data_packet_exceeds_admitted_limit");
   }
@@ -420,20 +441,23 @@ PsRequestPayloadDiagnosticV1 ValidateExecuteRequest(
   if (!validation.ok()) return validation;
 
   const bool work_bearing = WorkBearing(request.transaction_request.request_kind);
+  if (!OptionalSystemUuidValid(request.prepared_statement_uuid)) {
+    return SemanticError(2, "prepared_statement_identity_invalid");
+  }
   const bool prepared = UuidPresent(request.prepared_statement_uuid);
-  const bool direct = !request.sblr_envelope.empty();
+  const bool direct = sblr_bytes != 0;
   if (work_bearing) {
     if (prepared == direct) {
       return SemanticError(
           2, "work_bearing_request_requires_exactly_one_execution_path");
     }
-    const bool parameters_present = !request.parameter_data_packet.empty();
+    const bool parameters_present = parameter_bytes != 0;
     if (parameters_present !=
         (context.authoritative_parameter_count != 0)) {
       return SemanticError(
           4, "parameter_packet_presence_disagrees_with_authoritative_shape");
     }
-  } else if (prepared || direct || !request.parameter_data_packet.empty()) {
+  } else if (prepared || direct || parameter_bytes != 0) {
     return SemanticError(
         3, "standalone_transaction_control_carries_execution_bytes");
   }
@@ -445,14 +469,14 @@ PsRequestPayloadDiagnosticV1 ValidateFetchRequest(
     const PsFetchRequestValidationContextV1& context) {
   auto validation = ValidateFetchContext(context);
   if (!validation.ok()) return validation;
-  if (!UuidPresent(request.session_uuid) ||
+  if (!SystemUuidValid(request.session_uuid) ||
       request.session_uuid != context.expected_session_uuid) {
     return AuthorityError(kSessionMismatch, 1,
                           "fetch_payload_session_does_not_match_frame");
   }
-  if (!UuidPresent(request.cursor_uuid) ||
+  if (!SystemUuidValid(request.cursor_uuid) ||
       request.cursor_uuid != context.expected_cursor_uuid ||
-      !UuidPresent(request.cursor_stream_descriptor_uuid) ||
+      !SystemUuidValid(request.cursor_stream_descriptor_uuid) ||
       request.cursor_stream_descriptor_uuid !=
           context.expected_cursor_stream_descriptor_uuid ||
       request.cursor_stream_descriptor_version !=
@@ -670,7 +694,9 @@ PsExecuteRequestPayloadCodecResultV1 EncodeAndValidatePsExecuteRequestV1Payload(
     const PsExecuteRequestPayloadV1& request,
     const PsExecuteRequestValidationContextV1& context) {
   PsExecuteRequestPayloadCodecResultV1 result;
-  result.outcome = ValidateExecuteRequest(request, context);
+  result.outcome = ValidateExecuteRequest(request, context,
+                                         request.sblr_envelope.size(),
+                                         request.parameter_data_packet.size());
   if (!result.outcome.ok()) return result;
   result.outcome = EncodeExecuteUnchecked(request, context,
                                           &result.canonical_payload);
@@ -710,8 +736,6 @@ PsExecuteRequestPayloadCodecResultV1 DecodeAndValidatePsExecuteRequestV1Payload(
   PsExecuteRequestPayloadV1 decoded;
   decoded.session_uuid = LoadUuid(fields[0]);
   decoded.prepared_statement_uuid = LoadUuid(fields[1]);
-  decoded.sblr_envelope.assign(fields[2].begin(), fields[2].end());
-  decoded.parameter_data_packet.assign(fields[3].begin(), fields[3].end());
   if (!DecodeTransactionRequest(fields[4], &decoded.transaction_request,
                                 &result.outcome) ||
       !DecodeExecutionOptions(fields[5], &decoded.execution_options,
@@ -721,8 +745,13 @@ PsExecuteRequestPayloadCodecResultV1 DecodeAndValidatePsExecuteRequestV1Payload(
   decoded.catalog_generation = LoadU64(fields[6].data());
   decoded.security_epoch = LoadU64(fields[7].data());
   decoded.policy_generation = LoadU64(fields[8].data());
-  result.outcome = ValidateExecuteRequest(decoded, context);
+  // Validate the identity, routing, authority and size matrix on borrowed
+  // spans before allocating/copying potentially large executable blobs.
+  result.outcome = ValidateExecuteRequest(decoded, context,
+                                         fields[2].size(), fields[3].size());
   if (!result.outcome.ok()) return result;
+  decoded.sblr_envelope.assign(fields[2].begin(), fields[2].end());
+  decoded.parameter_data_packet.assign(fields[3].begin(), fields[3].end());
   std::vector<byte> canonical;
   result.outcome = EncodeExecuteUnchecked(decoded, context, &canonical);
   if (!result.outcome.ok()) return result;

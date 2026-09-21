@@ -8,6 +8,10 @@
 
 #include "catalog_record_codec.hpp"
 #include "catalog_schema_definition.hpp"
+#include "catalog_metric_retention_policy.hpp"
+#include "catalog_metric_descriptor.hpp"
+#include "catalog_metric_label_schema.hpp"
+#include "catalog_metric_series.hpp"
 
 #include "uuid.hpp"
 #include "hash_digest.hpp"
@@ -117,6 +121,23 @@ CatalogRecordCodecResult EncodeCatalogTypedRecord(const CatalogTypedRecord& reco
     }
   }
 
+  if ((record.header.kind == CatalogRecordKind::metric_series || IsCatalogMetricSeriesPayload(record.payload)) &&
+      !CatalogMetricSeriesMatchesHeader(record))
+    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_series.invalid",
+                      "series_binary_payload_or_header_invalid");
+  if ((record.header.kind == CatalogRecordKind::metric_label_schema || IsCatalogMetricLabelSchemaPayload(record.payload)) &&
+      !CatalogMetricLabelSchemaMatchesHeader(record))
+    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_label_schema.invalid",
+                      "label_schema_binary_payload_or_header_invalid");
+  if ((record.header.kind == CatalogRecordKind::metric_descriptor || IsCatalogMetricDescriptorPayload(record.payload)) &&
+      !CatalogMetricDescriptorMatchesHeader(record))
+    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_descriptor.invalid",
+                      "descriptor_binary_payload_or_header_invalid");
+  if (IsCatalogMetricRetentionPolicyPayload(record.payload) &&
+      !CatalogMetricRetentionPolicyMatchesHeader(record)) {
+    return CodecError("CATALOG.INVALID_INPUT", "catalog.metric_retention.invalid",
+                      "policy_binary_payload_or_header_invalid");
+  }
   if (record.payload.size() > kMaxBinaryRecordBytes - kBinaryHeaderBytes) {
     return CodecError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
                       "catalog.record_codec.fields_missing", "binary_record_size_limit");
@@ -254,7 +275,23 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
                      &Metadata::storage_binding_uuid, &Metadata::donor_overlay_uuid})
     if (IsSuppliedIdentity(value.*member) && !IsTypedIdentity(value.*member, UuidKind::object))
       return MetadataError("object_reference_kind_invalid");
+  if ((value.record.header.kind == CatalogRecordKind::metric_series ||
+       value.object_subtype == "metric_series" || IsCatalogMetricSeriesPayload(value.record.payload)) &&
+      !CatalogMetricSeriesMatchesMetadata(value))
+    return MetadataError("metric_series_definition_binding_invalid");
+  if ((value.record.header.kind == CatalogRecordKind::metric_label_schema ||
+       value.object_subtype == "metric_label_schema" || IsCatalogMetricLabelSchemaPayload(value.record.payload)) &&
+      !CatalogMetricLabelSchemaMatchesMetadata(value))
+    return MetadataError("metric_label_schema_definition_binding_invalid");
+  if ((value.record.header.kind == CatalogRecordKind::metric_descriptor ||
+       value.object_subtype == "metric_descriptor" || IsCatalogMetricDescriptorPayload(value.record.payload)) &&
+      !CatalogMetricDescriptorMatchesMetadata(value))
+    return MetadataError("metric_descriptor_definition_binding_invalid");
   const bool retired = value.record.header.deleted;
+  if ((value.object_subtype == "metric_retention" ||
+       IsCatalogMetricRetentionPolicyPayload(value.record.payload)) &&
+      !CatalogMetricRetentionPolicyMatchesMetadata(value))
+    return MetadataError("metric_retention_definition_binding_invalid");
   if (value.record.header.kind == CatalogRecordKind::schema &&
       !CatalogSchemaDefinitionMatchesMetadata(value))
     return MetadataError("schema_definition_binding_invalid");

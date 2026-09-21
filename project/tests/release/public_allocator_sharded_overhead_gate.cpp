@@ -149,13 +149,33 @@ void ActiveMapFailureDoesNotLeakShardedAccounting() {
   Require(allocator.EnableAllocationFailureInjection(std::move(injection)).ok(),
           "active-map failure injection did not enable");
 
+  // A different owner is rejected before the active-map injection site.
+  const auto wrong_owner = allocator.Reallocate(original.pointer, 128,
+      alignof(std::max_align_t), Tag("active-replacement"));
+  Require(!wrong_owner.ok() && wrong_owner.diagnostic.message_key ==
+              "memory.reallocate.owner_change_requires_explicit_transfer",
+          "reallocate did not reject an implicit ownership transfer");
+  const auto before_injection = allocator.FailureInjectionSnapshot();
+  Require(before_injection.rules.size() == 1 && before_injection.rules[0].failure_count == 0,
+          "owner rejection unexpectedly consumed the active-map injection");
+  std::memset(original.pointer, 0x5a, original.bytes);
+  auto replacement_tag = Tag("active-original");
+  replacement_tag.purpose = "active-map-replacement-same-owner";
   const auto reallocated =
       allocator.Reallocate(original.pointer,
                            128,
                            alignof(std::max_align_t),
-                           Tag("active-replacement"));
-  Require(!reallocated.ok(),
+                           replacement_tag);
+  Require(!reallocated.ok() && reallocated.diagnostic.message_key ==
+              "memory.reallocate.active_map_validation_failed",
           "reallocate should fail when active-map validation is injected");
+  const auto after_injection = allocator.FailureInjectionSnapshot();
+  Require(after_injection.rules.size() == 1 && after_injection.rules[0].failure_count == 1,
+          "active-map failure injection was not exercised exactly once");
+  for (std::size_t i = 0; i < original.bytes; ++i) {
+    Require(static_cast<unsigned char*>(original.pointer)[i] == 0x5a,
+            "failed reallocation changed the original payload");
+  }
   auto snapshot = allocator.Snapshot();
   RequireShardedParity(snapshot, "after active-map failure");
   Require(snapshot.current_bytes == original.bytes,

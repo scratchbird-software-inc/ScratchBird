@@ -11,12 +11,16 @@
 // SB-RESOURCE-SEED-PACK-ANCHOR
 // SEARCH_KEY: WORKLOAD_GOVERNANCE_FAIRNESS
 #include "runtime_platform.hpp"
+#include "collation_profile.hpp"
 
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace scratchbird::core::resources {
+
+class UnicodeNormalizationData;
+class UnicodeCollationData;
 
 using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::Status;
@@ -98,6 +102,7 @@ struct ResourceSeedCharsetDescriptor {
 };
 
 struct ResourceSeedCollationDescriptor {
+  CollationProfile comparison_profile = CollationProfile::unbound;
   scratchbird::core::platform::Uuid resource_uuid;
   std::string canonical_name;
   std::string charset_name;
@@ -206,6 +211,10 @@ struct ResourceSeedCatalogImage {
   std::vector<ResourceSeedCharsetDescriptor> charsets;
   std::vector<ResourceSeedCollationDescriptor> collations;
   std::vector<ResourceSeedTimezoneDescriptor> timezones;
+  // Recompiled from the retained UCD artifact on image admission, never read
+  // from serialized pointers or supplied by the host Unicode installation.
+  std::shared_ptr<const UnicodeNormalizationData> unicode_normalization;
+  std::shared_ptr<const UnicodeCollationData> unicode_collation;
 };
 
 struct ResourceSeedLifecycleEvaluationResult {

@@ -2551,16 +2551,7 @@ EngineCompareScalarValuesResult EngineCompareScalarValues(
     return refuse(detail);
   }
   scratchbird::core::datatypes::DatatypeTextSeedAuthority text_seed;
-  text_seed.active = true;
-  text_seed.seed_pack_name = resolved.resource_descriptor.seed_pack_name;
-  text_seed.seed_pack_version = resolved.resource_descriptor.seed_pack_version;
-  text_seed.charset_name =
-      resolved.resource_descriptor.parent_canonical_name;
-  text_seed.collation_name = resolved.resource_descriptor.canonical_name;
-  text_seed.collation_case_insensitive =
-      resolved.resource_descriptor.case_insensitive;
-  text_seed.collation_accent_insensitive =
-      resolved.resource_descriptor.accent_insensitive;
+  text_seed = TextSeedFromResource(resolved.resource_descriptor);
   if (left.isSqlNull() || right.isSqlNull()) {
     EngineSqlTruthValue truth = EngineSqlTruthValue::unknown;
     std::string refusal_detail;

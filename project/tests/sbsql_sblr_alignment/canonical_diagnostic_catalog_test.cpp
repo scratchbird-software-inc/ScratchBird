@@ -36,9 +36,9 @@ void Sample(std::string_view code,d::CanonicalSeverity severity,bool failure,
 int main() {
   using S=d::CanonicalSeverity;
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
-  // Includes creation ownership and six previously unimported numeric rows. Check the exact
+  // Includes narrow-query and typed metric-update diagnostic registrations. Check the exact
   // admitted Core import, not a minimum row count.
-  Check(catalog.size==1394 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1410 && catalog.data!=nullptr,"complete Core code inventory missing");
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -94,6 +94,37 @@ int main() {
   Sample("SBSQL.METADATA.CATALOG_SQL_FORBIDDEN",S::internal,true,
          "false","block_implementation_path","SBSQL");
   Sample("DIAG.CODE_UNKNOWN",S::error,true,"false","reject_operation","DIAG");
+  Sample("SBLR.QUERY_BINDING.STALE",S::error,true,
+         "only_after_corrected_input_and_fresh_authority_validation",
+         "reject_without_binding_or_result_publication_preserve_transaction_state","SBLR");
+  Sample("SBLR.PLAN_TREE.INVALID_HANDLE",S::error,true,
+         "only_after_corrected_input_and_fresh_authority_validation",
+         "reject_without_binding_or_result_publication_preserve_transaction_state","SBLR");
+  Sample("PROJECTION.EXPRESSION_VECTOR.INVALID",S::error,true,
+         "only_after_corrected_input_and_fresh_authority_validation",
+         "reject_without_binding_or_result_publication_preserve_transaction_state","PROJECTION");
+  Sample("PROJECTION.OUTPUT_ROWSET.INVALID",S::error,true,
+         "only_after_corrected_input_and_fresh_authority_validation",
+         "reject_without_binding_or_result_publication_preserve_transaction_state","PROJECTION");
+  Sample("SORT.ORDERING_VECTOR.INVALID",S::error,true,
+         "only_after_corrected_input_and_fresh_authority_validation",
+         "reject_without_binding_or_result_publication_preserve_transaction_state","SORT");
+  Sample("SORT.COLLATION_PROFILE.INVALID",S::error,true,
+         "only_after_corrected_input_and_fresh_authority_validation",
+         "reject_without_binding_or_result_publication_preserve_transaction_state","SORT");
+  Sample("RESULT_SET.SHAPE_INVALID",S::error,true,
+         "only_after_corrected_input_and_fresh_authority_validation",
+         "reject_without_binding_or_result_publication_preserve_transaction_state","RESULT_SET");
+  Sample("METRIC.RETENTION_POLICY_INVALID",S::error,true,
+         "only_after_corrected_policy_and_fresh_catalog_validation",
+         "reject_without_policy_or_retention_mutation","METRIC");
+  for(const auto& pair:std::initializer_list<std::pair<std::string_view,std::string_view>>{
+      {"METRIC.VALUE_INVALID","only_after_corrected_observation_and_descriptor"},
+      {"METRIC.CURRENT_VALUE_INVALID","only_after_current_state_revalidation_or_repair"},
+      {"METRIC.AGGREGATE_OVERFLOW","only_after_corrected_observation_or_authorized_reset"},
+      {"METRIC.OBSERVATION_RESOURCE_EXHAUSTED","only_after_fresh_resource_admission"},
+      {"METRIC.ARITHMETIC_FAILED","only_after_numeric_backend_revalidation"}})
+    Sample(pair.first,S::error,true,pair.second,"reject_without_current_history_or_counter_mutation","METRIC");
   Sample("DATATYPE.DESCRIPTOR.INVALID",S::error,true,"false","refuse","DATATYPE");
   Sample("UUID.ENGINE_IDENTITY_NOT_V7",S::error,true,
          "never_retry_without_corrected_input_or_revalidated_authority",
@@ -110,6 +141,20 @@ int main() {
          "never_retry_without_corrected_metadata","refuse_cache_hit_preserve_retained_metadata","PREPARED");
   Sample("PREPARED.OWNER_MISMATCH",S::error,true,
          "never_retry_without_corrected_owner","refuse_binding_or_receipt_use","PREPARED");
+  Sample("PREPARED.REGISTRY.INVALID",S::error,true,
+         "only_after_verified_registry_recovery_and_fresh_request",
+         "refuse_without_registry_mutation_or_transaction_outcome_change","PREPARED");
+  Sample("PREPARED.REGISTRY.STALE",S::error,true,
+         "only_after_verified_prepared_authority_revalidation_and_fresh_request",
+         "refuse_without_registry_mutation_or_transaction_outcome_change","PREPARED");
+  Sample("SBLR.PARAMETER.STALE",S::error,true,
+         "only_after_verified_authority_revalidation_and_fresh_receipt",
+         "refuse_without_changing_authoritative_transaction_outcome","SBLR");
+  for(const auto code:{"PREPARED.REGISTRY.INVALID","PREPARED.REGISTRY.STALE"}) {
+    const auto* row=d::FindCanonicalDiagnosticCode(code);
+    Check(row&&row->sqlstate=="55000"&&row->numeric_binding=="not_applicable",
+          "prepared registry SQLSTATE or numeric binding differs");
+  }
   Sample("SBLR.ERROR_VECTOR.STALE",S::error,true,
          "only_after_verified_authority_revalidation_and_fresh_receipt",
          "refuse_without_changing_authoritative_transaction_outcome","SBLR");
@@ -122,14 +167,15 @@ int main() {
         "native/compatibility registration data changed");
   for(const std::string_view unknown:{"","diag.code_unknown"," DIAG.CODE_UNKNOWN",
                                       "DIAG.CODE_UNKNOWN ","SB_ENGINE_API_INVALID_REQUEST",
-                                      "DATATYPE.DESCRIPTOR_INVALID"}) {
+                                      "DATATYPE.DESCRIPTOR_INVALID","SBLR.OPERAND.INVALID",
+                                      "MGA.TRANSACTION.STALE","CATALOG.SNAPSHOT_STALE"}) {
     allocation_forbidden=true;const auto* found=d::FindCanonicalDiagnosticCode(unknown);
     allocation_forbidden=false;
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x79,0xce,0x59,0x8a,0x2d,0x28,0xc5,0xd7,0x74,0x63,0x51,0xde,0x95,0xf8,0xc8,0x97,
-    0x65,0x83,0x63,0x14,0xbd,0x60,0x8e,0x2b,0xb4,0xbb,0x2e,0x8d,0x9a,0x0a,0xed,0x9d};
+    0x34,0xf1,0x24,0x92,0xd9,0x37,0xd1,0x58,0x0c,0x83,0xe2,0x16,0x39,0xa2,0x43,0x6b,
+    0xce,0x15,0x5b,0x23,0x26,0xd8,0x60,0x37,0x80,0x8c,0x35,0xc6,0x1e,0xc1,0x32,0x60};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';

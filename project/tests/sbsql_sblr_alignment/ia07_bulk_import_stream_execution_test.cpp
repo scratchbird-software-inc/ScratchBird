@@ -186,20 +186,20 @@ BulkSha ColumnDigest(const api::MgaRelationStorageDescriptor& descriptor) {
   });
   std::vector<std::uint8_t> material;
   constexpr std::string_view domain =
-      "ScratchBird.BulkImportStreamColumnDescriptorSet.V1";
+      "ScratchBird.BulkImportStreamColumnDescriptorSet.V2";
   material.insert(material.end(), domain.begin(), domain.end());
-  AppendUuid(&material, descriptor.relation_uuid.canonical);
+  AppendUuid(&material, descriptor.relation_uuid.bytes);
   AppendU64(&material, descriptor.relation_generation);
-  AppendUuid(&material, descriptor.descriptor_uuid.canonical);
+  AppendUuid(&material, descriptor.descriptor_uuid.bytes);
   AppendU64(&material, descriptor.descriptor_generation);
   AppendU32(&material, static_cast<std::uint32_t>(columns.size()));
   for (const auto* column : columns) {
     AppendU32(&material, column->ordinal);
-    AppendUuid(&material, column->column_uuid.canonical);
+    AppendUuid(&material, column->column_uuid.bytes);
     AppendU64(&material, column->column_generation);
     AppendLp16(&material, column->canonical_name_key);
     AppendUuid(&material,
-               column->value_descriptor.descriptor_uuid.canonical);
+               column->value_descriptor.descriptor_uuid.bytes);
     AppendLp16(&material, column->value_descriptor.descriptor_kind);
     AppendLp16(&material, column->value_descriptor.canonical_type_name);
     const std::vector<std::uint8_t> encoded(
@@ -211,8 +211,8 @@ BulkSha ColumnDigest(const api::MgaRelationStorageDescriptor& descriptor) {
     material.push_back(column->generated ? 1 : 0);
     material.push_back(column->identity_column ? 1 : 0);
     AppendLp16(&material, column->storage_class);
-    AppendLp16(&material, column->charset_uuid);
-    AppendLp16(&material, column->collation_uuid);
+    AppendUuid(&material, column->charset_uuid.bytes);
+    AppendUuid(&material, column->collation_uuid.bytes);
     AppendU32(&material, column->character_length);
     AppendU64(&material, column->max_inline_bytes);
     AppendLp16(&material, column->overflow_policy);

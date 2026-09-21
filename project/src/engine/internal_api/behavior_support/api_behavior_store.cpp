@@ -77,31 +77,6 @@ std::string ApiBehaviorPayloadFromRequest(const EngineApiRequest& request) {
   return JoinOptions(payload);
 }
 
-EngineTypedValue ApiBehaviorValue(std::string value) {
-  EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "text";
-  typed.encoded_value = std::move(value);
-  typed.is_null = false;
-  return typed;
-}
-
-EngineRowValue ApiBehaviorRow(std::vector<std::pair<std::string, std::string>> fields) {
-  EngineRowValue row;
-  row.requested_row_uuid = GenerateCrudEngineUuid("row");
-  for (auto& field : fields) { row.fields.push_back({std::move(field.first), ApiBehaviorValue(std::move(field.second))}); }
-  return row;
-}
-
-void AddApiBehaviorRow(EngineApiResult* result, std::vector<std::pair<std::string, std::string>> fields) {
-  result->result_shape.result_kind = "api_behavior_rows";
-  result->result_shape.rows.push_back(ApiBehaviorRow(std::move(fields)));
-}
-
-void AddApiBehaviorEvidence(EngineApiResult* result, std::string kind, std::string id) {
-  result->evidence.push_back({std::move(kind), std::move(id)});
-}
-
 EngineDescriptor ApiBehaviorDescriptor(const ApiBehaviorRecord& record) {
   EngineDescriptor descriptor;
   descriptor.descriptor_uuid = record.object_uuid;

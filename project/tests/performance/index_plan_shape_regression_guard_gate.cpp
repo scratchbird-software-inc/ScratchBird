@@ -16,6 +16,7 @@
 #include <iostream>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <utility>
 #include <vector>
 
@@ -69,29 +70,28 @@ platform::TypedUuid StableTypedUuid(platform::UuidKind kind,
   return value;
 }
 
-std::string UuidText(platform::UuidKind kind,
+platform::Uuid BinaryUuid(platform::UuidKind kind,
                      platform::u64 millis,
                      platform::byte suffix) {
-  return uuid::UuidToString(GeneratedUuid(kind, millis, suffix).value);
+  return GeneratedUuid(kind, millis, suffix).value;
 }
 
-platform::TypedUuid ParseTyped(platform::UuidKind kind,
-                               const std::string& text) {
-  const auto parsed = uuid::ParseDurableEngineIdentityUuid(kind, text);
-  Require(parsed.ok(), "typed uuid parse failed");
-  return parsed.value;
+platform::TypedUuid BindTyped(platform::UuidKind kind,
+                               const platform::Uuid& value) {
+  const auto typed = uuid::MakeTypedUuid(kind, value);
+  Require(typed.ok(), "typed uuid binding failed");
+  return typed.value;
 }
 
 std::vector<platform::byte> Bytes(std::string_view text) {
   return std::vector<platform::byte>(text.begin(), text.end());
 }
 
-std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
+std::vector<platform::byte> EncodedKey(const platform::Uuid& index_uuid,
                                        const std::string& key) {
   const auto descriptor_uuid =
-      uuid::ParseDurableEngineIdentityUuid(platform::UuidKind::object,
-                                           index_uuid);
-  Require(descriptor_uuid.ok(), "index uuid parse for key encoding failed");
+      uuid::MakeTypedUuid(platform::UuidKind::object, index_uuid);
+  Require(descriptor_uuid.ok(), "index uuid binding for key encoding failed");
   idx::IndexKeyEncodingComponent component;
   component.kind = idx::IndexKeyComponentKind::scalar;
   component.ordinal = 0;
@@ -102,7 +102,7 @@ std::vector<platform::byte> EncodedKey(const std::string& index_uuid,
   return encoded.encoded;
 }
 
-page::IndexBtreePhysicalScanBound Bound(const std::string& index_uuid,
+page::IndexBtreePhysicalScanBound Bound(const platform::Uuid& index_uuid,
                                         const std::string& key,
                                         bool inclusive = true) {
   page::IndexBtreePhysicalScanBound bound;
@@ -112,22 +112,22 @@ page::IndexBtreePhysicalScanBound Bound(const std::string& index_uuid,
   return bound;
 }
 
-page::IndexBtreePhysicalTree MakeTree(const std::string& index_uuid) {
+page::IndexBtreePhysicalTree MakeTree(const platform::Uuid& index_uuid) {
   auto initialized = page::InitializeIndexBtreePhysicalTree(
-      ParseTyped(platform::UuidKind::object, index_uuid), 768);
+      BindTyped(platform::UuidKind::object, index_uuid), 768);
   Require(initialized.ok(), "physical btree init failed");
   return std::move(initialized.tree);
 }
 
-page::IndexBtreeCell Cell(const std::string& index_uuid,
+page::IndexBtreeCell Cell(const platform::Uuid& index_uuid,
                           const std::string& key,
-                          const std::string& row_uuid,
-                          const std::string& version_uuid) {
+                          const platform::Uuid& row_uuid,
+                          const platform::Uuid& version_uuid) {
   page::IndexBtreeCell cell;
   cell.key_ordinal = 0;
   cell.encoded_key = EncodedKey(index_uuid, key);
-  cell.row_uuid = ParseTyped(platform::UuidKind::row, row_uuid);
-  cell.version_uuid = ParseTyped(platform::UuidKind::row, version_uuid);
+  cell.row_uuid = BindTyped(platform::UuidKind::row, row_uuid);
+  cell.version_uuid = BindTyped(platform::UuidKind::row, version_uuid);
   return cell;
 }
 
@@ -156,22 +156,22 @@ exec::IndexedPhysicalOperatorRequest BaseRequest(
 }
 
 struct Fixture {
-  std::string index_uuid =
-      UuidText(platform::UuidKind::object, 1700620000000ull, 0x41);
-  std::string table_uuid =
-      UuidText(platform::UuidKind::object, 1700620001000ull, 0x42);
-  std::string row_alpha =
-      UuidText(platform::UuidKind::row, 1700620100000ull, 0x51);
-  std::string row_bravo =
-      UuidText(platform::UuidKind::row, 1700620101000ull, 0x52);
-  std::string row_charlie =
-      UuidText(platform::UuidKind::row, 1700620102000ull, 0x53);
-  std::string version_alpha =
-      UuidText(platform::UuidKind::row, 1700620200000ull, 0x61);
-  std::string version_bravo =
-      UuidText(platform::UuidKind::row, 1700620201000ull, 0x62);
-  std::string version_charlie =
-      UuidText(platform::UuidKind::row, 1700620202000ull, 0x63);
+  platform::Uuid index_uuid =
+      BinaryUuid(platform::UuidKind::object, 1700620000000ull, 0x41);
+  platform::Uuid table_uuid =
+      BinaryUuid(platform::UuidKind::object, 1700620001000ull, 0x42);
+  platform::Uuid row_alpha =
+      BinaryUuid(platform::UuidKind::row, 1700620100000ull, 0x51);
+  platform::Uuid row_bravo =
+      BinaryUuid(platform::UuidKind::row, 1700620101000ull, 0x52);
+  platform::Uuid row_charlie =
+      BinaryUuid(platform::UuidKind::row, 1700620102000ull, 0x53);
+  platform::Uuid version_alpha =
+      BinaryUuid(platform::UuidKind::row, 1700620200000ull, 0x61);
+  platform::Uuid version_bravo =
+      BinaryUuid(platform::UuidKind::row, 1700620201000ull, 0x62);
+  platform::Uuid version_charlie =
+      BinaryUuid(platform::UuidKind::row, 1700620202000ull, 0x63);
   page::IndexBtreePhysicalTree tree = MakeTree(index_uuid);
 
   Fixture() {
@@ -236,12 +236,12 @@ idx::CoveringIndexPayloadAdmission AdmitPayload(
   const auto c1 = Column(1, 0);
   const auto c2 = Column(2, 1);
   idx::CoveringIndexPayloadAssemblyRequest assembly;
-  assembly.index_uuid = ParseTyped(platform::UuidKind::object,
+  assembly.index_uuid = BindTyped(platform::UuidKind::object,
                                    fixture.index_uuid);
-  assembly.table_uuid = ParseTyped(platform::UuidKind::object,
+  assembly.table_uuid = BindTyped(platform::UuidKind::object,
                                    fixture.table_uuid);
-  assembly.row_uuid = ParseTyped(platform::UuidKind::row, locator.row_uuid);
-  assembly.version_uuid = ParseTyped(platform::UuidKind::row,
+  assembly.row_uuid = BindTyped(platform::UuidKind::row, locator.row_uuid);
+  assembly.version_uuid = BindTyped(platform::UuidKind::row,
                                      locator.version_uuid);
   assembly.descriptor_result_contract_hash = "contract:irc062:v1";
   assembly.payload_generation = 10;
@@ -300,7 +300,7 @@ exec::LateMaterializationIndexedRuntimeResult LateResult(
         out.ok = true;
         out.row.row_uuid = locator.row_uuid;
         out.row.version_uuid = locator.version_uuid;
-        out.row.projected_values = {"base:" + locator.row_uuid};
+        out.row.projected_values = {"base-row-value"};
         return out;
       });
 }
@@ -409,6 +409,30 @@ void PositiveRoutesReportPhysicalConsumption() {
   covering_request.covering_projection_result = &covering;
   RequireGuardOk(exec::EvaluateIndexPlanShapeRegressionGuard(covering_request),
                  "covering_projection_only");
+}
+
+void OperatorEvidenceRequiresExactText() {
+  const Fixture fixture;
+  auto stream = PointStream(fixture);
+  Require(stream.ok && !stream.locators.empty(), "physical stream for evidence checks failed");
+  auto evidence = std::find_if(stream.evidence.begin(), stream.evidence.end(),
+      [](const auto& item) { return item.evidence_kind == "indexed_physical_operator"; });
+  Require(evidence != stream.evidence.end(), "physical stream operator evidence missing");
+  const auto request = GuardRequest("exact_operator_evidence",
+      exec::IndexPlanShapeRequiredPath::indexed_point_lookup, &stream);
+  using Value = scratchbird::engine::internal_api::EngineEvidenceValue;
+  for (const auto& invalid : std::vector<Value>{
+           std::string("not_point_lookup"), std::string("point_lookup_not_consumed"),
+           std::string("point_lookup\0suffix", 19), std::string{},
+           platform::Uuid{}, stream.locators.front().row_uuid}) {
+    evidence->evidence_id = invalid;
+    ExpectRefusal(request, "SB-IRC062-PHYSICAL-ROUTE-SHAPE-MISMATCH", false);
+  }
+  evidence->evidence_id = std::string("point_lookup");
+  RequireGuardOk(exec::EvaluateIndexPlanShapeRegressionGuard(request),
+                 "exact_operator_evidence");
+  evidence->evidence_kind = "not_indexed_physical_operator";
+  ExpectRefusal(request, "SB-IRC062-PHYSICAL-ROUTE-SHAPE-MISMATCH", false);
 }
 
 void ScanAndWrapperRegressionsFailClosed() {
@@ -576,6 +600,7 @@ void ExactBlockersAreNotReportedAsRegressions() {
 
 int main() {
   PositiveRoutesReportPhysicalConsumption();
+  OperatorEvidenceRequiresExactText();
   ScanAndWrapperRegressionsFailClosed();
   ExactBlockersAreNotReportedAsRegressions();
   std::cout << "index_plan_shape_regression_guard_gate=passed\n";

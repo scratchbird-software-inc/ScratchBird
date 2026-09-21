@@ -21,6 +21,9 @@ api::EngineDescriptor Descriptor() {
   value.descriptor_uuid = {{1,2,3,4,5,6,0x77,8,0x89,10,11,12,13,14,15,16}};
   value.type_uuid = {{1,2,3,4,5,6,0x77,8,0x89,10,11,12,13,14,15,17}};
   value.collation_uuid = {{1,2,3,4,5,6,0x77,8,0x89,10,11,12,13,14,15,18}};
+  value.datatype_descriptor_uuid = {{1,2,3,4,5,6,0x77,8,0x89,10,11,12,13,14,15,19}};
+  value.datatype_descriptor_generation = 0x1020304050607080ULL;
+  value.charset_uuid = {{1,2,3,4,5,6,0x77,8,0x89,10,11,12,13,14,15,20}};
   value.descriptor_kind = "scalar";
   value.canonical_type_name = "text";
   value.encoded_descriptor = "nullability=nullable";
@@ -58,6 +61,10 @@ void CheckFraming() {
 void CheckDescriptors() {
   const auto original = Descriptor();
   const auto expected = ex::PreparedDescriptorSetDigest({original}, {});
+  // Independent revision3/domain2 preimage assembled from the Core field
+  // order and hashed with openssl, not the production ContentEncoder.
+  Require(expected == "sha256:20be8bb2ec01c3a34c1602e33bf32a252ca11422804a1a6e46ecda9250947df8",
+          "prepared datatype binding preimage differs from independent oracle");
   const ex::PreparedResultShapeDescriptor shape{"rows", {{"value", original, 0}}, {}};
   const auto expected_shape = ex::PreparedResultShapeDigest(shape);
   api::EngineColumnDefinition column;
@@ -66,9 +73,20 @@ void CheckDescriptors() {
   column.ordinal = 2;
   column.nullable = true;
   const auto expected_column = ex::PreparedDescriptorSetDigest({}, {column});
+  for (unsigned bit = 0; bit != 64; ++bit) {
+    auto changed = original; changed.datatype_descriptor_generation ^= std::uint64_t{1} << bit;
+    auto changed_column = column; changed_column.descriptor = changed;
+    auto changed_shape = shape; changed_shape.columns[0].descriptor = changed;
+    Require(ex::PreparedDescriptorSetDigest({changed}, {}) != expected &&
+            ex::PreparedDescriptorSetDigest({}, {changed_column}) != expected_column &&
+            ex::PreparedResultShapeDigest(changed_shape) != expected_shape,
+            "datatype descriptor generation omitted from prepared metadata digest");
+  }
   for (const auto member : {&api::EngineDescriptor::descriptor_uuid,
+                            &api::EngineDescriptor::datatype_descriptor_uuid,
                             &api::EngineDescriptor::type_uuid,
-                            &api::EngineDescriptor::collation_uuid}) {
+                            &api::EngineDescriptor::collation_uuid,
+                            &api::EngineDescriptor::charset_uuid}) {
     for (unsigned bit = 0; bit != 128; ++bit) {
       auto changed = original;
       (changed.*member).bytes[bit / 8] ^= 1u << (bit % 8);

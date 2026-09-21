@@ -246,6 +246,7 @@ struct QowProjectionExpressionBuildStateV1 {
   std::vector<std::vector<std::uint32_t>> child_expression_ids;
   std::vector<bool> shareable;
   std::vector<std::uint32_t> root_expression_ids;
+  std::size_t function_identity_count = 0;
 };
 
 bool QowReadProjectionExpressionV1(
@@ -319,9 +320,23 @@ bool QowReadProjectionExpressionV1(
 
   std::string argument_count_key;
   if (expression->expression_kind == "function") {
-    if (expression->function_id.empty()) {
-      return refuse("function_id", "projection function id is required");
+    const auto legacy_identity = prefix + "function_uuid";
+    for (const auto& option : request.option_envelopes) {
+      const auto name = std::string_view(option).substr(0, option.find(':'));
+      if (name == legacy_identity)
+        return refuse("function_uuid", "projection function identity cannot be a text option");
     }
+    const EngineUuid* identity = nullptr;
+    for (const auto& binding : request.projection.function_identities) {
+      if (binding.first != prefix) continue;
+      if (identity || !core::uuid::IsEngineIdentityUuid(binding.second))
+        return refuse("function_uuid", "projection function identity is duplicate or invalid");
+      identity = &binding.second;
+    }
+    if (!identity)
+      return refuse("function_uuid", "projection function requires its bound binary identity");
+    expression->function_uuid = *identity;
+    ++graph->function_identity_count;
     argument_count_key = "function_arg_count:";
   } else if (expression->expression_kind == "operator") {
     if (expression->operator_id.empty() &&
@@ -443,6 +458,8 @@ bool QowReadCanonicalProjectionExpressionsV1(
     graph.root_expression_ids.push_back(root_id);
     expressions->push_back(std::move(expression));
   }
+  if (graph.function_identity_count != request.projection.function_identities.size())
+    return refuse("function_uuid", "projection contains an unused function identity binding");
   if (!QowValidateCanonicalExpressionGraphV1(
           graph.expression_ids, graph.child_expression_ids, graph.shareable,
           graph.root_expression_ids, validated_node_count,

@@ -13,6 +13,7 @@
 #include "../../../core/platform/runtime_platform.hpp"
 
 #include <cstdint>
+#include <compare>
 #include <optional>
 #include <string>
 #include <vector>
@@ -530,6 +531,24 @@ template <typename SourceRecord>
   return true;
 }
 
+enum class BoundRelationalPropertyRole : std::uint16_t {
+  kSortOrdering = 1, kWindowPartition, kWindowOrdering, kWindowResult,
+  kWindowFrame, kPatternPartition, kPatternOrdering,
+};
+
+struct BoundRelationalPropertyKey {
+  std::uint32_t relation_id{0};
+  std::uint32_t subject_id{0};
+  BoundRelationalPropertyRole role{BoundRelationalPropertyRole::kSortOrdering};
+  auto operator<=>(const BoundRelationalPropertyKey&) const = default;
+};
+
+struct BoundRelationalPropertyIdentity {
+  BoundRelationalPropertyKey key;
+  core::platform::Uuid uuid;
+  bool operator==(const BoundRelationalPropertyIdentity&) const = default;
+};
+
 struct BoundNativeRelationalDocument {
   bool bound{false};
   scratchbird::core::platform::Uuid bound_ast_uuid;
@@ -550,6 +569,7 @@ struct BoundNativeRelationalDocument {
   std::vector<BoundWindowDefinitionAstRecord> window_definitions;
   std::vector<BoundWindowInvocationAstRecord> window_invocations;
   std::vector<BoundRowPatternAstRecord> row_patterns;
+  std::vector<BoundRelationalPropertyIdentity> property_identities;
   std::vector<BoundOutputAstRecord> outputs;
   std::vector<BoundRelationAstRecord> relations;
   std::vector<BoundCatalogRelationSourceAstRecord> catalog_relation_sources;

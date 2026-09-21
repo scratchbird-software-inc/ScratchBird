@@ -72,6 +72,7 @@ add_library(sb_storage_page
   page_registry.cpp
   reserved_page_family_body.cpp
   row_data_page.cpp
+  native_row_data_page.cpp
   row_data_physical_sweep.cpp
   row_version_cleanup_batch.cpp
   repair_identity_rules.cpp

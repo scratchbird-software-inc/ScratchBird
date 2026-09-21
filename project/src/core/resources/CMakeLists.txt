@@ -9,8 +9,10 @@
 add_library(sb_core_resources
   resource_residency_cache.cpp
   resource_seed_pack.cpp
+  unicode_normalization.cpp
+  unicode_collation.cpp
 )
 
 target_compile_features(sb_core_resources PUBLIC cxx_std_17)
 target_include_directories(sb_core_resources PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(sb_core_resources PUBLIC sb_core_platform)
+target_link_libraries(sb_core_resources PUBLIC sb_core_platform PRIVATE sb_core_hash)

@@ -31,8 +31,8 @@ struct EngineExecuteNativeBulkIngestRequest : public EngineApiRequest {
   // parser/public ABI surface and may not alter rows or authority.
   std::function<EngineApiDiagnostic()> before_mutation_publication;
   std::function<EngineApiDiagnostic(
-      std::span<const std::string>, std::span<const std::string>,
-      std::span<const std::string>)>
+      std::span<const EngineUuid>, std::span<const EngineUuid>,
+      std::span<const EngineUuid>)>
       before_row_publication;
   std::function<EngineApiDiagnostic(EngineApiU64, EngineApiU64,
                                     EngineApiU64)>

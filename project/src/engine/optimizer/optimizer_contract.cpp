@@ -807,18 +807,13 @@ EnumerateCanonicalOptimizerAlternativeInventory(
   result.catalog.mga_statement_context = graph.mga_statement_context;
 
   std::set<planner::CanonicalPlannerUuid> alternative_uuids;
-  std::unordered_set<std::string> node_implementations;
   for (const auto* record : records) {
     const auto node_it = nodes_by_id.find(record->logical_node_id);
-    const auto implementation_key =
-        std::to_string(record->logical_node_id) + ":" +
-        record->implementation_id;
     if (!canonical_uuid(record->alternative_uuid) ||
         !alternative_uuids.insert(record->alternative_uuid).second ||
         !canonical_uuid(record->capability_uuid) ||
         node_it == nodes_by_id.end() ||
         !stable_id(record->implementation_id) ||
-        !node_implementations.insert(implementation_key).second ||
         !stable_id(record->compatibility_profile_id)) {
       return refuse("QOW-DIAG-OPTIMIZER-INVENTORY-IDENTITY-V1",
                     record->logical_node_id, record->alternative_uuid,

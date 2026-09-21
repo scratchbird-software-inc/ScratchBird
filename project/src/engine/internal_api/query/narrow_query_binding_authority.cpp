@@ -15,6 +15,7 @@
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
 #include "uuid.hpp"
+#include "../../../core/time/time.hpp"
 
 #include <algorithm>
 #include <array>
@@ -54,9 +55,8 @@ bool ValidTypedResultTransportBytesPerPacket(std::uint64_t value) {
          value <= kMaximumTypedResultTransportBytesPerPacket;
 }
 
-std::atomic<std::uint64_t> g_identity_ordinal{1};
 std::mutex g_authority_mutex;
-std::unordered_map<std::string,
+std::map<EngineUuid,
                    std::shared_ptr<
                        EngineNarrowQueryBindingAuthorityHandleV1::Authority>>
     g_authorities_by_receipt;
@@ -78,79 +78,34 @@ bool HasTag(const EngineRequestContext& context, std::string_view tag) {
          context.trace_tags.end();
 }
 
-bool ExactUuid(std::string_view text) {
-  if (text.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == text;
+bool ExactUuid(const EngineUuid& uuid) {
+  return scratchbird::core::uuid::IsEngineIdentityUuid(uuid);
 }
 
-struct ExactEncodedDescriptorFieldLookup {
-  bool well_formed = false;
-  bool present = false;
-  std::string value;
-};
-
-ExactEncodedDescriptorFieldLookup LookupExactEncodedDescriptorField(
-    const std::string_view descriptor,
-    const std::string_view requested_key) {
-  ExactEncodedDescriptorFieldLookup result;
-  if (descriptor.empty() || requested_key.empty()) return result;
-  std::size_t start = 0;
-  while (start <= descriptor.size()) {
-    const auto end = descriptor.find(';', start);
-    const auto field = descriptor.substr(
-        start, end == std::string_view::npos ? std::string_view::npos
-                                             : end - start);
-    const auto equals = field.find('=');
-    if (field.empty() || equals == std::string_view::npos || equals == 0 ||
-        equals + 1 == field.size()) {
-      return {};
-    }
-    if (field.substr(0, equals) == requested_key) {
-      if (result.present) return {};
-      result.present = true;
-      result.value = std::string(field.substr(equals + 1));
-    }
-    if (end == std::string_view::npos) break;
-    start = end + 1;
-  }
-  result.well_formed = true;
-  return result;
-}
-
-bool ToWireUuid(std::string_view text, wire::NarrowQueryUuid* output) {
-  if (output == nullptr || !ExactUuid(text)) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(),
-            output->begin());
+bool ToWireUuid(const EngineUuid& uuid, wire::NarrowQueryUuid* output) {
+  if (output == nullptr || !ExactUuid(uuid)) return false;
+  *output = uuid.bytes;
   return true;
 }
 
-std::string UuidText(const wire::NarrowQueryUuid& input) {
-  scratchbird::core::platform::Uuid uuid{};
-  std::copy(input.begin(), input.end(), uuid.bytes.begin());
-  if (scratchbird::core::uuid::IsNilUuid(uuid)) return {};
-  return scratchbird::core::uuid::UuidToString(uuid);
+EngineUuid FromWireUuid(const wire::NarrowQueryUuid& input) {
+  return EngineUuid{input};
 }
 
-std::string FreshUuid(std::unordered_set<std::string>* issued) {
+EngineUuid FreshUuid(std::set<EngineUuid>* issued) {
   if (issued == nullptr) return {};
   constexpr std::uint64_t kAttempts = 64;
-  const auto now = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::system_clock::now().time_since_epoch())
-          .count());
+  const auto clock = scratchbird::core::time::ReadWallClockTime();
+  if (!clock.ok()) return {};
+  const auto timestamp = scratchbird::core::time::WallClockToUuidV7Millis(clock.value);
+  if (!timestamp.ok()) return {};
   for (std::uint64_t attempt = 0; attempt < kAttempts; ++attempt) {
-    const auto ordinal =
-        g_identity_ordinal.fetch_add(1, std::memory_order_relaxed);
     const auto generated =
         scratchbird::core::uuid::GenerateDurableEngineIdentityV7(
             scratchbird::core::platform::UuidKind::object,
-            now + ordinal + attempt);
+            timestamp.unix_epoch_millis);
     if (!generated.ok()) return {};
-    auto text = scratchbird::core::uuid::UuidToString(generated.value.value);
-    if (issued->insert(text).second) return text;
+    if (issued->insert(generated.value.value).second) return generated.value.value;
   }
   return {};
 }
@@ -179,16 +134,14 @@ void AppendU64(std::vector<std::uint8_t>* bytes, std::uint64_t value) {
 }
 
 bool AppendUuid(std::vector<std::uint8_t>* bytes,
-                std::string_view text,
+                const EngineUuid& uuid,
                 bool optional = false) {
-  if (text.empty() && optional) {
+  if (uuid.is_nil() && optional) {
     bytes->insert(bytes->end(), 16, 0);
     return true;
   }
-  if (!ExactUuid(text)) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  bytes->insert(bytes->end(), parsed.value.bytes.begin(),
-                parsed.value.bytes.end());
+  if (!ExactUuid(uuid)) return false;
+  bytes->insert(bytes->end(), uuid.bytes.begin(), uuid.bytes.end());
   return true;
 }
 
@@ -212,7 +165,7 @@ bool HashBytes(const std::vector<std::uint8_t>& bytes,
 EngineApiDiagnostic CodecDiagnostic(const wire::NarrowQueryBindingError& error,
                                     std::string_view key) {
   return Diagnostic(error.diagnostic_code.empty()
-                        ? "SBLR.OPERAND.INVALID"
+                        ? "SBLR.OPERAND_INVALID"
                         : error.diagnostic_code,
                     std::string(key),
                     error.field.empty() ? error.detail
@@ -222,7 +175,7 @@ EngineApiDiagnostic CodecDiagnostic(const wire::NarrowQueryBindingError& error,
 EngineApiDiagnostic DemandDiagnostic(
     const wire::NarrowQueryBindingDemandError& error) {
   return Diagnostic(error.diagnostic_code.empty()
-                        ? "SBLR.OPERAND.INVALID"
+                        ? "SBLR.OPERAND_INVALID"
                         : error.diagnostic_code,
                     "sblr.query_execute.narrow_demand_invalid",
                     error.field.empty() ? error.detail
@@ -304,10 +257,10 @@ std::string ResultRowField(const EngineApiResult& result,
 }
 
 std::string RelationCanonicalName(const EngineRequestContext& context,
-                                  std::string_view relation_uuid) {
+                                  const EngineUuid& relation_uuid) {
   EngineMapUuidToNameRequest request;
   request.context = context;
-  request.target_object.uuid = std::string(relation_uuid);
+  request.target_object.uuid = relation_uuid;
   request.target_object.object_kind = "relation";
   const auto result = EngineMapUuidToName(request);
   if (!result.ok ||
@@ -399,25 +352,20 @@ bool BuildProjectedSource(const EngineRequestContext& context,
   for (const auto& column : descriptor.columns) {
     ProjectedColumn projected;
     projected.descriptor = column;
-    const auto embedded_datatype_descriptor =
-        LookupExactEncodedDescriptorField(
-            column.value_descriptor.encoded_descriptor,
-            "datatype_descriptor_uuid");
-    const std::string& canonical_datatype_descriptor_uuid =
-        embedded_datatype_descriptor.present
-            ? embedded_datatype_descriptor.value
-            : column.value_descriptor.descriptor_uuid;
+    const auto& canonical_datatype_descriptor_uuid =
+        column.value_descriptor.datatype_descriptor_uuid;
     const auto datatype = datatypes::LookupDatatypeTypeCodecIdentityV1(
         context.datatype_catalog_snapshot_uuid,
         context.datatype_catalog_generation,
         context.datatype_registry_generation,
-        canonical_datatype_descriptor_uuid, 1);
-    if (embedded_datatype_descriptor.well_formed &&
-        ExactUuid(canonical_datatype_descriptor_uuid) && datatype.ok) {
+        canonical_datatype_descriptor_uuid,
+        column.value_descriptor.datatype_descriptor_generation);
+    if (ExactUuid(canonical_datatype_descriptor_uuid) && datatype.ok &&
+        datatype.row.type_uuid == column.value_descriptor.type_uuid) {
       projected.datatype = datatype.row;
     }
 
-    if (!column.charset_uuid.empty()) {
+    if (!column.charset_uuid.is_nil()) {
       EngineUuid uuid{column.charset_uuid};
       const auto charset = LookupEngineResourceDescriptorByUuid(
           context, uuid, "charset");
@@ -436,7 +384,7 @@ bool BuildProjectedSource(const EngineRequestContext& context,
       projected.charset_variable_width =
           charset.resource_descriptor.variable_width;
     }
-    if (!column.collation_uuid.empty()) {
+    if (!column.collation_uuid.is_nil()) {
       EngineUuid uuid{column.collation_uuid};
       const auto collation = LookupEngineResourceDescriptorByUuid(
           context, uuid, "collation");
@@ -448,7 +396,7 @@ bool BuildProjectedSource(const EngineRequestContext& context,
           collation.resource_descriptor.resource_epoch !=
               context.resource_epoch ||
           collation.resource_descriptor.family_epoch == 0) {
-        *diagnostic = Diagnostic("SORT.COLLATION_PROFILE_INVALID",
+        *diagnostic = Diagnostic("SORT.COLLATION_PROFILE.INVALID",
                                  "sblr.query_execute.collation_stale");
         return false;
       }
@@ -524,7 +472,7 @@ bool ResolveProjectedSource(const EngineRequestContext& context,
     }
     return false;
   }
-  const auto relation_uuid = UuidText(demand.relation_object_uuid_hint);
+  const auto relation_uuid = FromWireUuid(demand.relation_object_uuid_hint);
   const auto loaded = LoadMgaRelationStorageDescriptor(context, relation_uuid);
   if (!loaded.ok || loaded.descriptor.relation_uuid != relation_uuid) {
     *diagnostic = loaded.ok
@@ -549,7 +497,7 @@ const ProjectedColumn* FindColumn(const ResolvedSource& source,
   return found == source.columns.end() ? nullptr : &*found;
 }
 
-bool FillFreshUuid(std::unordered_set<std::string>* issued,
+bool FillFreshUuid(std::set<EngineUuid>* issued,
                    wire::NarrowQueryUuid* output) {
   return ToWireUuid(FreshUuid(issued), output);
 }
@@ -835,10 +783,10 @@ IssueNarrowQueryBindingAuthorityV1(
   if (!ExactUuid(request.policy_snapshot_uuid) ||
       request.policy_generation == 0 ||
       request.context.statement_receipt_uuid !=
-          UuidText(request.demand.statement_receipt_uuid) ||
+          FromWireUuid(request.demand.statement_receipt_uuid) ||
       request.demand.exact_bytes.empty()) {
     result.diagnostic = Diagnostic(
-        "SBLR.OPERAND.INVALID",
+        "SBLR.OPERAND_INVALID",
         "sblr.query_execute.narrow_issue_request_invalid");
     return result;
   }
@@ -869,7 +817,7 @@ IssueNarrowQueryBindingAuthorityV1(
           "sblr.query_execute.relation_hint_required");
       return result;
     }
-    const auto relation_uuid = UuidText(source.relation_object_uuid_hint);
+    const auto relation_uuid = FromWireUuid(source.relation_object_uuid_hint);
     const auto authorization = EvaluateMaterializedAuthorization(
         request.context, request.context.authorization_context, "SELECT",
         relation_uuid);
@@ -924,7 +872,7 @@ IssueNarrowQueryBindingAuthorityV1(
       request.context.datatype_registry_generation;
   binding.policy_generation = request.policy_generation;
 
-  std::unordered_set<std::string> issued;
+  std::set<EngineUuid> issued;
   const auto issue = [&](wire::NarrowQueryUuid* output) {
     return FillFreshUuid(&issued, output);
   };
@@ -979,7 +927,7 @@ IssueNarrowQueryBindingAuthorityV1(
   for (const auto& demand : decoded_demand.outputs) {
     if (demand.source_ordinal >= sources.size()) {
       result.diagnostic = Diagnostic(
-          "PROJECTION.EXPRESSION_VECTOR_INVALID",
+          "PROJECTION.EXPRESSION_VECTOR.INVALID",
           "sblr.query_execute.output_source_invalid");
       return result;
     }
@@ -1034,7 +982,7 @@ IssueNarrowQueryBindingAuthorityV1(
   for (const auto& demand : decoded_demand.ordering_terms) {
     if (demand.source_ordinal >= sources.size()) {
       result.diagnostic = Diagnostic(
-          "SORT.ORDERING_VECTOR_INVALID",
+          "SORT.ORDERING_VECTOR.INVALID",
           "sblr.query_execute.order_source_invalid");
       return result;
     }
@@ -1042,7 +990,7 @@ IssueNarrowQueryBindingAuthorityV1(
                                     demand.source_column_spelling);
     if (column == nullptr) {
       result.diagnostic = Diagnostic(
-          "SORT.ORDERING_VECTOR_INVALID",
+          "SORT.ORDERING_VECTOR.INVALID",
           "sblr.query_execute.order_column_invalid");
       return result;
     }
@@ -1051,11 +999,11 @@ IssueNarrowQueryBindingAuthorityV1(
     if (!issue(&term.ordering_term_uuid) ||
         !ToWireUuid(column->descriptor.column_uuid,
                     &term.source_column_uuid) ||
-        (!column->descriptor.collation_uuid.empty() &&
+        (!column->descriptor.collation_uuid.is_nil() &&
          !ToWireUuid(column->descriptor.collation_uuid,
                      &term.collation_uuid))) {
       result.diagnostic = Diagnostic(
-          "SORT.COLLATION_PROFILE_INVALID",
+          "SORT.COLLATION_PROFILE.INVALID",
           "sblr.query_execute.order_identity_invalid");
       return result;
     }
@@ -1119,7 +1067,7 @@ IssueNarrowQueryBindingAuthorityV1(
     const auto& receipt = request.context.statement_receipt_uuid;
     if (g_authorities_by_receipt.contains(receipt)) {
       result.diagnostic = Diagnostic(
-          "MGA.TRANSACTION.STALE",
+          "SBLR.QUERY_BINDING.STALE",
           "sblr.query_execute.binding_already_issued");
       return result;
     }
@@ -1158,7 +1106,7 @@ ConsumeNarrowQueryBindingAuthorityV1(
       authority->exact_binding_bytes != request.exact_binding_bytes) {
     result.diagnostic = Diagnostic(
         authority->exact_binding_bytes == request.exact_binding_bytes
-            ? "MGA.TRANSACTION.STALE"
+            ? "SBLR.QUERY_BINDING.STALE"
             : "SBLR.PLAN_TREE.INVALID_HANDLE",
         "sblr.query_execute.binding_stale_or_mismatched");
     return result;
@@ -1199,7 +1147,7 @@ bool CopyNarrowQueryBindingAuthoritySnapshotV1(
   std::lock_guard lock(handle.authority_->mutex);
   if (handle.authority_->released || !handle.authority_->consumed) {
     *diagnostic = Diagnostic(
-        "MGA.TRANSACTION.STALE",
+        "SBLR.QUERY_BINDING.STALE",
         "sblr.query_execute.binding_handle_stale");
     return false;
   }
@@ -1229,13 +1177,13 @@ RetainNarrowQueryTypedResultResourceGrantReceiptV1(
   if (authority.released || !authority.consumed ||
       !SameContext(authority.pinned_context, context)) {
     result.diagnostic = Diagnostic(
-        "MGA.TRANSACTION.STALE",
+        "SBLR.QUERY_BINDING.STALE",
         "sblr.query_execute.typed_result_grant_lifetime_stale");
     return result;
   }
   if (authority.typed_result_resource_grant_retained) {
     result.diagnostic = Diagnostic(
-        "MGA.TRANSACTION.STALE",
+        "SBLR.QUERY_BINDING.STALE",
         "sblr.query_execute.typed_result_grant_already_retained");
     return result;
   }
@@ -1308,7 +1256,7 @@ RevalidateNarrowQuerySourceOccurrenceAuthorityV1(
       !SameContext(authority.pinned_context, context)) {
     result.stale = true;
     result.diagnostic = Diagnostic(
-        "MGA.TRANSACTION.STALE",
+        "SBLR.QUERY_BINDING.STALE",
         "sblr.query_execute.source_revalidation_lifetime_stale");
     return result;
   }
@@ -1337,13 +1285,13 @@ RevalidateNarrowQuerySourceOccurrenceAuthorityV1(
 
   if (retained.source_ordinal != source_ordinal ||
       retained.validated_resource_epoch != context.resource_epoch ||
-      UuidText(retained.relation_descriptor_uuid) !=
+      FromWireUuid(retained.relation_descriptor_uuid) !=
           current.descriptor.descriptor_uuid ||
       retained.relation_descriptor_generation !=
           current.descriptor.descriptor_generation ||
-      UuidText(retained.relation_object_uuid) !=
+      FromWireUuid(retained.relation_object_uuid) !=
           current.descriptor.relation_uuid ||
-      UuidText(retained.schema_uuid) !=
+      FromWireUuid(retained.schema_uuid) !=
           current.descriptor.schema_uuid ||
       retained.relation_projection_sha256 != current.projection_hash) {
     result.stale = true;
@@ -1379,7 +1327,7 @@ ObserveNarrowQueryBindingLivenessV1(
       !SameContext(authority.pinned_context, context)) {
     result.stale = true;
     result.diagnostic = Diagnostic(
-        "MGA.TRANSACTION.STALE",
+        "SBLR.QUERY_BINDING.STALE",
         "sblr.query_execute.binding_lifetime_stale");
     return result;
   }
@@ -1530,7 +1478,7 @@ void ReleaseNarrowQueryBindingAuthorityNoAllocV1(
 }
 
 void RevokeNarrowQueryBindingAuthorityForReceiptV1(
-    const std::string& statement_receipt_uuid) {
+    const EngineUuid& statement_receipt_uuid) {
   std::shared_ptr<EngineNarrowQueryBindingAuthorityHandleV1::Authority>
       authority;
   {

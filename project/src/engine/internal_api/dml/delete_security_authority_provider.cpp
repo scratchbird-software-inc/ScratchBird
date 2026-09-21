@@ -12,7 +12,7 @@ namespace scratchbird::engine::internal_api {
 struct EngineDmlDeleteSecurityAuthorityHandleV1::Authority {
   EngineRequestContext owner;
   EngineSecurityPolicySnapshotAuthorityV1 snapshot;
-  std::vector<std::string> grants;
+  std::vector<EngineUuid> grants;
 };
 namespace {
 EngineApiDiagnostic Refuse(std::string field, std::string code = "SECURITY.ACCESS_DENIED") {
@@ -22,10 +22,8 @@ EngineApiDiagnostic Refuse(std::string field, std::string code = "SECURITY.ACCES
 EngineApiDiagnostic Ok() {
   return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
-bool ExactUuid(const std::string& text) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(text);
-  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-      scratchbird::core::uuid::UuidToString(parsed.value) == text;
+bool ExactUuid(const EngineUuid& identity) noexcept {
+  return core::uuid::IsEngineIdentityUuid(identity);
 }
 EngineApiDiagnostic ValidateContext(const EngineRequestContext& c, std::string_view phase) {
   const auto has = [&](std::string_view tag) {
@@ -42,7 +40,7 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& c, std::string_v
                         &c.transaction_uuid, &c.statement_receipt_uuid,
                         &c.statement_snapshot_uuid, &c.statement_metadata_snapshot_uuid,
                         &c.authorization_context.authority_uuid})
-    if (!ExactUuid(id->canonical)) return Refuse("owner_identity");
+    if (!ExactUuid(*id)) return Refuse("owner_identity");
   if (!c.local_transaction_id || !c.catalog_generation_id || !c.security_epoch ||
       !c.authorization_context.security_context_generation ||
       c.authorization_context.principal_uuid != c.principal_uuid ||
@@ -61,8 +59,8 @@ auto OwnerKey(const EngineRequestContext& c) {
       c.catalog_generation_id, c.security_epoch, c.authorization_context.authority_uuid,
       c.authorization_context.security_context_generation, c.authorization_context.policy_epoch);
 }
-EngineApiDiagnostic Resolve(const EngineRequestContext& c, const std::string& target,
-                            std::vector<std::string>* grants, std::uint64_t* generation) {
+EngineApiDiagnostic Resolve(const EngineRequestContext& c, const EngineUuid& target,
+                            std::vector<EngineUuid>* grants, std::uint64_t* generation) {
   if (!ExactUuid(target)) return Refuse("target_identity");
   EngineAuthorizeRequest materialized;
   materialized.context = c;
@@ -80,7 +78,7 @@ EngineApiDiagnostic Resolve(const EngineRequestContext& c, const std::string& ta
   const auto authorized = EngineSecurityEvaluatePrivilege(durable);
   const auto state = LoadSecurityPrincipalLifecycleState(c);
   if (!state.ok) return state.diagnostic;
-  std::vector<std::string> privilege_sources;
+  std::vector<EngineUuid> privilege_sources;
   if (authorized.ok && authorized.authorized) {
     privilege_sources = authorized.matched_grant_uuids;
   } else {
@@ -122,7 +120,7 @@ EngineApiDiagnostic Resolve(const EngineRequestContext& c, const std::string& ta
 }  // namespace
 
 EngineDmlDeleteSecurityAuthorityResultV1 CaptureDmlDeleteSecurityAuthorityV1(
-    const EngineRequestContext& context, const std::string& target) {
+    const EngineRequestContext& context, const EngineUuid& target) {
   EngineDmlDeleteSecurityAuthorityResultV1 result;
   result.diagnostic = ValidateContext(context, "private_dml_delete_rows_binder");
   if (result.diagnostic.error) return result;
@@ -155,7 +153,7 @@ EngineApiDiagnostic RevalidateDmlDeleteSecurityAuthorityV1(
   if (OwnerKey(context) != OwnerKey(authority.owner) || captured.snapshot != authority.snapshot ||
       captured.matched_grant_uuids != authority.grants)
     return Refuse("captured_owner_or_projection_changed", "MGA.TRANSACTION.STALE");
-  std::vector<std::string> grants;
+  std::vector<EngineUuid> grants;
   std::uint64_t generation = 0;
   const auto resolved = Resolve(context, authority.snapshot.target_relation_uuid, &grants, &generation);
   if (resolved.error) return resolved;
@@ -165,7 +163,7 @@ EngineApiDiagnostic RevalidateDmlDeleteSecurityAuthorityV1(
 }
 EngineApiDiagnostic RevalidateRecoveredDmlDeleteSecurityProjectionV1(
     const EngineRequestContext& c, const EngineSecurityPolicySnapshotAuthorityV1& s,
-    const std::vector<std::string>& expected_grants) {
+    const std::vector<EngineUuid>& expected_grants) {
   const auto valid = ValidateContext(c, "private_dml_delete_rows_recovery");
   if (valid.error) return valid;
   if (!ExactUuid(s.snapshot_uuid) || s.snapshot_generation != 1 ||
@@ -177,7 +175,7 @@ EngineApiDiagnostic RevalidateRecoveredDmlDeleteSecurityProjectionV1(
       c.authorization_context.catalog_generation_id != c.catalog_generation_id ||
       !c.authorization_context.policy_epoch)
     return Refuse("recovered_security_projection_owner", "MGA.TRANSACTION.STALE");
-  std::vector<std::string> grants;
+  std::vector<EngineUuid> grants;
   std::uint64_t generation = 0;
   const auto resolved = Resolve(c, s.target_relation_uuid, &grants, &generation);
   if (resolved.error) return resolved;

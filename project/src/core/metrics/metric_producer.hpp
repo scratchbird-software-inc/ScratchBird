@@ -18,23 +18,23 @@
 
 namespace scratchbird::core::metrics {
 
-MetricLabelSet Labels(std::initializer_list<std::pair<std::string, std::string>> labels);
+MetricLabelSet Labels(std::initializer_list<MetricLabel> labels);
 
 MetricValidationResult IncrementCounter(const std::string& family,
                                         MetricLabelSet labels,
-                                        double delta,
+                                        MetricScalar delta,
                                         const std::string& producer_owner);
 MetricValidationResult SetGauge(const std::string& family,
                                 MetricLabelSet labels,
-                                double value,
+                                MetricScalar value,
                                 const std::string& producer_owner);
 MetricValidationResult ObserveHistogram(const std::string& family,
                                         MetricLabelSet labels,
-                                        double value,
+                                        MetricScalar value,
                                         const std::string& producer_owner);
 MetricValidationResult SetState(const std::string& family,
                                 MetricLabelSet labels,
-                                double value,
+                                MetricScalar value,
                                 std::string state_text,
                                 const std::string& producer_owner);
 MetricValidationResult RejectSample(const std::string& family,

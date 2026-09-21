@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/insert_batch.hpp"
+#include "dml/insert_descriptor_key.hpp"
 
 #include "api_diagnostics.hpp"
 #include "deferred_secondary_index_runtime_policy.hpp"
@@ -20,6 +21,7 @@
 #include <algorithm>
 #include <cctype>
 #include <initializer_list>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -61,8 +63,12 @@ std::size_t OptionValueOffset(const std::string& actual, const std::string& pref
   return std::string::npos;
 }
 
-std::string MakeId(const std::string& prefix, const std::string& stable) {
-  return prefix + ":" + stable;
+std::string MakeId(const std::string& prefix, const EngineUuid& owner,
+                   std::uint64_t count) {
+  InsertDescriptorKeyEncoder encoded(8);
+  encoded.Uuid(owner);
+  encoded.Number(count);
+  return InsertDescriptorKeyLabel(prefix, std::move(encoded).Finish());
 }
 
 std::uint64_t EstimateRows(const EngineInsertRowsRequest& request) {
@@ -72,7 +78,7 @@ std::uint64_t EstimateRows(const EngineInsertRowsRequest& request) {
   return request.EffectiveInputRows().size();
 }
 
-std::string TargetUuid(const EngineInsertRowsRequest& request) {
+EngineUuid TargetUuid(const EngineInsertRowsRequest& request) {
   if (!request.target_table.uuid.is_nil()) {
     return request.target_table.uuid;
   }
@@ -160,15 +166,6 @@ std::uint64_t ParseU64Option(const EngineInsertRowsRequest& request,
   }
 }
 
-std::uint64_t StableHashText(const std::string& value) {
-  std::uint64_t hash = 1469598103934665603ull;
-  for (unsigned char ch : value) {
-    hash ^= static_cast<std::uint64_t>(ch);
-    hash *= 1099511628211ull;
-  }
-  return hash;
-}
-
 void AppendKeyPart(std::ostringstream* out,
                    const std::string& key,
                    const std::string& value) {
@@ -177,19 +174,18 @@ void AppendKeyPart(std::ostringstream* out,
 
 void AppendKeyPart(std::ostringstream* out,
                    const std::string& key,
-                   std::uint64_t value) {
-  *out << key << '=' << value << ';';
+                   const EngineUuid& value) {
+  InsertDescriptorKeyEncoder encoded(7);
+  encoded.Text(key);
+  encoded.Uuid(value);
+  const auto bytes = std::move(encoded).Finish();
+  out->write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
-void AppendStringListKeyPart(std::ostringstream* out,
-                             const std::string& key,
-                             std::vector<std::string> values) {
-  std::sort(values.begin(), values.end());
-  *out << key << "=[";
-  for (const auto& value : values) {
-    *out << value.size() << ':' << value << ',';
-  }
-  *out << "];";
+void AppendKeyPart(std::ostringstream* out,
+                   const std::string& key,
+                   std::uint64_t value) {
+  *out << key << '=' << value << ';';
 }
 
 std::string TrimAscii(std::string value) {
@@ -267,7 +263,7 @@ bool DescriptorEnvelopeUsesSblr(const std::string& value) {
 }
 
 std::string HashSignature(const std::string& prefix, const std::string& body) {
-  return prefix + ":" + std::to_string(StableHashText(body));
+  return InsertDescriptorKeyLabel(prefix, InsertDescriptorKey(body.begin(), body.end()));
 }
 
 InsertRowEncoderPlan BuildInsertRowEncoderPlan(
@@ -358,20 +354,9 @@ InsertRowEncoderPlan BuildInsertRowEncoderPlan(
 
   std::ostringstream index_validators;
   for (const auto& index : indexes) {
-    std::vector<std::string> parts = {
-        index.index_uuid,
-        index.table_uuid,
-        index.column_name,
-        index.family,
-        index.profile,
-        index.unique ? "unique" : "non_unique",
-        index.predicate_kind,
-        index.predicate_column,
-        index.predicate_value,
-    };
-    parts.insert(parts.end(), index.key_envelopes.begin(), index.key_envelopes.end());
-    parts.insert(parts.end(), index.include_columns.begin(), index.include_columns.end());
-    AppendStringListKeyPart(&index_validators, "index_validator", std::move(parts));
+    const auto bytes = InsertIndexKey(index);
+    AppendKeyPart(&index_validators, "index_validator",
+                  std::string(bytes.begin(), bytes.end()));
   }
 
   std::ostringstream security_policy;
@@ -384,15 +369,9 @@ InsertRowEncoderPlan BuildInsertRowEncoderPlan(
       continue;
     }
     ++plan.runtime_policy_recheck_count;
+    const auto bytes = InsertPolicyKey(policy);
     AppendKeyPart(&security_policy, "runtime_recheck_policy",
-                  policy.policy_uuid + "|" +
-                      policy.subject_kind + "|" +
-                      policy.subject_uuid + "|" +
-                      policy.target_uuid + "|" +
-                      policy.right + "|" +
-                      policy.policy_kind + "|" +
-                      std::to_string(policy.policy_epoch) + "|" +
-                      policy.canonical_policy_envelope);
+                  std::string(bytes.begin(), bytes.end()));
   }
 
   plan.column_count = static_cast<std::uint64_t>(plan.columns.size());
@@ -446,14 +425,15 @@ std::uint64_t EstimateInputRowBytes(const EngineInsertRowsRequest& request,
 }
 
 struct PreparedInsertDescriptor {
-  std::string cache_key;
+  InsertDescriptorKey cache_key;
+  std::string cache_key_label;
   std::string descriptor_id;
   std::uint64_t generation = 0;
-  std::string database_uuid;
-  std::string table_uuid;
-  std::string principal_uuid;
-  std::string role_uuid;
-  std::string session_uuid;
+  EngineUuid database_uuid;
+  EngineUuid table_uuid;
+  EngineUuid principal_uuid;
+  EngineUuid role_uuid;
+  EngineUuid session_uuid;
   std::uint64_t catalog_epoch = 0;
   std::uint64_t security_epoch = 0;
   std::uint64_t policy_epoch = 0;
@@ -500,8 +480,8 @@ std::mutex& PreparedInsertDescriptorCacheMutex() {
   return mutex;
 }
 
-std::map<std::string, PreparedInsertDescriptor>& PreparedInsertDescriptorCache() {
-  static std::map<std::string, PreparedInsertDescriptor> cache;
+std::map<InsertDescriptorKey, PreparedInsertDescriptor, InsertDescriptorKeyLess>& PreparedInsertDescriptorCache() {
+  static std::map<InsertDescriptorKey, PreparedInsertDescriptor, InsertDescriptorKeyLess> cache;
   return cache;
 }
 
@@ -513,59 +493,6 @@ std::uint64_t& PreparedInsertDescriptorGenerationCounter() {
 std::uint64_t& PreparedInsertDescriptorEvictionCounter() {
   static std::uint64_t eviction_count = 0;
   return eviction_count;
-}
-
-std::string BoolKey(bool value) {
-  return value ? "true" : "false";
-}
-
-std::string PreparedInsertAuthorizationDigest(const EngineRequestContext& context) {
-  std::ostringstream out;
-  AppendKeyPart(&out, "security_context_present", BoolKey(context.security_context_present));
-  AppendKeyPart(&out, "principal", context.principal_uuid);
-  AppendKeyPart(&out, "role", context.current_role_uuid);
-  AppendKeyPart(&out, "security_epoch", context.security_epoch);
-  AppendKeyPart(&out, "policy_epoch", context.resource_epoch);
-  AppendKeyPart(&out, "catalog_epoch", context.catalog_generation_id);
-  const auto& auth = context.authorization_context;
-  AppendKeyPart(&out, "auth_present", BoolKey(auth.present));
-  AppendKeyPart(&out, "auth_authority", auth.authority_uuid);
-  AppendKeyPart(&out, "auth_principal", auth.principal_uuid);
-  AppendKeyPart(&out, "auth_security_epoch", auth.security_epoch);
-  AppendKeyPart(&out, "auth_policy_epoch", auth.policy_epoch);
-  AppendKeyPart(&out, "auth_catalog_epoch", auth.catalog_generation_id);
-  std::vector<std::string> subjects;
-  for (const auto& subject : auth.effective_subjects) {
-    subjects.push_back(subject.subject_kind + "|" + subject.subject_uuid);
-  }
-  AppendStringListKeyPart(&out, "auth_subjects", std::move(subjects));
-  std::vector<std::string> grants;
-  for (const auto& grant : auth.grants) {
-    grants.push_back(grant.grant_uuid + "|" +
-                     grant.subject_kind + "|" +
-                     grant.subject_uuid + "|" +
-                     grant.target_uuid + "|" +
-                     grant.right + "|" +
-                     BoolKey(grant.deny) + "|" +
-                     std::to_string(grant.security_epoch));
-  }
-  AppendStringListKeyPart(&out, "auth_grants", std::move(grants));
-  std::vector<std::string> policies;
-  for (const auto& policy : auth.policies) {
-    policies.push_back(policy.policy_uuid + "|" +
-                       policy.subject_kind + "|" +
-                       policy.subject_uuid + "|" +
-                       policy.target_uuid + "|" +
-                       policy.right + "|" +
-                       policy.policy_kind + "|" +
-                       BoolKey(policy.deny) + "|" +
-                       BoolKey(policy.requires_runtime_recheck) + "|" +
-                       std::to_string(policy.policy_epoch) + "|" +
-                       policy.canonical_policy_envelope);
-  }
-  AppendStringListKeyPart(&out, "auth_policies", std::move(policies));
-  AppendStringListKeyPart(&out, "auth_evidence_tags", auth.evidence_tags);
-  return "auth:" + std::to_string(StableHashText(out.str()));
 }
 
 PreparedInsertDescriptor PreparedInsertDescriptorIdentity(
@@ -584,12 +511,8 @@ PreparedInsertDescriptor PreparedInsertDescriptorIdentity(
   descriptor.bound_catalog_epoch = request.bound_object_identity.catalog_generation_id;
   descriptor.bound_security_epoch = request.bound_object_identity.security_epoch;
   descriptor.bound_resource_epoch = request.bound_object_identity.resource_epoch;
-  descriptor.authorization_digest = PreparedInsertAuthorizationDigest(request.context);
+  descriptor.authorization_digest = InsertDescriptorKeyLabel("auth", InsertAuthorizationKey(request.context));
   return descriptor;
-}
-
-bool PreparedDescriptorLifecycleOption(const std::string& option) {
-  return StartsWith(option, "prepared_descriptor.");
 }
 
 std::uint64_t PreparedDescriptorCacheLimit(const EngineInsertRowsRequest& request) {
@@ -636,9 +559,9 @@ PreparedDescriptorCachePressurePolicy ResolvePreparedDescriptorCachePressurePoli
 }
 
 void TrimPreparedDescriptorCacheToLimit(
-    std::map<std::string, PreparedInsertDescriptor>* cache,
+    std::map<InsertDescriptorKey, PreparedInsertDescriptor, InsertDescriptorKeyLess>* cache,
     std::uint64_t target_entries,
-    const std::string& protected_cache_key,
+    const InsertDescriptorKey& protected_cache_key,
     PreparedDescriptorCacheTrimResult* result) {
   if (cache == nullptr) {
     return;
@@ -658,74 +581,6 @@ void TrimPreparedDescriptorCacheToLimit(
       ++result->evictions;
     }
   }
-}
-
-std::string PreparedInsertDescriptorCacheKey(
-    const EngineInsertRowsRequest& request,
-    const PreparedInsertDescriptor& identity,
-    const CrudTableRecord& table,
-    const std::vector<CrudIndexRecord>& indexes,
-    const InsertFeatureGates& feature_gates,
-    const SecondaryIndexDeltaLedgerPolicy& delta_ledger_policy) {
-  std::ostringstream out;
-  AppendKeyPart(&out, "database", identity.database_uuid);
-  AppendKeyPart(&out, "table", identity.table_uuid);
-  AppendKeyPart(&out, "principal", identity.principal_uuid);
-  AppendKeyPart(&out, "role", identity.role_uuid);
-  AppendKeyPart(&out, "session", identity.session_uuid);
-  AppendKeyPart(&out, "authorization_digest", identity.authorization_digest);
-  AppendKeyPart(&out, "catalog_epoch", identity.catalog_epoch);
-  AppendKeyPart(&out, "security_epoch", identity.security_epoch);
-  AppendKeyPart(&out, "policy_epoch", identity.policy_epoch);
-  AppendKeyPart(&out, "name_epoch", identity.name_resolution_epoch);
-  AppendKeyPart(&out, "bound_catalog_epoch", identity.bound_catalog_epoch);
-  AppendKeyPart(&out, "bound_security_epoch", identity.bound_security_epoch);
-  AppendKeyPart(&out, "bound_resource_epoch", identity.bound_resource_epoch);
-  AppendKeyPart(&out, "insert_mode",
-                InsertBatchModeName(ResolveInsertBatchMode(request)));
-  AppendKeyPart(&out, "duplicate_mode",
-                InsertDuplicateModeName(ResolveInsertDuplicateMode(request)));
-  AppendKeyPart(&out, "strict_bulk",
-                ResolveStrictBulkLoadPolicy(request).requested ? "requested"
-                                                               : "not_requested");
-  AppendKeyPart(&out, "delta_ledger",
-                delta_ledger_policy.enabled ? "enabled" : "disabled");
-  AppendKeyPart(&out, "feature_page",
-                InsertFeatureStateName(feature_gates.page_reservation));
-  AppendKeyPart(&out, "feature_identity",
-                InsertFeatureStateName(feature_gates.identity_range_reservation));
-  for (const auto& column : table.columns) {
-    AppendKeyPart(&out, "column", column.first + "|" + column.second);
-  }
-  for (const auto& index : indexes) {
-    std::vector<std::string> index_parts = {
-        index.index_uuid,
-        index.table_uuid,
-        index.column_name,
-        index.family,
-        index.profile,
-        index.unique ? "unique" : "non_unique",
-        index.predicate_kind,
-        index.predicate_column,
-        index.predicate_value,
-    };
-    index_parts.insert(index_parts.end(),
-                       index.key_envelopes.begin(),
-                       index.key_envelopes.end());
-    index_parts.insert(index_parts.end(),
-                       index.include_columns.begin(),
-                       index.include_columns.end());
-    AppendStringListKeyPart(&out, "index", std::move(index_parts));
-  }
-  std::vector<std::string> options;
-  for (const auto& option : request.option_envelopes) {
-    if (!PreparedDescriptorLifecycleOption(option)) {
-      options.push_back(option);
-    }
-  }
-  AppendStringListKeyPart(&out, "options", std::move(options));
-  return "prepared_insert_descriptor:" +
-         std::to_string(StableHashText(out.str()));
 }
 
 PreparedInsertDescriptorValidation ValidatePreparedInsertDescriptorAuthority(
@@ -753,22 +608,22 @@ PreparedInsertDescriptorValidation ValidatePreparedInsertDescriptorAuthority(
     return validation;
   }
 
-  const std::string expected_principal =
-      expected("prepared_descriptor.expected_principal_uuid=");
-  if (!expected_principal.empty() && expected_principal != descriptor.principal_uuid) {
-    refuse("cross_user");
-    return validation;
+  // UUID-bearing expectations are private typed operands, never option text.
+  for (const char* prefix : {"prepared_descriptor.expected_principal_uuid=",
+                             "prepared_descriptor.expected_role_uuid=",
+                             "prepared_descriptor.expected_session_uuid=",
+                             "prepared_descriptor.expected_cache_key="}) {
+    for (const auto& option : request.option_envelopes) {
+      if (OptionValueOffset(option, prefix) != std::string::npos) {
+        refuse("binary_descriptor_expectation_required");
+        return validation;
+      }
+    }
   }
-  const std::string expected_role =
-      expected("prepared_descriptor.expected_role_uuid=");
-  if (!expected_role.empty() && expected_role != descriptor.role_uuid) {
-    refuse("cross_role");
-    return validation;
-  }
-  const std::string expected_session =
-      expected("prepared_descriptor.expected_session_uuid=");
-  if (!expected_session.empty() && expected_session != descriptor.session_uuid) {
-    refuse("cross_session");
+  if (const char* failure = InsertDescriptorExpectationFailure(
+          request.prepared_descriptor_expectation, descriptor.principal_uuid,
+          descriptor.role_uuid, descriptor.session_uuid, descriptor.cache_key)) {
+    refuse(failure);
     return validation;
   }
 
@@ -803,12 +658,6 @@ PreparedInsertDescriptorValidation ValidatePreparedInsertDescriptorAuthority(
     refuse("evicted_or_rebound");
     return validation;
   }
-  const std::string expected_key =
-      expected("prepared_descriptor.expected_cache_key=");
-  if (!expected_key.empty() && expected_key != descriptor.cache_key) {
-    refuse("stale_descriptor_key");
-    return validation;
-  }
   return validation;
 }
 
@@ -823,13 +672,10 @@ PreparedInsertDescriptorResolution ResolvePreparedInsertDescriptor(
   resolution.pressure_policy =
       ResolvePreparedDescriptorCachePressurePolicy(request);
   PreparedInsertDescriptor identity = PreparedInsertDescriptorIdentity(request, table);
-  const std::string cache_key = PreparedInsertDescriptorCacheKey(
-      request,
-      identity,
-      table,
-      indexes,
-      feature_gates,
-      delta_ledger_policy);
+  const auto cache_key = BuildInsertDescriptorKey(
+      request, table, indexes, feature_gates, delta_ledger_policy,
+      ResolveInsertBatchMode(request), ResolveInsertDuplicateMode(request),
+      ResolveStrictBulkLoadPolicy(request).requested);
   {
     const std::lock_guard<std::mutex> guard(PreparedInsertDescriptorCacheMutex());
     auto& cache = PreparedInsertDescriptorCache();
@@ -854,6 +700,7 @@ PreparedInsertDescriptorResolution ResolvePreparedInsertDescriptor(
   PreparedInsertDescriptor descriptor;
   descriptor = std::move(identity);
   descriptor.cache_key = cache_key;
+  descriptor.cache_key_label = InsertDescriptorKeyLabel("prepared_insert_descriptor", cache_key);
   descriptor.row_template = BuildBoundInsertRowTemplate(request, table);
   descriptor.row_encoder_plan = BuildInsertRowEncoderPlan(request, table, indexes);
   descriptor.index_plan = BuildIndexMaintenancePlan(request,
@@ -864,11 +711,26 @@ PreparedInsertDescriptorResolution ResolvePreparedInsertDescriptor(
                                                     delta_ledger_policy);
   {
     const std::lock_guard<std::mutex> guard(PreparedInsertDescriptorCacheMutex());
-    descriptor.generation = ++PreparedInsertDescriptorGenerationCounter();
-    descriptor.descriptor_id =
-        descriptor.cache_key + ":generation=" + std::to_string(descriptor.generation);
     auto& cache = PreparedInsertDescriptorCache();
-    cache[descriptor.cache_key] = descriptor;
+    // Another builder may have published this exact descriptor while the
+    // plans were constructed without the lock. Preserve its generation.
+    const auto existing = cache.find(descriptor.cache_key);
+    if (existing != cache.end()) {
+      resolution.cache_hit = true;
+      resolution.descriptor = existing->second;
+      resolution.trim_result.entries_after = cache.size();
+      return resolution;
+    }
+    if (PreparedInsertDescriptorGenerationCounter() ==
+        std::numeric_limits<std::uint64_t>::max())
+      throw std::overflow_error("insert descriptor generation exhausted");
+    descriptor.generation = PreparedInsertDescriptorGenerationCounter() + 1;
+    descriptor.descriptor_id =
+        descriptor.cache_key_label + ":generation=" + std::to_string(descriptor.generation);
+    // A failed allocation/copy must not leave an empty cache entry that a
+    // later request could mistake for a successfully bound descriptor.
+    cache.try_emplace(descriptor.cache_key, descriptor);
+    PreparedInsertDescriptorGenerationCounter() = descriptor.generation;
     TrimPreparedDescriptorCacheToLimit(&cache,
                                        resolution.pressure_policy.effective_cache_limit,
                                        descriptor.cache_key,
@@ -1104,7 +966,7 @@ BoundInsertRowTemplate BuildBoundInsertRowTemplate(const EngineInsertRowsRequest
   row_template.columns = table.columns;
   row_template.descriptor_count = table.columns.size();
   row_template.requires_generated_row_uuid = request.require_generated_row_uuid;
-  row_template.template_id = MakeId("insert_template", table.table_uuid + ":" + std::to_string(table.columns.size()));
+  row_template.template_id = MakeId("insert_template", table.table_uuid, table.columns.size());
   for (const auto& column : table.columns) {
     if (CrudColumnDescriptorIsOpaqueRenderOnly(column.second)) {
       row_template.has_opaque_render_only_column = true;
@@ -1121,7 +983,7 @@ IndexMaintenancePlan BuildIndexMaintenancePlan(const EngineInsertRowsRequest& re
                                                const SecondaryIndexDeltaLedgerPolicy& delta_ledger_policy) {
   IndexMaintenancePlan plan;
   plan.table_uuid = table.table_uuid;
-  plan.plan_id = MakeId("index_plan", table.table_uuid + ":" + std::to_string(indexes.size()));
+  plan.plan_id = MakeId("index_plan", table.table_uuid, indexes.size());
   for (const auto& index : indexes) {
     IndexMaintenancePlanEntry entry;
     entry.index = index;
@@ -1150,7 +1012,7 @@ IdentityReservationPlan ReserveInsertIdentityRange(const EngineInsertRowsRequest
                                                    const BoundInsertRowTemplate&) {
   IdentityReservationPlan plan;
   plan.requested_count = EstimateRows(request);
-  plan.reservation_id = MakeId("identity_reservation", TargetUuid(request) + ":" + std::to_string(plan.requested_count));
+  plan.reservation_id = MakeId("identity_reservation", TargetUuid(request), plan.requested_count);
   if (ResolveInsertFeatureGates(request).identity_range_reservation == InsertFeatureState::enabled) {
     plan.reserved_count = plan.requested_count;
     plan.range_reserved = plan.requested_count != 0;
@@ -1165,7 +1027,7 @@ PageReservationPlan ReserveInsertPages(const EngineInsertRowsRequest& request,
                                        std::uint64_t estimated_rows) {
   PageReservationPlan plan;
   plan.requested_pages = std::max<std::uint64_t>(1, (estimated_rows + 127) / 128);
-  plan.reservation_id = MakeId("page_reservation", TargetUuid(request) + ":" + std::to_string(plan.requested_pages));
+  plan.reservation_id = MakeId("page_reservation", TargetUuid(request), plan.requested_pages);
   if (ResolveInsertFeatureGates(request).page_reservation != InsertFeatureState::enabled) {
     plan.reservation_available = false;
     plan.refusal_reason = "page_reservation_disabled";
@@ -1210,21 +1072,11 @@ void CaptureInsertMemoryArenaProof(const EngineInsertRowsRequest& request,
   context->memory_arena_requested_bytes = grant_bytes;
 
   mem::QueryMemoryContext memory_context;
-  memory_context.query_id =
-      request.context.request_id.empty() ? context->statement_uuid
-                                         : request.context.request_id;
+  memory_context.query_id = context->statement_uuid;
   memory_context.statement_id = context->statement_uuid;
-  memory_context.session_id =
-      request.context.session_uuid.is_nil()
-          ? ("session:" + context->security_context_uuid)
-          : request.context.session_uuid;
-  memory_context.transaction_id =
-      context->transaction_uuid.empty()
-          ? std::to_string(context->local_transaction_id)
-          : context->transaction_uuid;
-  memory_context.database_id = context->database_uuid.empty()
-                                   ? request.context.database_path
-                                   : context->database_uuid;
+  memory_context.session_id = request.context.session_uuid;
+  memory_context.transaction_id = context->transaction_uuid;
+  memory_context.database_id = context->database_uuid;
   memory_context.engine_id = "scratchbird_engine_insert";
   memory_context.operation_id = "insert_batch";
   memory_context.engine_mga_authoritative = true;
@@ -1332,7 +1184,7 @@ InsertBatchContext BeginInsertBatchContext(const EngineInsertRowsRequest& reques
                                            const CrudTableRecord& table,
                                            const std::vector<CrudIndexRecord>& indexes) {
   InsertBatchContext context;
-  context.statement_uuid = request.context.request_id.empty() ? GenerateCrudEngineUuid("transaction") : request.context.request_id;
+  context.statement_uuid = request.context.statement_uuid;
   context.local_transaction_id = request.context.local_transaction_id;
   context.transaction_uuid = request.context.transaction_uuid;
   context.database_uuid = request.context.database_uuid;
@@ -1341,8 +1193,8 @@ InsertBatchContext BeginInsertBatchContext(const EngineInsertRowsRequest& reques
   context.estimated_row_count = EstimateRows(request);
   context.insert_mode = ResolveInsertBatchMode(request);
   context.duplicate_mode = ResolveInsertDuplicateMode(request);
-  context.security_context_uuid = request.context.principal_uuid;
-  context.policy_snapshot_uuid = InsertBatchOptionValue(request, "policy_snapshot_uuid=");
+  context.security_context_uuid = request.context.authorization_context.authority_uuid;
+  context.policy_snapshot_uuid = request.context.transaction_policy_snapshot_uuid;
   context.feature_gates = ResolveInsertFeatureGates(request);
   context.memory_policy = ResolveInsertMemoryPolicy(request);
   context.delta_ledger_policy = ResolveSecondaryIndexDeltaLedgerPolicy(request, context.feature_gates);
@@ -1355,7 +1207,8 @@ InsertBatchContext BeginInsertBatchContext(const EngineInsertRowsRequest& reques
                                       context.delta_ledger_policy);
   const auto& descriptor = descriptor_resolution.descriptor;
   const bool descriptor_hit = descriptor_resolution.cache_hit;
-  context.prepared_descriptor_cache_key = descriptor.cache_key;
+  context.prepared_descriptor_content_key = descriptor.cache_key;
+  context.prepared_descriptor_cache_key = descriptor.cache_key_label;
   context.prepared_descriptor_id = descriptor.descriptor_id;
   context.prepared_descriptor_authorization_digest = descriptor.authorization_digest;
   context.prepared_descriptor_principal_uuid = descriptor.principal_uuid;
@@ -1605,7 +1458,7 @@ EngineApiDiagnostic ValidateStrictBulkLoadEligibility(const InsertBatchContext& 
   if (context.row_template.has_opaque_render_only_column && !context.bulk_load_policy.allow_opaque_columns) {
     return MakeInvalidRequestDiagnostic("dml.insert_rows", "strict_bulk_load_opaque_column_refused");
   }
-  if (context.bulk_load_policy.target_empty_required && !table.table_uuid.empty() && context.estimated_row_count == 0) {
+  if (context.bulk_load_policy.target_empty_required && !table.table_uuid.is_nil() && context.estimated_row_count == 0) {
     return MakeInvalidRequestDiagnostic("dml.insert_rows", "strict_bulk_load_row_estimate_required");
   }
   return OkDiagnostic();
@@ -1667,7 +1520,7 @@ EngineApiDiagnostic ValidateInsertBatchUniquePreflight(InsertBatchContext* conte
       continue;
     }
     for (const auto& key : CrudIndexKeysForValues(entry.index, values)) {
-      const std::string request_key = entry.index.index_uuid + "|" + key;
+      const auto request_key = std::make_pair(entry.index.index_uuid, key);
       if (!context->unique_request_keys.insert(request_key).second) {
         return UniqueConflictDiagnostic(table, entry.index);
       }
@@ -1740,7 +1593,7 @@ PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& reques
 EngineApiDiagnostic AppendSecondaryIndexDeltaLedgerEntries(const EngineRequestContext& request_context,
                                                            const InsertBatchContext& context,
                                                            const PreparedInsertRow& row,
-                                                           const std::string& version_uuid) {
+                                                           const EngineUuid& version_uuid) {
   if (!context.delta_ledger_policy.enabled) {
     return OkDiagnostic();
   }

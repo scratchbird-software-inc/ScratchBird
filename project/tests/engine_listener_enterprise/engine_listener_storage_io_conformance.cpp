@@ -16,6 +16,17 @@
 #include <iterator>
 #include <limits>
 #include <string>
+#include <string_view>
+
+#if defined(__linux__)
+#include <cerrno>
+#include <chrono>
+#include <csignal>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <thread>
+extern char** environ;
+#endif
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -68,6 +79,92 @@ std::string ReadText(const std::filesystem::path& path) {
   return std::string(std::istreambuf_iterator<char>(in),
                      std::istreambuf_iterator<char>());
 }
+
+#if defined(__linux__)
+// Core SB-MGA-ATTACH-SINGLE-DATABASE-PROCESS-OWNERSHIP-V1 requires
+// exclusive ownership even for inspection. File existence is not ownership.
+// Exec gives each contender fresh process state, without inherited C++ owners.
+constexpr disk::FileOpenMode kProbeModes[] = {
+    disk::FileOpenMode::open_existing,
+    disk::FileOpenMode::open_existing_read_only,
+    disk::FileOpenMode::create_or_truncate,
+    disk::FileOpenMode::create_new};
+
+int OwnerProbe(const char* path, std::string_view mode, std::string_view outcome) {
+  if (mode.size() != 1 || mode[0] < '0' || mode[0] > '3') return 10;
+  disk::FileDevice contender;
+  const auto opened = contender.Open(path, kProbeModes[mode[0] - '0']);
+  if (outcome == "held") {
+    return !opened.ok() &&
+                   opened.diagnostic.diagnostic_code == "SB-STORAGE-DISK-OWNER-LOCK-HELD"
+               ? 0 : 11;
+  }
+  if (!opened.ok()) return 12;
+  // Exercise OS release without calling Close or any C++ destructor.
+  if (outcome == "crash") ::_exit(0);
+  if (outcome != "open") return 13;
+  return contender.Close().ok() ? 0 : 14;
+}
+
+bool RunOwnerProbe(const std::string& executable, const std::filesystem::path& path,
+                   int mode, const std::string& outcome) {
+  std::string command = "--owner-probe";
+  std::string target = path.string();
+  std::string mode_arg = std::to_string(mode);
+  char* args[] = {const_cast<char*>(executable.c_str()), command.data(),
+                  target.data(), mode_arg.data(), const_cast<char*>(outcome.c_str()), nullptr};
+  pid_t child = -1;
+  if (!Require(::posix_spawn(&child, executable.c_str(), nullptr, nullptr, args, environ) == 0,
+               "could not start independent ownership probe")) return false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  int status = 0;
+  for (;;) {
+    const auto waited = ::waitpid(child, &status, WNOHANG);
+    if (waited == child) {
+      return Require(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                     "ownership probe failed: mode=" + mode_arg + " expected=" + outcome +
+                         " wait_status=" + std::to_string(status));
+    }
+    if (waited < 0 && errno != EINTR) return Require(false, "ownership probe wait failed");
+    if (std::chrono::steady_clock::now() >= deadline) {
+      (void)::kill(child, SIGKILL);
+      while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+      return Require(false, "ownership probe timed out");
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+}
+
+bool FileDeviceProcessOwnership(const std::string& executable) {
+  const auto path = TempRoot() / "process_owner.sbdb";
+  struct Cleanup {
+    std::filesystem::path path;
+    ~Cleanup() { RemoveDeviceArtifacts(path); }
+  } cleanup{path};  // destroyed after every FileDevice below
+  const std::string payload = "ownership-refusal-must-preserve-these-bytes";
+  disk::FileDevice creator;
+  if (!Require(creator.Open(path.string(), disk::FileOpenMode::create_new).ok(), "owner fixture create") ||
+      !Require(creator.WriteAt(0, payload.data(), payload.size()).ok(), "owner fixture write") ||
+      !Require(creator.Close().ok(), "owner fixture close")) return false;
+
+  for (int owner_mode = 0; owner_mode != 2; ++owner_mode) {
+    disk::FileDevice owner;
+    if (!Require(owner.Open(path.string(), kProbeModes[owner_mode]).ok(), "owner acquisition")) return false;
+    for (int contender_mode = 0; contender_mode != 4; ++contender_mode) {
+      if (!RunOwnerProbe(executable, path, contender_mode, "held") ||
+          !Require(ReadText(path) == payload, "refused contender modified owner data")) return false;
+    }
+    if (!Require(owner.Close().ok(), "owner release")) return false;
+    for (int next_mode = 0; next_mode != 2; ++next_mode) {
+      if (!RunOwnerProbe(executable, path, next_mode, "open") ||
+          !RunOwnerProbe(executable, path, next_mode, "crash") ||
+          !RunOwnerProbe(executable, path, next_mode, "open") ||
+          !Require(ReadText(path) == payload, "ownership handoff modified data")) return false;
+    }
+  }
+  return true;
+}
+#endif
 
 bool CheckedPageOffsetArithmetic() {
   constexpr std::uint32_t kSupportedPageSize = 8192;
@@ -165,8 +262,7 @@ bool FileDeviceDurableCreateSyncCloseAndReadOnlyRefusal() {
       !Require(sync.ok(), "durable sync failed") ||
       !Require(close.ok(), "close failed") ||
       !Require(ReadText(path) == payload, "synced payload was not preserved") ||
-      !Require(!std::filesystem::exists(path.string() + ".sb.owner.lock"),
-               "exclusive owner lock was not cleaned up on close")) {
+      !Require(!device.is_open(), "closed device still reports an open handle")) {
     RemoveDeviceArtifacts(path);
     return false;
   }
@@ -232,11 +328,23 @@ bool FileDeviceHugeOffsetRefusalPrecedesSeek() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+#if defined(__linux__)
+  if (argc == 5 && std::string_view(argv[1]) == "--owner-probe") {
+    return OwnerProbe(argv[2], argv[3], argv[4]);
+  }
+#endif
+  if (argc != 1) return EXIT_FAILURE;
   bool ok = true;
   ok = CheckedPageOffsetArithmetic() && ok;
   ok = CheckedFileExtentArithmetic() && ok;
   ok = FileDeviceDurableCreateSyncCloseAndReadOnlyRefusal() && ok;
   ok = FileDeviceHugeOffsetRefusalPrecedesSeek() && ok;
+#if defined(__linux__)
+  ok = FileDeviceProcessOwnership(std::filesystem::canonical(argv[0]).string()) && ok;
+#endif
+  std::error_code cleanup_error;
+  const bool removed = std::filesystem::remove(TempRoot(), cleanup_error);
+  ok = Require(removed && !cleanup_error, "test temporary directory cleanup failed") && ok;
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

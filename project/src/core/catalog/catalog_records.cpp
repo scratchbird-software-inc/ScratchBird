@@ -109,6 +109,8 @@ const char* CatalogRecordKindName(CatalogRecordKind kind) {
     case CatalogRecordKind::management_operation: return "management_operation";
     case CatalogRecordKind::metric_descriptor: return "metric_descriptor";
     case CatalogRecordKind::metric_current_value: return "metric_current_value";
+    case CatalogRecordKind::metric_label_schema: return "metric_label_schema";
+    case CatalogRecordKind::metric_series: return "metric_series";
     case CatalogRecordKind::protected_material: return "protected_material";
     case CatalogRecordKind::protected_material_version: return "protected_material_version";
     case CatalogRecordKind::protected_material_policy_binding: return "protected_material_policy_binding";
@@ -175,6 +177,8 @@ const std::vector<CatalogRecordDescriptor>& BuiltinCatalogRecordDescriptors() {
       Descriptor(CatalogRecordKind::management_operation, CatalogRecordScope::local_database, "management_operation", true, true, true, true, false),
       Descriptor(CatalogRecordKind::metric_descriptor, CatalogRecordScope::local_database, "metric_descriptor", true, true, true, true, true),
       Descriptor(CatalogRecordKind::metric_current_value, CatalogRecordScope::local_database, "metric_current_value", true, true, false, true, true),
+      Descriptor(CatalogRecordKind::metric_series, CatalogRecordScope::local_database, "metric_series", true, true, false, true, true),
+      Descriptor(CatalogRecordKind::metric_label_schema, CatalogRecordScope::local_database, "metric_label_schema", true, true, false, true, true),
       Descriptor(CatalogRecordKind::protected_material, CatalogRecordScope::local_database, "protected_material", true, true, true, true, false),
       Descriptor(CatalogRecordKind::protected_material_version, CatalogRecordScope::local_database, "protected_material_version", true, true, true, true, false),
       Descriptor(CatalogRecordKind::protected_material_policy_binding, CatalogRecordScope::local_database, "protected_material_policy_binding", true, true, true, true, false),

@@ -27,6 +27,7 @@ bool Valid(const CatalogCharsetRecord& r) {
 }
 bool Valid(const CatalogCollationRecord& r) {
   return CommonValid(r) && !r.charset_name.empty() &&
+      resources::ValidCollationProfile(r.comparison_profile, r.case_insensitive, r.accent_insensitive) &&
       (!r.default_for_charset || !r.default_authority.empty());
 }
 CatalogValueEncodeResult Encode(const CatalogValueSchema& schema,
@@ -110,7 +111,7 @@ CatalogResourceDecodeResult<CatalogResourceAliasRecord> DecodeCatalogResourceAli
   return {E::none,std::move(r)};
 }
 const CatalogValueSchema& CatalogCollationRecordSchema() {
-  static const CatalogValueSchema schema{65558, 1, {
+  static const CatalogValueSchema schema{65558, 2, {
       {1,T::unsigned_integer,true,8}, {2,T::utf8_text,true,kTextMax},
       {3,T::engine_identity,true,16,UuidKind::object}, {4,T::utf8_text,true,kTextMax},
       {5,T::engine_identity,true,16,UuidKind::object}, {6,T::boolean,true,1},
@@ -120,7 +121,7 @@ const CatalogValueSchema& CatalogCollationRecordSchema() {
       {14,T::unsigned_integer,true,8}, {15,T::unsigned_integer,true,8},
       {16,T::utf8_text,true,kTextMax}, {17,T::utf8_text,true,kTextMax},
       {18,T::utf8_text,true,kTextMax}, {19,T::boolean,true,1},
-      {20,T::boolean,true,1}, {21,T::unsigned_integer,true,8}}};
+      {20,T::boolean,true,1}, {21,T::unsigned_integer,true,8}, {22,T::unsigned_integer,true,8}}};
   return schema;
 }
 CatalogValueEncodeResult EncodeCatalogCharsetRecord(const CatalogCharsetRecord& r) {
@@ -146,7 +147,7 @@ CatalogValueEncodeResult EncodeCatalogCollationRecord(const CatalogCollationReco
       {11,r.description}, {12,r.supported_by}, {13,r.source_path}, {14,r.resource_epoch},
       {15,r.family_epoch}, {16,r.family_version}, {17,r.resource_seed_pack},
       {18,r.resource_seed_version}, {19,r.loaded_at_database_create}, {20,r.engine_owned},
-      {21,r.creator_transaction_number}});
+      {21,r.creator_transaction_number}, {22,static_cast<u64>(r.comparison_profile)}});
 }
 CatalogResourceDecodeResult<CatalogCharsetRecord> DecodeCatalogCharsetRecord(std::string_view bytes) {
   const auto d = Decode(CatalogCharsetRecordSchema(), bytes);
@@ -182,6 +183,7 @@ CatalogResourceDecodeResult<CatalogCollationRecord> DecodeCatalogCollationRecord
   r.family_version=Get<std::string>(d,16); r.resource_seed_pack=Get<std::string>(d,17);
   r.resource_seed_version=Get<std::string>(d,18); r.loaded_at_database_create=Get<bool>(d,19);
   r.engine_owned=Get<bool>(d,20); r.creator_transaction_number=Get<u64>(d,21);
+  r.comparison_profile=static_cast<resources::CollationProfile>(Get<u64>(d,22));
   if (!Valid(r)) return {E::invalid_value, {}};
   return {E::none,std::move(r)};
 }

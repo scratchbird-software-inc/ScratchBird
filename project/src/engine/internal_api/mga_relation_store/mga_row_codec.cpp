@@ -131,135 +131,8 @@ bool AppendBinaryString(std::string* out, std::string_view value) {
   return true;
 }
 
-const std::array<std::int8_t, 256>& BinaryUuidHexTable() {
-  static const std::array<std::int8_t, 256> table = [] {
-    std::array<std::int8_t, 256> values{};
-    values.fill(-1);
-    for (int index = 0; index < 10; ++index) {
-      values[static_cast<unsigned char>('0' + index)] =
-          static_cast<std::int8_t>(index);
-    }
-    for (int index = 0; index < 6; ++index) {
-      values[static_cast<unsigned char>('a' + index)] =
-          static_cast<std::int8_t>(10 + index);
-      values[static_cast<unsigned char>('A' + index)] =
-          static_cast<std::int8_t>(10 + index);
-    }
-    return values;
-  }();
-  return table;
-}
 
-bool AppendBinaryUuidText(std::string* out, const std::string& text) {
-  if (out == nullptr) { return false; }
-  if (text.size() != 36 || text[8] != '-' || text[13] != '-' ||
-      text[18] != '-' || text[23] != '-') {
-    return false;
-  }
-  static constexpr std::array<std::uint8_t, 32> kHexPositions = {
-      0, 1, 2, 3, 4, 5, 6, 7,
-      9, 10, 11, 12,
-      14, 15, 16, 17,
-      19, 20, 21, 22,
-      24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35};
-  const auto& table = BinaryUuidHexTable();
-  std::array<char, 16> bytes{};
-  for (std::size_t byte_index = 0; byte_index < bytes.size(); ++byte_index) {
-    const int hi =
-        table[static_cast<unsigned char>(text[kHexPositions[byte_index * 2]])];
-    const int lo =
-        table[static_cast<unsigned char>(text[kHexPositions[byte_index * 2 + 1]])];
-    if (hi < 0 || lo < 0) { return false; }
-    bytes[byte_index] = static_cast<char>((hi << 4) | lo);
-  }
-  out->append(bytes.data(), bytes.size());
-  return true;
-}
 
-bool ReadBinaryU8(const std::vector<idx::byte>& bytes,
-                  std::size_t* offset,
-                  std::uint8_t* out) {
-  if (offset == nullptr || out == nullptr || *offset + 1 > bytes.size()) {
-    return false;
-  }
-  *out = static_cast<std::uint8_t>(bytes[*offset]);
-  ++(*offset);
-  return true;
-}
-
-bool ReadBinaryU16(const std::vector<idx::byte>& bytes,
-                   std::size_t* offset,
-                   std::uint16_t* out) {
-  if (offset == nullptr || out == nullptr || *offset + 2 > bytes.size()) {
-    return false;
-  }
-  std::uint16_t value = 0;
-  for (std::size_t index = 0; index < 2; ++index) {
-    value |= static_cast<std::uint16_t>(bytes[*offset + index])
-             << (index * 8u);
-  }
-  *offset += 2;
-  *out = value;
-  return true;
-}
-
-bool ReadBinaryU32(const std::vector<idx::byte>& bytes,
-                   std::size_t* offset,
-                   std::uint32_t* out) {
-  if (offset == nullptr || out == nullptr || *offset + 4 > bytes.size()) {
-    return false;
-  }
-  std::uint32_t value = 0;
-  for (std::size_t index = 0; index < 4; ++index) {
-    value |= static_cast<std::uint32_t>(bytes[*offset + index])
-             << (index * 8u);
-  }
-  *offset += 4;
-  *out = value;
-  return true;
-}
-
-bool ReadBinaryU64(const std::vector<idx::byte>& bytes,
-                   std::size_t* offset,
-                   std::uint64_t* out) {
-  if (offset == nullptr || out == nullptr || *offset + 8 > bytes.size()) {
-    return false;
-  }
-  std::uint64_t value = 0;
-  for (std::size_t index = 0; index < 8; ++index) {
-    value |= static_cast<std::uint64_t>(bytes[*offset + index])
-             << (index * 8u);
-  }
-  *offset += 8;
-  *out = value;
-  return true;
-}
-
-bool ReadBinaryString(const std::vector<idx::byte>& bytes,
-                      std::size_t* offset,
-                      std::string* out) {
-  if (offset == nullptr || out == nullptr) { return false; }
-  std::uint32_t size = 0;
-  if (!ReadBinaryU32(bytes, offset, &size) || *offset + size > bytes.size()) {
-    return false;
-  }
-  out->assign(reinterpret_cast<const char*>(bytes.data() + *offset), size);
-  *offset += size;
-  return true;
-}
-
-bool ReadBinaryUuidText(const std::vector<idx::byte>& bytes,
-                        std::size_t* offset,
-                        std::string* out) {
-  if (offset == nullptr || out == nullptr || *offset + 16 > bytes.size()) {
-    return false;
-  }
-  scratchbird::core::platform::Uuid uuid;
-  std::copy_n(bytes.data() + *offset, uuid.bytes.size(), uuid.bytes.begin());
-  *offset += uuid.bytes.size();
-  *out = scratchbird::core::uuid::UuidToString(uuid);
-  return true;
-}
 
 std::uint64_t ReadLittleEndianU64(std::string_view payload) {
   std::uint64_t value = 0;
@@ -578,8 +451,8 @@ bool AppendScopedRowBinaryBatch(std::string* out,
     const auto& typed_row = typed_rows[row_index];
     if (typed_row.fields.size() != field_order.size()) { return false; }
     if (compact_batch) {
-      if (!AppendBinaryUuidText(out, row.row_uuid) ||
-          !AppendBinaryUuidText(out, row.version_uuid)) {
+      if (!AppendBinaryEngineUuid(out, row.row_uuid) ||
+          !AppendBinaryEngineUuid(out, row.version_uuid)) {
         return false;
       }
       ++event_sequence;
@@ -704,12 +577,12 @@ bool AppendScopedRowIdentityBinaryBatch(
        ++row_index) {
     const auto& row = row_identities[row_index];
     const auto& typed_row = typed_rows[row_index];
-    if (row.row_uuid.empty() || row.version_uuid.empty() ||
+    if (row.row_uuid.is_nil() || row.version_uuid.is_nil() ||
         typed_row.fields.size() != field_order.size()) {
       return false;
     }
-    if (!AppendBinaryUuidText(out, row.row_uuid) ||
-        !AppendBinaryUuidText(out, row.version_uuid)) {
+    if (!AppendBinaryEngineUuid(out, row.row_uuid) ||
+        !AppendBinaryEngineUuid(out, row.version_uuid)) {
       return false;
     }
     std::fill(null_bitmap.begin(), null_bitmap.end(), 0);
@@ -806,7 +679,7 @@ bool AppendScopedRowIdentityNativePacketBatch(
   for (std::size_t row_index = 0; row_index < row_identities.size();
        ++row_index) {
     const auto& row = row_identities[row_index];
-    if (row.row_uuid.empty() || row.version_uuid.empty()) {
+    if (row.row_uuid.is_nil() || row.version_uuid.is_nil()) {
       return false;
     }
     const std::size_t row_offset = frame.row_offsets[row_index];
@@ -815,8 +688,8 @@ bool AppendScopedRowIdentityNativePacketBatch(
         row_size > frame.packet_bytes.size() - row_offset) {
       return false;
     }
-    if (!AppendBinaryUuidText(out, row.row_uuid) ||
-        !AppendBinaryUuidText(out, row.version_uuid)) {
+    if (!AppendBinaryEngineUuid(out, row.row_uuid) ||
+        !AppendBinaryEngineUuid(out, row.version_uuid)) {
       return false;
     }
     out->append(reinterpret_cast<const char*>(frame.packet_bytes.data() +
@@ -826,185 +699,6 @@ bool AppendScopedRowIdentityNativePacketBatch(
   return true;
 }
 
-bool CheckedHeapReadMemoryAdd(const std::uint64_t value,
-                              std::uint64_t* total) {
-  if (total == nullptr ||
-      value > std::numeric_limits<std::uint64_t>::max() - *total) {
-    return false;
-  }
-  *total += value;
-  return true;
-}
-
-bool CheckedHeapReadMemoryMultiply(const std::uint64_t left,
-                                   const std::uint64_t right,
-                                   std::uint64_t* product) {
-  if (product == nullptr ||
-      (right != 0 &&
-       left > std::numeric_limits<std::uint64_t>::max() / right)) {
-    return false;
-  }
-  *product = left * right;
-  return true;
-}
-
-bool AccountHeapReadOwnedString(const std::string& value,
-                                std::uint64_t* total) {
-  return value.capacity() < std::numeric_limits<std::uint64_t>::max() &&
-         CheckedHeapReadMemoryAdd(
-             static_cast<std::uint64_t>(value.capacity()) + 1, total);
-}
-
-std::optional<std::uint64_t> HeapReadRowVectorMemoryBytes(
-    const std::vector<CrudRowVersionRecord>& rows) {
-  std::uint64_t bytes = sizeof(rows);
-  std::uint64_t allocation_bytes = 0;
-  if (!CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(rows.capacity()),
-          sizeof(CrudRowVersionRecord), &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
-    return std::nullopt;
-  }
-  for (const auto& row : rows) {
-    if (!AccountHeapReadOwnedString(row.table_uuid, &bytes) ||
-        !AccountHeapReadOwnedString(row.row_uuid, &bytes) ||
-        !AccountHeapReadOwnedString(row.version_uuid, &bytes) ||
-        !AccountHeapReadOwnedString(row.temporary_session_uuid, &bytes) ||
-        !AccountHeapReadOwnedString(row.previous_version_uuid, &bytes) ||
-        !CheckedHeapReadMemoryMultiply(
-            static_cast<std::uint64_t>(row.values.capacity()),
-            sizeof(std::pair<std::string, std::string>),
-            &allocation_bytes) ||
-        !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
-      return std::nullopt;
-    }
-    for (const auto& [key, value] : row.values) {
-      if (!AccountHeapReadOwnedString(key, &bytes) ||
-          !AccountHeapReadOwnedString(value, &bytes)) {
-        return std::nullopt;
-      }
-    }
-  }
-  return bytes;
-}
-
-bool AccountHeapReadRowDynamicMemoryBytes(
-    const CrudRowVersionRecord& row, std::uint64_t* total) {
-  std::uint64_t allocation_bytes = 0;
-  if (!AccountHeapReadOwnedString(row.table_uuid, total) ||
-      !AccountHeapReadOwnedString(row.row_uuid, total) ||
-      !AccountHeapReadOwnedString(row.version_uuid, total) ||
-      !AccountHeapReadOwnedString(row.temporary_session_uuid, total) ||
-      !AccountHeapReadOwnedString(row.previous_version_uuid, total) ||
-      !CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(row.values.capacity()),
-          sizeof(std::pair<std::string, std::string>),
-          &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, total)) {
-    return false;
-  }
-  for (const auto& [key, value] : row.values) {
-    if (!AccountHeapReadOwnedString(key, total) ||
-        !AccountHeapReadOwnedString(value, total)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-std::optional<std::uint64_t> HeapReadVersionIndexProjectionMemoryBytes(
-    const std::vector<CrudRowVersionRecord>& rows) {
-  constexpr std::uint64_t kNodeOverhead = 4 * sizeof(void*);
-  std::uint64_t bytes =
-      sizeof(std::unordered_map<std::string, const CrudRowVersionRecord*>);
-  std::uint64_t allocation_bytes = 0;
-  if (!CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(rows.size()), 2 * sizeof(void*),
-          &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
-      !CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(rows.size()),
-          sizeof(std::pair<const std::string,
-                           const CrudRowVersionRecord*>) +
-              kNodeOverhead,
-          &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
-    return std::nullopt;
-  }
-  for (const auto& row : rows) {
-    if (!AccountHeapReadOwnedString(row.version_uuid, &bytes)) {
-      return std::nullopt;
-    }
-  }
-  return bytes;
-}
-
-std::optional<std::uint64_t> HeapReadVisibilityMapProjectionMemoryBytes(
-    const std::vector<CrudRowVersionRecord>& rows) {
-  constexpr std::uint64_t kNodeOverhead = 4 * sizeof(void*);
-  std::uint64_t bytes =
-      sizeof(std::unordered_map<std::string, std::size_t>);
-  std::uint64_t allocation_bytes = 0;
-  if (!CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(rows.size()), 2 * sizeof(void*),
-          &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
-      !CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(rows.size()),
-          sizeof(std::pair<const std::string, std::size_t>) +
-              kNodeOverhead,
-          &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
-    return std::nullopt;
-  }
-  for (const auto& row : rows) {
-    if (!AccountHeapReadOwnedString(row.row_uuid, &bytes)) {
-      return std::nullopt;
-    }
-  }
-  return bytes;
-}
-
-std::optional<std::uint64_t> HeapReadStringVectorMemoryBytes(
-    const std::vector<std::string>& values) {
-  std::uint64_t bytes = sizeof(values);
-  std::uint64_t allocation_bytes = 0;
-  if (!CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(values.capacity()),
-          sizeof(std::string), &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
-    return std::nullopt;
-  }
-  for (const auto& value : values) {
-    if (!AccountHeapReadOwnedString(value, &bytes)) return std::nullopt;
-  }
-  return bytes;
-}
-
-std::optional<std::uint64_t> HeapReadStringCacheMemoryBytes(
-    const std::unordered_map<std::string, std::string>& cache) {
-  constexpr std::uint64_t kNodeOverhead = 4 * sizeof(void*);
-  std::uint64_t bytes = sizeof(cache);
-  std::uint64_t allocation_bytes = 0;
-  if (!CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(cache.bucket_count()), sizeof(void*),
-          &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
-      !CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(cache.size()),
-          sizeof(std::pair<const std::string, std::string>) + kNodeOverhead,
-          &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
-    return std::nullopt;
-  }
-  for (const auto& [key, value] : cache) {
-    if (!AccountHeapReadOwnedString(key, &bytes) ||
-        !AccountHeapReadOwnedString(value, &bytes)) {
-      return std::nullopt;
-    }
-  }
-  return bytes;
-}
 
 bool ObserveBoundedHeapReadMemory(BoundedScopedRowReadControl* control,
                                   const std::uint64_t live_bytes) {
@@ -1588,8 +1282,8 @@ bool DecodeScopedRowBinaryBytes(
         row.previous_sequence = 0;
         row.table_uuid = compact_table_uuid;
         row.temporary_session_uuid = compact_temporary_session_uuid;
-        if (!ReadBinaryUuidText(bytes, &offset, &row.row_uuid) ||
-            !ReadBinaryUuidText(bytes, &offset, &row.version_uuid) ||
+        if (!ReadBinaryEngineUuid(bytes, &offset, &row.row_uuid) ||
+            !ReadBinaryEngineUuid(bytes, &offset, &row.version_uuid) ||
             offset + null_bitmap_bytes > bytes.size()) {
           summary->malformed = true;
           summary->trusted = false;

@@ -243,8 +243,8 @@ idx::SortedBulkIndexBuildRequest SortedBuildRequest() {
   for (int i = 0; i != 6; ++i) {
     idx::SortedBulkIndexRowInput row;
     row.encoded_key = "key:" + std::to_string(6 - i);
-    row.row_uuid = NewUuidText(platform::UuidKind::row);
-    row.version_uuid = NewUuidText(platform::UuidKind::object);
+    row.row_uuid = NewUuid(platform::UuidKind::row).value;
+    row.version_uuid = NewUuid(platform::UuidKind::row).value;
     row.payload_value = "payload";
     row.source_ordinal = static_cast<platform::u64>(i);
     request.rows.push_back(std::move(row));

@@ -10,6 +10,7 @@
 
 // SB-INSERT-PHYSICAL-INTEGRATION-ANCHOR
 #include "api_types.hpp"
+#include "dml/direct_bulk_append_api.hpp"
 #include "filespace_growth.hpp"
 #include "overflow_persistence.hpp"
 #include "page_reservation.hpp"
@@ -129,41 +130,5 @@ DiagnosticRecord MakeInsertPhysicalIntegrationDiagnostic(Status status,
                                                         std::string message_key,
                                                         std::string detail = {});
 
-struct DirectPhysicalBulkAppendRequest {
-  EngineRequestContext context;
-  EngineObjectReference target_table;
-  std::span<const EngineRowValue> borrowed_input_rows;
-  const EngineNativeRowPacketFrame* native_row_packet = nullptr;
-  std::vector<std::string> owned_shared_row_field_order;
-  std::span<const std::string> shared_row_field_order;
-  std::vector<std::string> option_envelopes;
-  std::vector<std::string> diagnostic_options;
-  EngineApiU64 estimated_row_count = 0;
-  std::string lane_operation = "copy_import";
-  std::string duplicate_mode = "error";
-  bool require_generated_row_uuid = true;
-  bool strict_bulk_load_requested = false;
-  bool direct_lane_enabled = true;
-  // Specialized MGA producers may durably bind the exact row/version/image
-  // identities after the normal allocators run but before any row bytes are
-  // appended. A diagnostic aborts the whole caller-owned statement savepoint.
-  std::function<EngineApiDiagnostic(
-      std::span<const std::string>, std::span<const std::string>,
-      std::span<const std::string>)>
-      before_row_publication;
-};
-
-struct DirectPhysicalBulkAppendResult : EngineApiResult {
-  EngineApiU64 accepted_rows = 0;
-  EngineApiU64 inserted_rows = 0;
-  EngineApiU64 rejected_rows = 0;
-  std::vector<EngineUuid> row_uuids;
-  std::vector<EngineUuid> row_version_uuids;
-  std::vector<EngineUuid> row_image_uuids;
-  bool direct_lane_selected = false;
-};
-
-DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
-    const DirectPhysicalBulkAppendRequest& request);
 
 }  // namespace scratchbird::engine::internal_api::dml

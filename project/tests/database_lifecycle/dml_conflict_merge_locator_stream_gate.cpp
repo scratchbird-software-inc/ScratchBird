@@ -21,6 +21,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -156,8 +157,9 @@ bool HasEvidence(const std::vector<api::EngineEvidenceReference>& evidence,
   return std::any_of(evidence.begin(),
                      evidence.end(),
                      [&](const auto& item) {
+                       const auto* text = std::get_if<std::string>(&item.evidence_id);
                        return item.evidence_kind == kind &&
-                              item.evidence_id.find(id) != std::string::npos;
+                              text != nullptr && text->find(id) != std::string::npos;
                      });
 }
 

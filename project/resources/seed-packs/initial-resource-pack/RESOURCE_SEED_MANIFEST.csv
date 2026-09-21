@@ -4,7 +4,7 @@ charset_mapping,resources/charsets/mappings/*.map.json,ResourceArtifactRecord;Ch
 charset_mapping_schema,resources/charsets/mappings/charset_mapping.schema.json,ResourceArtifactRecord,validate_mapping_artifacts,specified
 collation,resources/collations/collations.json,CollationRecord;CollationTailoringRecord,load_after_charset_rows,specified
 locale,resources/collations/locales/locales_manifest.json,ResourceArtifactRecord,load_before_locale_named_collations,specified
-uca,resources/collations/uca/allkeys.txt,ResourceArtifactRecord,load_before_uca_collations,specified
+uca,resources/collations/uca/allkeys.txt;resources/collations/uca/UnicodeData.txt;resources/collations/uca/PropList.txt;resources/collations/uca/UNICODE-LICENSE.txt,ResourceArtifactRecord,load_before_uca_collations,specified
 uca_manifest,resources/collations/uca/uca_manifest.json,ResourceArtifactRecord,validate_uca_artifacts,specified
 i18n_version,resources/i18n/version,ResourceBundleRecord,record_resource_version,specified
 timezone_version,resources/timezones/version,ResourceBundleRecord,record_timezone_bundle_version,specified

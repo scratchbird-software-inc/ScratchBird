@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "metric_registry.hpp"
+#include "metric_label_key.hpp"
+#include "metric_value_update.hpp"
 
 #include "metric_history.hpp"
 
@@ -14,6 +16,7 @@
 #include <cstddef>
 #include <set>
 #include <sstream>
+#include <type_traits>
 #include <utility>
 
 namespace scratchbird::core::metrics {
@@ -27,12 +30,16 @@ MetricLabelDescriptor Label(std::string key, bool required = false, bool sensiti
   return {std::move(key), required, sensitive};
 }
 
+MetricLabelDescriptor UuidLabel(std::string key, bool required = false, bool sensitive = false) {
+  return {std::move(key), required, sensitive, MetricLabelType::system_uuid};
+}
+
 std::vector<MetricLabelDescriptor> CommonLabels() {
   return {
-      Label("database_uuid"), Label("node_uuid"), Label("cluster_uuid"), Label("filespace_uuid"),
-      Label("index_uuid"), Label("object_uuid"), Label("component"), Label("producer"), Label("operation"),
+      UuidLabel("database_uuid"), UuidLabel("node_uuid"), UuidLabel("cluster_uuid"), UuidLabel("filespace_uuid"),
+      UuidLabel("index_uuid"), UuidLabel("object_uuid"), Label("component"), Label("producer"), Label("operation"),
       Label("result"), Label("reason"), Label("page_size"), Label("classification"), Label("device_class"),
-      Label("filespace_role"), Label("page_type"), Label("policy_uuid"), Label("error_class"),
+      Label("filespace_role"), Label("page_type"), UuidLabel("policy_uuid"), Label("error_class"),
       Label("access_mode"), Label("unknown_page_policy"), Label("role"),
       Label("provider_family"), Label("auth_provider"), Label("policy_family"), Label("scope_class"),
       Label("parser_family"), Label("interface"), Label("interface_family"), Label("session_class"),
@@ -44,22 +51,22 @@ std::vector<MetricLabelDescriptor> CommonLabels() {
       Label("page_family"), Label("action"), Label("plan_shape"), Label("operator_family"), Label("route_class"),
       Label("fragment_kind"), Label("remote_node_class"), Label("source_node_class"), Label("target_node_class"),
       Label("reason_class"), Label("blocker_class"), Label("archive_class"), Label("node_class"), Label("resource_class"),
-      Label("deny_reason"), Label("workload_class"), Label("adapter_family"), Label("export_profile_uuid"),
+      Label("deny_reason"), Label("workload_class"), Label("adapter_family"), UuidLabel("export_profile_uuid"),
       Label("severity"), Label("health_state"), Label("owner_group"), Label("listener_family"),
       Label("request_class"), Label("format"), Label("feature"), Label("machine_id", false, true),
       Label("window_class"), Label("hold_class"), Label("owner_subsystem"), Label("approval_class"),
       Label("denial_class"), Label("range_class"),
       Label("canonical_type"), Label("source_type"), Label("target_type"), Label("numeric_backend"),
-      Label("domain_uuid"), Label("method"), Label("semantic_profile"),
+      UuidLabel("domain_uuid"), Label("method"), Label("semantic_profile"),
       Label("authority"), Label("policy"), Label("local_transaction_id"), Label("event_class"),
       Label("restore_classification"), Label("forensic_class"),
       Label("source_host", false, true), Label("network_interface"),
-      Label("user_uuid", false, true), Label("session_uuid", false, true), Label("principal_uuid", false, true),
+      UuidLabel("user_uuid", false, true), UuidLabel("session_uuid", false, true), UuidLabel("principal_uuid", false, true),
       Label("source_address", false, true)};
 }
 
-std::vector<double> LatencyBuckets() {
-  return {1, 5, 10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000, 500000, 1000000};
+std::vector<MetricScalar> LatencyBuckets() {
+  return {1.0, 5.0, 10.0, 50.0, 100.0, 500.0, 1000.0, 5000.0, 10000.0, 50000.0, 100000.0, 500000.0, 1000000.0};
 }
 
 MetricDescriptor Descriptor(std::string family,
@@ -430,6 +437,8 @@ const char* MetricTypeName(MetricType type) {
     case MetricType::gauge: return "gauge";
     case MetricType::histogram: return "histogram";
     case MetricType::state: return "state";
+    case MetricType::rate: return "rate";
+    case MetricType::sample: return "sample";
     case MetricType::derived: return "derived";
   }
   return "unknown";
@@ -439,6 +448,16 @@ const char* MetricUnitName(MetricUnit unit) {
   switch (unit) {
     case MetricUnit::count: return "count";
     case MetricUnit::bytes: return "bytes";
+    case MetricUnit::pages: return "pages";
+    case MetricUnit::records: return "records";
+    case MetricUnit::transactions: return "transactions";
+    case MetricUnit::operations: return "operations";
+    case MetricUnit::milliseconds: return "milliseconds";
+    case MetricUnit::nanoseconds: return "nanoseconds";
+    case MetricUnit::revisions: return "revisions";
+    case MetricUnit::events: return "events";
+    case MetricUnit::errors: return "errors";
+    case MetricUnit::conflicts: return "conflicts";
     case MetricUnit::microseconds: return "microseconds";
     case MetricUnit::seconds: return "seconds";
     case MetricUnit::percent: return "percent";
@@ -462,6 +481,7 @@ const char* MetricVisibilityScopeName(MetricVisibilityScope scope) {
 
 const char* MetricReadinessName(MetricReadiness readiness) {
   switch (readiness) {
+    case MetricReadiness::unvalidated: return "unvalidated";
     case MetricReadiness::implemented: return "implemented";
     case MetricReadiness::contract_ready_unwired: return "contract_ready_unwired";
     case MetricReadiness::derived: return "derived";
@@ -477,6 +497,9 @@ MetricRegistry::MetricRegistry() {
 }
 
 MetricValidationResult MetricRegistry::ValidateDescriptor(const MetricDescriptor& descriptor) const {
+  if (!ValidateMetricValueDescriptor(descriptor) || !MetricDescriptorReferencesValid(descriptor, descriptor) ||
+      descriptor.readiness == MetricReadiness::unvalidated)
+    return MetricError("METRIC.VALUE_INVALID", descriptor.family);
   if (descriptor.family.empty() || !StartsWith(descriptor.family, "sb_")) {
     return MetricError("SB-METRICS-DESCRIPTOR-FAMILY-INVALID", descriptor.family);
   }
@@ -487,6 +510,14 @@ MetricValidationResult MetricRegistry::ValidateDescriptor(const MetricDescriptor
   }
   if (descriptor.producer_owner.empty()) {
     return MetricError("SB-METRICS-DESCRIPTOR-PRODUCER-MISSING", descriptor.family);
+  }
+  std::set<std::string> label_keys;
+  for (const auto& label : descriptor.labels) {
+    if (label.key.empty() || !label_keys.insert(label.key).second ||
+        (label.value_type != MetricLabelType::text &&
+         label.value_type != MetricLabelType::system_uuid &&
+         label.value_type != MetricLabelType::uuid_value))
+      return MetricError("SB-METRICS-LABEL-INVALID", descriptor.family);
   }
   if (descriptor.type == MetricType::histogram && descriptor.histogram_buckets.empty()) {
     return MetricError("SB-METRICS-DESCRIPTOR-HISTOGRAM-BUCKETS-MISSING", descriptor.family);
@@ -558,32 +589,12 @@ std::vector<MetricDescriptor> MetricRegistry::Descriptors(bool include_cluster) 
 
 MetricValidationResult MetricRegistry::ValidateLabels(const MetricDescriptor& descriptor,
                                                       const MetricLabelSet& labels) const {
-  std::set<std::string> allowed;
-  std::set<std::string> required;
-  for (const auto& label : descriptor.labels) {
-    allowed.insert(label.key);
-    if (label.required) {
-      required.insert(label.key);
-    }
-  }
-  for (const auto& label : labels) {
-    if (label.key.empty() || label.value.empty()) {
-      return MetricError("SB-METRICS-LABEL-INVALID", descriptor.family);
-    }
-    if (allowed.count(label.key) == 0) {
-      return MetricError("SB-METRICS-LABEL-UNKNOWN", descriptor.family + ":" + label.key);
-    }
-    required.erase(label.key);
-  }
-  if (!required.empty()) {
-    return MetricError("SB-METRICS-LABEL-REQUIRED-MISSING", descriptor.family + ":" + *required.begin());
-  }
-  return MetricOk();
+  return ValidateMetricLabelSet(descriptor, labels);
 }
 
 MetricValidationResult MetricRegistry::IncrementCounter(const std::string& family,
                                                         MetricLabelSet labels,
-                                                        double delta,
+                                                        MetricScalar delta,
                                                         const std::string& producer_owner) {
   const auto* descriptor = FindDescriptorOrAlias(family);
   if (descriptor == nullptr) {
@@ -594,7 +605,7 @@ MetricValidationResult MetricRegistry::IncrementCounter(const std::string& famil
 
 MetricValidationResult MetricRegistry::SetGauge(const std::string& family,
                                                 MetricLabelSet labels,
-                                                double value,
+                                                MetricScalar value,
                                                 const std::string& producer_owner) {
   const auto* descriptor = FindDescriptorOrAlias(family);
   if (descriptor == nullptr) {
@@ -605,7 +616,7 @@ MetricValidationResult MetricRegistry::SetGauge(const std::string& family,
 
 MetricValidationResult MetricRegistry::ObserveHistogram(const std::string& family,
                                                         MetricLabelSet labels,
-                                                        double value,
+                                                        MetricScalar value,
                                                         const std::string& producer_owner) {
   const auto* descriptor = FindDescriptorOrAlias(family);
   if (descriptor == nullptr) {
@@ -616,7 +627,7 @@ MetricValidationResult MetricRegistry::ObserveHistogram(const std::string& famil
 
 MetricValidationResult MetricRegistry::SetState(const std::string& family,
                                                 MetricLabelSet labels,
-                                                double value,
+                                                MetricScalar value,
                                                 std::string state_text,
                                                 const std::string& producer_owner) {
   const auto* descriptor = FindDescriptorOrAlias(family);
@@ -628,7 +639,7 @@ MetricValidationResult MetricRegistry::SetState(const std::string& family,
 
 MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descriptor,
                                                    MetricLabelSet labels,
-                                                   double value,
+                                                   MetricScalar value,
                                                    std::string state_text,
                                                    const std::string& producer_owner,
                                                    MetricType operation_type) {
@@ -640,9 +651,6 @@ MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descr
   }
   if (descriptor.type != operation_type) {
     return MetricError("SB-METRICS-TYPE-MISMATCH", descriptor.family);
-  }
-  if (descriptor.unit == MetricUnit::percent && (value < 0.0 || value > 100.0)) {
-    return MetricError("SB-METRICS-PERCENT-RANGE", descriptor.family);
   }
   const auto labels_valid = ValidateLabels(descriptor, labels);
   if (!labels_valid.ok) {
@@ -656,46 +664,39 @@ MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descr
   }
   std::lock_guard<std::mutex> lock(mutex_);
   const auto key = NormalizeKey(descriptor.family, labels);
-  auto& current = current_values_[key];
-  if (current.family.empty()) {
-    current.family = descriptor.family;
-    current.labels = std::move(labels);
-    current.type = descriptor.type;
-    if (descriptor.type == MetricType::histogram) {
-      for (double bucket : descriptor.histogram_buckets) {
-        current.buckets[bucket] = 0;
-      }
+  const auto existing = current_values_.find(key);
+  auto staged = StageMetricValueUpdate(descriptor, labels,
+      existing == current_values_.end() ? nullptr : &existing->second, value, state_text);
+  if (!staged.ok()) {
+    const char* code = "METRIC.VALUE_INVALID";
+    switch (staged.error) {
+      case MetricValueUpdateError::overflow: code = "METRIC.AGGREGATE_OVERFLOW"; break;
+      case MetricValueUpdateError::allocation_failure: code = "METRIC.OBSERVATION_RESOURCE_EXHAUSTED"; break;
+      case MetricValueUpdateError::arithmetic_failure: code = "METRIC.ARITHMETIC_FAILED"; break;
+      case MetricValueUpdateError::invalid_current: code = "METRIC.CURRENT_VALUE_INVALID"; break;
+      default: break;
     }
+    return MetricError(code, descriptor.family);
   }
-  switch (descriptor.type) {
-    case MetricType::counter:
-      if (value < 0) {
-        return MetricError("SB-METRICS-COUNTER-NEGATIVE-DELTA", descriptor.family);
-      }
-      current.value += value;
-      break;
-    case MetricType::gauge:
-      current.value = value;
-      break;
-    case MetricType::histogram:
-      current.count += 1;
-      current.sum += value;
-      for (auto& [bucket, count] : current.buckets) {
-        if (value <= bucket) {
-          ++count;
-        }
-      }
-      break;
-    case MetricType::state:
-      current.value = value;
-      current.state_text = std::move(state_text);
-      break;
-    case MetricType::derived:
-      current.value = value;
-      break;
+  MetricValue current = std::move(*staged.value);
+  // Stage all allocating work before persistence or visible publication.
+  // In particular, operator[] must not install an empty series on failure.
+  MetricValue history = current;
+  history_values_.reserve(history_values_.size() + 1);
+  decltype(current_values_) pending;
+  if (existing == current_values_.end()) pending.emplace(key, current);
+  const auto persisted = PersistMetricValueForHistory(descriptor, current);
+  if (!persisted.ok) return persisted;
+  static_assert(std::is_nothrow_move_constructible_v<MetricValue>);
+  static_assert(std::is_nothrow_move_assignable_v<MetricValue>);
+  static_assert(std::is_nothrow_swappable_v<MetricValue>);
+  if (existing == current_values_.end()) {
+    current_values_.insert(pending.extract(pending.begin()));
+  } else {
+    using std::swap;
+    swap(existing->second, current);
   }
-  history_values_.push_back(current);
-  (void)PersistMetricValueForHistory(descriptor, current);
+  history_values_.push_back(std::move(history));
   if (history_values_.size() > 4096) {
     history_values_.erase(history_values_.begin(), history_values_.begin() + static_cast<std::ptrdiff_t>(history_values_.size() - 4096));
   }
@@ -730,23 +731,9 @@ std::vector<MetricValue> MetricRegistry::SnapshotHistory(bool include_cluster, u
   return out;
 }
 
-std::string MetricRegistry::NormalizeKey(const std::string& family, const MetricLabelSet& labels) const {
-  std::vector<std::pair<std::string, std::string>> sorted;
-  for (const auto& label : labels) {
-    sorted.push_back({label.key, label.value});
-  }
-  std::sort(sorted.begin(), sorted.end());
-  // A stream can swallow allocation failure and return a truncated key.
-  // Publish only a completely constructed identity; string appends propagate
-  // failure before UpdateValue can use the key to select a metric series.
-  std::string out = family;
-  for (const auto& label : sorted) {
-    out.push_back('|');
-    out.append(label.first);
-    out.push_back('=');
-    out.append(label.second);
-  }
-  return out;
+MetricSeriesKey MetricRegistry::NormalizeKey(const std::string& family,
+                                             const MetricLabelSet& labels) const {
+  return MakeMetricSeriesKey(family, labels);
 }
 
 void MetricRegistry::LoadBuiltinDescriptors() {
@@ -1019,7 +1006,7 @@ MetricLabelSet RedactSensitiveLabels(const MetricDescriptor& descriptor,
   MetricLabelSet redacted;
   redacted.reserve(labels.size());
   for (const auto& label : labels) {
-    redacted.push_back({label.key, sensitive.count(label.key) == 0 ? label.value : "<redacted>"});
+    redacted.push_back({label.key, sensitive.count(label.key) == 0 ? label.value : MetricLabelValue{std::string("<redacted>")}});
   }
   return redacted;
 }

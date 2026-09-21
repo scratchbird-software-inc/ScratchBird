@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "wire/narrow_query_binding_demand_codec.hpp"
+#include "canonical_diagnostic_catalog.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -61,6 +62,8 @@ NarrowQueryUuid Uuid(unsigned seed) {
     value[index] = static_cast<byte>((seed + index * 17u) & 0xffu);
   }
   value[0] = static_cast<byte>((seed & 0x7fu) + 1u);
+  value[6] = (value[6] & 0x0fu) | 0x70u;
+  value[8] = (value[8] & 0x3fu) | 0x80u;
   return value;
 }
 
@@ -183,6 +186,16 @@ NarrowQueryBindingDemand Decode(
   return decoded;
 }
 
+void RequireRegisteredFailure(const std::string& code) {
+  const auto* row =
+      scratchbird::core::diagnostics::FindCanonicalDiagnosticCode(code);
+  Require(row && row->is_failure &&
+              row->severity == scratchbird::core::diagnostics::CanonicalSeverity::error &&
+              row->required_outcome != "not_specified" &&
+              row->retry_class != "not_specified",
+          "refusal emitted unregistered or incomplete canonical metadata: " + code);
+}
+
 void ExpectEncodeError(const NarrowQueryBindingDemand& demand,
                        NarrowQueryBindingDemandErrorCode expected,
                        const std::string& field) {
@@ -191,6 +204,7 @@ void ExpectEncodeError(const NarrowQueryBindingDemand& demand,
   Require(!scratchbird::wire::EncodeNarrowQueryBindingDemand(
               demand, &output, &error),
           "invalid demand unexpectedly encoded");
+  RequireRegisteredFailure(error.diagnostic_code);
   Require(error.code == expected,
           std::string("expected encode error ") +
               scratchbird::wire::NarrowQueryBindingDemandErrorCodeName(
@@ -218,6 +232,7 @@ void ExpectDecodeError(
   Require(!scratchbird::wire::DecodeAndValidateNarrowQueryBindingDemand(
               encoded, context, &sentinel, &error),
           "invalid carrier unexpectedly decoded");
+  RequireRegisteredFailure(error.diagnostic_code);
   Require(error.code == expected,
           std::string("expected decode error ") +
               scratchbird::wire::NarrowQueryBindingDemandErrorCodeName(
@@ -245,6 +260,65 @@ std::size_t OutputBegin(const std::vector<byte>& encoded) {
 
 std::size_t OrderingBegin(const std::vector<byte>& encoded) {
   return OutputBegin(encoded) + LoadLittle32(encoded.data() + 40u);
+}
+
+std::vector<NarrowQueryUuid> InvalidSystemUuids() {
+  std::vector<NarrowQueryUuid> values(1);  // Nil is invalid when required.
+  for (unsigned version = 0; version != 16; ++version) {
+    if (version == 7) continue;
+    auto uuid = Uuid(213);
+    uuid[6] = static_cast<byte>((uuid[6] & 0x0fu) | (version << 4u));
+    values.push_back(uuid);
+  }
+  for (const unsigned variant : {0u, 0x40u, 0xc0u}) {
+    auto uuid = Uuid(213);
+    uuid[8] = static_cast<byte>((uuid[8] & 0x3fu) | variant);
+    values.push_back(uuid);
+  }
+  return values;
+}
+
+void TestSystemIdentityVersions() {
+  const auto canonical = OrderedDemand();
+  const auto bytes = Encode(canonical);
+  for (const auto& invalid : InvalidSystemUuids()) {
+    auto demand = canonical;
+    demand.statement_receipt_uuid = invalid;
+    ExpectEncodeError(demand, NarrowQueryBindingDemandErrorCode::receipt_invalid,
+                      "statement_receipt_uuid");
+    auto context = Context(canonical);
+    context.authenticated_statement_receipt_uuid = invalid;
+    ExpectDecodeError(bytes, context, NarrowQueryBindingDemandErrorCode::receipt_invalid,
+                      "context.authenticated_statement_receipt_uuid");
+    auto mutated = bytes;
+    std::copy(invalid.begin(), invalid.end(), mutated.begin() + 48);
+    ExpectDecodeError(mutated, Context(canonical),
+                      NarrowQueryBindingDemandErrorCode::receipt_invalid, "statement_receipt_uuid");
+    for (const bool present : {false, true}) {
+      if (!present && invalid == NarrowQueryUuid{}) continue;
+      demand = canonical;
+      demand.sources[0].relation_object_hint_present = present;
+      demand.sources[0].relation_object_uuid_hint = invalid;
+      ExpectEncodeError(demand, NarrowQueryBindingDemandErrorCode::source_relation_hint_invalid,
+                        "sources.relation_object_uuid_hint");
+      mutated = bytes;
+      const auto source = SourceBegin(mutated);
+      auto flags = LoadLittle32(mutated.data() + source + 8);
+      flags = present ? flags | 1u : flags & ~1u;
+      StoreLittle32(mutated.data() + source + 8, flags);
+      std::copy(invalid.begin(), invalid.end(), mutated.begin() + source + 16);
+      ExpectDecodeError(mutated, Context(canonical),
+                        NarrowQueryBindingDemandErrorCode::source_relation_hint_invalid,
+                        "sources.relation_object_uuid_hint");
+    }
+  }
+  auto absent = canonical;
+  absent.sources[0].relation_object_hint_present = false;
+  absent.sources[0].relation_object_uuid_hint = {};
+  const auto decoded = Decode(Encode(absent), Context(absent));
+  Require(!decoded.sources[0].relation_object_hint_present &&
+              decoded.sources[0].relation_object_uuid_hint == NarrowQueryUuid{},
+          "exact nil optional relation hint failed");
 }
 
 void TestRoundTripAndLayout() {
@@ -744,6 +818,7 @@ void TestExactBytesAndAllocationPreflight() {
 int main() {
   try {
     TestRoundTripAndLayout();
+    TestSystemIdentityVersions();
     TestMandatoryScanByteReceiptPolicy();
     TestIndependentResultBoundPresence();
     TestReceiptAndHeaderRefusals();

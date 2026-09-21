@@ -411,7 +411,9 @@ std::vector<AgentObservedMetricSnapshot> ObservedMetricSnapshotsFromRequest(
   return snapshots;
 }
 
-AgentRuntimeContext AgentContextFromRequest(const EngineApiRequest& request) {
+AgentRuntimeContext AgentContextFromRequest(
+    const EngineApiRequest& request,
+    agent_authorization::Scope scope = agent_authorization::Scope::local_node) {
   AgentRuntimeContext context;
   context.security_context_present = request.context.security_context_present;
   context.cluster_authority_available = request.context.cluster_authority_available;
@@ -430,7 +432,7 @@ AgentRuntimeContext AgentContextFromRequest(const EngineApiRequest& request) {
   context.database_uuid = request.context.database_uuid;
   context.cluster_uuid = request.context.cluster_uuid;
   agent_authorization::PopulateAgentRuntimeSecurityContext(request.context,
-                                                            &context);
+                                                            &context, scope);
   context.wall_now_microseconds = 1;
   const auto wall = OptionValue(request, "wall_now_us:");
   if (!wall.empty()) { try { context.wall_now_microseconds = static_cast<std::uint64_t>(std::stoull(wall)); } catch (...) {} }
@@ -508,12 +510,14 @@ TResult AgentFailure(const EngineApiRequest& request,
 
 bool HasRequiredAgentSurfaceRights(const EngineApiRequest& request,
                                    const AgentCommandSurfaceSpec& spec) {
-  if (!SecurityContextHasRight(request.context, spec.required_right_primary)) {
+  const auto scope = spec.cluster_scoped ? agent_authorization::Scope::cluster
+                                         : agent_authorization::Scope::local_node;
+  if (!agent_authorization::RightAllowed(request.context, scope, spec.required_right_primary)) {
     return false;
   }
   return spec.required_right_secondary == nullptr ||
          std::string_view(spec.required_right_secondary).empty() ||
-         SecurityContextHasRight(request.context, spec.required_right_secondary);
+         agent_authorization::RightAllowed(request.context, scope, spec.required_right_secondary);
 }
 
 std::string LowerAscii(std::string value) {
@@ -2076,7 +2080,9 @@ EngineDryRunAgentResult EngineDryRunAgent(const EngineDryRunAgentRequest& reques
 }
 
 EngineOverrideAgentResult EngineOverrideAgent(const EngineOverrideAgentRequest& request) {
-  if (!SecurityContextHasRight(request.context, "OBS_AGENT_OVERRIDE")) {
+  if (!agent_authorization::RightAllowed(request.context,
+                                        agent_authorization::Scope::local_node,
+                                        "OBS_AGENT_OVERRIDE")) {
     return AgentSecurityFailure<EngineOverrideAgentResult>(request, "agents.override", "OBS_AGENT_OVERRIDE");
   }
   return MutatingAgentOperation<EngineOverrideAgentResult>(request, request.durable_runtime_state, "agents.override", AgentLifecycleState::running, false);
@@ -2121,7 +2127,7 @@ EngineSysAgentsResult EngineSysAgents(const EngineSysAgentsRequest& request) {
 
 EngineClusterSysAgentsResult EngineClusterSysAgents(const EngineClusterSysAgentsRequest& request) {
   const auto grant = EvaluateAgentCommandGrant(
-      AgentContextFromRequest(request),
+      AgentContextFromRequest(request, agent_authorization::Scope::cluster),
       AgentSecurityCommandFamily::cluster_inspect,
       "cluster.sys.agents",
       false,
@@ -2182,7 +2188,9 @@ EngineAgentCommandSurfaceResult EngineAgentCommandSurfaceOperation(
 
   if (!UsesProjectionMatrixRights(*spec)) {
     const auto grant = EvaluateAgentCommandGrant(
-        AgentContextFromRequest(effective_request),
+        AgentContextFromRequest(effective_request,
+            spec->cluster_scoped ? agent_authorization::Scope::cluster
+                                 : agent_authorization::Scope::local_node),
         CommandFamilyForSpec(*spec),
         spec->operation_id,
         SecurityOptionBool(effective_request, "agent_scope_restricted:", false),

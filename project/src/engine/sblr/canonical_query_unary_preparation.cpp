@@ -117,19 +117,7 @@ bool PrepareCanonicalSortOrderTerm(
     }
     term->resource_epoch = resolved.resource_descriptor.resource_epoch;
     term->collation_epoch = resolved.resource_descriptor.family_epoch;
-    term->text_seed.active = true;
-    term->text_seed.seed_pack_name =
-        resolved.resource_descriptor.seed_pack_name;
-    term->text_seed.seed_pack_version =
-        resolved.resource_descriptor.seed_pack_version;
-    term->text_seed.charset_name =
-        resolved.resource_descriptor.parent_canonical_name;
-    term->text_seed.collation_name =
-        resolved.resource_descriptor.canonical_name;
-    term->text_seed.collation_case_insensitive =
-        resolved.resource_descriptor.case_insensitive;
-    term->text_seed.collation_accent_insensitive =
-        resolved.resource_descriptor.accent_insensitive;
+    term->text_seed = api::TextSeedFromResource(resolved.resource_descriptor);
 #endif
   } else if ((column.descriptor.canonical_type_name == "time" ||
               column.descriptor.canonical_type_name == "timestamp") &&
@@ -344,19 +332,7 @@ PreparedDistinctRoot PrepareQueryDistinctRoot(
       }
       term.resource_epoch = resolved.resource_descriptor.resource_epoch;
       term.collation_epoch = resolved.resource_descriptor.family_epoch;
-      term.text_seed.active = true;
-      term.text_seed.seed_pack_name =
-          resolved.resource_descriptor.seed_pack_name;
-      term.text_seed.seed_pack_version =
-          resolved.resource_descriptor.seed_pack_version;
-      term.text_seed.charset_name =
-          resolved.resource_descriptor.parent_canonical_name;
-      term.text_seed.collation_name =
-          resolved.resource_descriptor.canonical_name;
-      term.text_seed.collation_case_insensitive =
-          resolved.resource_descriptor.case_insensitive;
-      term.text_seed.collation_accent_insensitive =
-          resolved.resource_descriptor.accent_insensitive;
+      term.text_seed = api::TextSeedFromResource(resolved.resource_descriptor);
 #endif
     } else if ((input.batch.columns[column].descriptor.canonical_type_name ==
                     "time" ||

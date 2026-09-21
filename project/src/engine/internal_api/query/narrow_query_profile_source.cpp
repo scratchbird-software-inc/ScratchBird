@@ -1153,19 +1153,7 @@ class NarrowQueryProfileOccurrenceSource final
               "sblr.query_execute.text_collation_stale");
           return false;
         }
-        runtime.text_seed.active = true;
-        runtime.text_seed.seed_pack_name =
-            resource.resource_descriptor.seed_pack_name;
-        runtime.text_seed.seed_pack_version =
-            resource.resource_descriptor.seed_pack_version;
-        runtime.text_seed.charset_name =
-            resource.resource_descriptor.parent_canonical_name;
-        runtime.text_seed.collation_name =
-            resource.resource_descriptor.canonical_name;
-        runtime.text_seed.collation_case_insensitive =
-            resource.resource_descriptor.case_insensitive;
-        runtime.text_seed.collation_accent_insensitive =
-            resource.resource_descriptor.accent_insensitive;
+        runtime.text_seed = TextSeedFromResource(resource.resource_descriptor);
       } else if (UuidPresent(term.collation_uuid) ||
                  term.collation_generation != 0) {
         preparation_diagnostic_ = Diagnostic(

@@ -14,18 +14,12 @@ namespace datatype_catalog = scratchbird::core::datatypes;
 // Pure live-registry projection only. This supplies neither a statement
 // capability nor mutation/security authority. Each DML provider separately
 // authenticates its operation, receipt and descriptor and closes its profile.
-inline std::string UuidText(const update_wire::TypedUpdateUuid& uuid) {
-  scratchbird::core::platform::Uuid value;
-  std::copy(uuid.begin(), uuid.end(), value.bytes.begin());
-  if (scratchbird::core::uuid::IsNilUuid(value)) return {};
-  return scratchbird::core::uuid::UuidToString(value);
+inline EngineUuid UuidValue(const update_wire::TypedUpdateUuid& uuid) noexcept {
+  return EngineUuid{uuid};
 }
-inline bool TypedUuid(std::string_view text, update_wire::TypedUpdateUuid* out) {
-  if (!out) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() || scratchbird::core::uuid::IsNilUuid(parsed.value) ||
-      scratchbird::core::uuid::UuidToString(parsed.value) != text) return false;
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), out->begin());
+inline bool TypedUuid(const EngineUuid& uuid, update_wire::TypedUpdateUuid* out) noexcept {
+  if (!out || !core::uuid::IsEngineIdentityUuid(uuid)) return false;
+  *out = uuid.bytes;
   return true;
 }
 struct DatatypeReference {
@@ -65,12 +59,15 @@ inline bool BuildDatatypeRecord(
     const DatatypeReference& reference,
     update_wire::TypedUpdateDatatypeAuthorityRecord* record) {
   if (record == nullptr) return false;
+  update_wire::TypedUpdateDatatypeAuthorityRecord candidate;
+  auto* output = record;
+  record = &candidate;
   const auto lookup = datatype_catalog::LookupDatatypeTypeCodecIdentityV1(
       context.datatype_catalog_snapshot_uuid,
       context.datatype_catalog_generation,
       context.datatype_registry_generation,
-      UuidText(reference.descriptor_uuid), reference.descriptor_generation);
-  if (!lookup.ok || lookup.row.type_uuid != UuidText(reference.type_uuid) ||
+      UuidValue(reference.descriptor_uuid), reference.descriptor_generation);
+  if (!lookup.ok || lookup.row.type_uuid != UuidValue(reference.type_uuid) ||
       lookup.row.type_generation != reference.type_generation ||
       lookup.row.codec_id != reference.codec_id ||
       lookup.row.codec_version != reference.codec_version ||
@@ -85,30 +82,7 @@ inline bool BuildDatatypeRecord(
   // TEXT registry identity. Its v1 closed-carrier code fields stay zero;
   // neither a codec spelling nor variable width alone admits another type.
   const auto& row = lookup.row;
-  const bool text =
-      row.descriptor_uuid == "019d0000-0000-7000-8000-00000000d718" &&
-      row.descriptor_generation == 1 &&
-      row.type_uuid == "019d0000-0000-7000-8000-00000000d719" &&
-      row.type_generation == 1 &&
-      row.codec_uuid == "019d0000-0000-7000-8000-00000000d71a" &&
-      row.codec_id == "datatype.text.utf8.v1" && row.codec_version == 1 &&
-      row.codec_generation == 1 && row.canonical_name == "text" && row.null_supported &&
-      row.datatype_identity_code == 0 && row.null_encoding_code == 1 &&
-      row.byte_order_code == 0 && !row.signed_code &&
-      row.representation_code == 0 && row.canonical_value_bytes == 0 &&
-      row.canonical_value_minimum_bytes == 0 &&
-      row.canonical_value_maximum_bytes == 16777216 &&
-      row.canonical_value_exact_bytes == 0 &&
-      row.canonical_value_variable_width &&
-      row.canonical_value_exact_zero_is_width_marker &&
-      row.canonical_byte_order == "byte_sequence" &&
-      row.canonical_representation ==
-          "exact_well_formed_UTF8_scalar_sequence_without_implicit_normalization" &&
-      row.canonical_charset == "UTF-8" && row.shortest_form_utf8_required &&
-      !row.implicit_normalization_allowed && row.descriptor_bound_collation_required &&
-      row.empty_value_distinct_from_sql_null && row.sql_null_requires_zero_payload &&
-      row.variable_width_storage_without_truncation &&
-      row.invalid_encoding_diagnostic_id == "CTB.TEXT.INVALID_ENCODING";
+  const bool text = datatype_catalog::IsExactCanonicalTextTypeCodecIdentityV1(row);
   if (!text &&
       (row.datatype_identity_code == 0 || row.null_encoding_code == 0 ||
        row.byte_order_code == 0 || row.representation_code == 0 ||
@@ -148,6 +122,7 @@ inline bool BuildDatatypeRecord(
       lookup.row.canonical_value_exact_bytes;
   record->datatype_catalog_generation = lookup.row.catalog_generation;
   record->datatype_registry_generation = lookup.row.registry_generation;
+  *output = std::move(candidate);
   return true;
 }
 
@@ -157,19 +132,22 @@ inline bool BuildOperatorRecord(
     const update_wire::TypedUpdatePredicateVector& predicate,
     update_wire::TypedUpdateBuiltinOperatorAuthorityRecord* record) {
   if (record == nullptr || predicate.records.size() != 3) return false;
+  update_wire::TypedUpdateBuiltinOperatorAuthorityRecord candidate;
+  auto* output = record;
+  record = &candidate;
   const auto& left = predicate.records[0];
   const auto& right = predicate.records[1];
   const auto& comparison = predicate.records[2];
   const auto lookup =
       datatype_catalog::LookupBuiltinOperatorTypeCodecIdentityV1(
-          UuidText(descriptor.builtin_operator_snapshot_uuid),
+          UuidValue(descriptor.builtin_operator_snapshot_uuid),
           descriptor.builtin_operator_registry_generation,
-          UuidText(comparison.operator_uuid), comparison.operator_generation,
-          UuidText(left.output_descriptor_uuid),
-          left.output_descriptor_generation, UuidText(left.output_type_uuid),
-          left.output_type_generation, UuidText(right.output_descriptor_uuid),
+          UuidValue(comparison.operator_uuid), comparison.operator_generation,
+          UuidValue(left.output_descriptor_uuid),
+          left.output_descriptor_generation, UuidValue(left.output_type_uuid),
+          left.output_type_generation, UuidValue(right.output_descriptor_uuid),
           right.output_descriptor_generation,
-          UuidText(right.output_type_uuid), right.output_type_generation);
+          UuidValue(right.output_type_uuid), right.output_type_generation);
   if (!lookup.ok ||
       !TypedUuid(lookup.row.operator_uuid, &record->operator_uuid) ||
       !TypedUuid(lookup.row.operator_snapshot_uuid,
@@ -209,6 +187,7 @@ inline bool BuildOperatorRecord(
   record->operand_identity_rule = lookup.row.operand_identity_rule;
   record->result_null_encoding_code =
       lookup.row.result_null_encoding_code;
+  *output = std::move(candidate);
   return true;
 }
 }  // namespace scratchbird::engine::internal_api::datatype_operator_projection

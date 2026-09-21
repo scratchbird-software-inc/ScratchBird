@@ -17,6 +17,9 @@
 namespace api = scratchbird::engine::internal_api;
 
 namespace scratchbird::engine::internal_api {
+bool QowReadCanonicalProjectionExpressionsV1(
+    const EngineApiRequest&, std::uint64_t, std::vector<EngineProjectionExpression>*,
+    std::size_t*, std::size_t*, std::string*, std::string*);
 bool QowBindCanonicalParameterSlotsV1(
     const std::vector<EngineDescriptor>& parameter_descriptors,
     const std::vector<std::pair<std::string, EngineTypedValue>>& supplied_parameters,
@@ -245,6 +248,54 @@ bool ValidateCompleteDescriptor() {
   return passed;
 }
 
+bool ValidateProjectionFunctionIdentities() {
+  api::EngineApiRequest request;
+  request.option_envelopes = {
+      "projection_0_expr_kind:function", "projection_0_type:int64",
+      "projection_0_function_arg_count:1", "projection_0_arg_0_expr_kind:function",
+      "projection_0_arg_0_type:int64", "projection_0_arg_0_function_arg_count:0"};
+  const auto outer = Descriptor(71, "int64", false).descriptor_uuid;
+  const auto inner = Descriptor(72, "int64", false).descriptor_uuid;
+  request.projection.function_identities = {{"projection_0_", outer}, {"projection_0_arg_0_", inner}};
+  std::vector<api::EngineProjectionExpression> expressions;
+  std::size_t nodes = 0, depth = 0;
+  std::string reason, detail;
+  const auto bind = [&](const auto& input) {
+    return api::QowReadCanonicalProjectionExpressionsV1(input, 1, &expressions,
+                                                       &nodes, &depth, &reason, &detail);
+  };
+  bool passed = Require(bind(request) && expressions.size() == 1 && nodes == 2 && depth == 2 &&
+                           expressions[0].function_uuid == outer && expressions[0].function_id.empty() &&
+                           expressions[0].arguments.size() == 1 &&
+                           expressions[0].arguments[0].function_uuid == inner,
+                       "nested function binding must consume binary UUIDs without function labels");
+  const auto reject = [&](const auto& bad) {
+    expressions.resize(1); nodes = depth = 99;
+    return Require(!bind(bad) && expressions.empty() && nodes == 0 && depth == 0 && reason == "function_uuid",
+                   "invalid function binding must reject the complete graph");
+  };
+  auto bad = request; bad.projection.function_identities.clear(); passed &= reject(bad);
+  bad = request; bad.projection.function_identities.pop_back(); passed &= reject(bad);
+  bad = request; bad.projection.function_identities.emplace_back("projection_2_", inner); passed &= reject(bad);
+  bad = request; bad.projection.function_identities.push_back(bad.projection.function_identities.front()); passed &= reject(bad);
+  for (unsigned slot = 0; slot != 2; ++slot) {
+    bad = request; bad.projection.function_identities[slot].second = {}; passed &= reject(bad);
+    for (unsigned version = 0; version != 16; ++version) {
+      if (version == 7) continue;
+      bad = request;
+      bad.projection.function_identities[slot].second.bytes[6] = static_cast<std::uint8_t>(version << 4);
+      passed &= reject(bad);
+    }
+  }
+  for (const auto option : {"projection_0_function_uuid", "projection_0_function_uuid:",
+                             "projection_0_arg_0_function_uuid:text"}) {
+    bad = request; bad.option_envelopes.push_back(option); passed &= reject(bad);
+  }
+  bad = request; bad.projection.function_identities[1].first = "projection_0_arg_00_";
+  passed &= reject(bad);
+  return passed;
+}
+
 }  // namespace
 
 // QOW-TEST-QRY-026-V1
@@ -254,6 +305,7 @@ int main() {
   passed &= ValidateRefusals();
   passed &= ValidateBinaryIdentity();
   passed &= ValidateCompleteDescriptor();
+  passed &= ValidateProjectionFunctionIdentities();
   std::cout << checks << " typed parameter binding checks: " << (passed ? "passed" : "failed") << '\n';
   return passed ? EXIT_SUCCESS : EXIT_FAILURE;
 }

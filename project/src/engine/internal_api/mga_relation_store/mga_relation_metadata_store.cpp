@@ -858,7 +858,7 @@ static std::shared_ptr<const DescriptorFieldsByRelation>
 LoadAdmittedDescriptorFieldsSnapshot(
     const std::string& path,
     const MetadataReadResult& lines,
-    std::string_view required_relation_uuid) {
+    const EngineUuid& required_relation_uuid) {
   if (!lines.ok) return nullptr;
   const auto identity = lines.identity;
   const std::uintmax_t file_size = identity.ok ? identity.file_size : 0;
@@ -872,9 +872,8 @@ LoadAdmittedDescriptorFieldsSnapshot(
         cached->second.file_mtime_ticks == file_mtime_ticks &&
         cached->second.content_sha256 == lines.content_sha256 &&
         cached->second.descriptors != nullptr &&
-        (required_relation_uuid.empty() ||
-         cached->second.descriptors->contains(
-             std::string(required_relation_uuid)))) {
+        (required_relation_uuid.is_nil() ||
+         cached->second.descriptors->contains(required_relation_uuid))) {
       return cached->second.descriptors;
     }
   }
@@ -903,14 +902,14 @@ LoadAdmittedDescriptorFieldsSnapshot(
 std::shared_ptr<const DescriptorFieldsByRelation>
 LoadDescriptorFieldsSnapshot(
     const EngineRequestContext& context,
-    std::string_view required_relation_uuid) {
+    const EngineUuid& required_relation_uuid) {
   const std::string path = DescriptorStorePath(context);
   return LoadAdmittedDescriptorFieldsSnapshot(path, ReadLines(path), required_relation_uuid);
 }
 
 DescriptorFieldsByRelation LoadDescriptorFieldsByRelation(
     const EngineRequestContext& context,
-    std::string_view required_relation_uuid) {
+    const EngineUuid& required_relation_uuid) {
   const auto snapshot =
       LoadDescriptorFieldsSnapshot(context, required_relation_uuid);
   return snapshot == nullptr ? DescriptorFieldsByRelation{} : *snapshot;

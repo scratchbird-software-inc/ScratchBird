@@ -15,6 +15,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <utility>
 
 namespace scratchbird::engine::executor {
@@ -296,8 +297,9 @@ bool EngineEvidenceContains(
   return std::any_of(evidence.begin(),
                      evidence.end(),
                      [&](const auto& item) {
+                       const auto* text = std::get_if<std::string>(&item.evidence_id);
                        return item.evidence_kind == kind &&
-                              item.evidence_id.find(id) != std::string::npos;
+                              text != nullptr && *text == id;
                      });
 }
 

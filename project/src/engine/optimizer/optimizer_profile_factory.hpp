@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <compare>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -25,6 +26,10 @@ struct CanonicalOptimizerNodeCapabilityBinding {
   std::uint64_t memory_bytes_required{0};
   bool available{true};
   std::string refusal_diagnostic_id;
+  // A shared executor capability is not an index identity. Nil/zero denotes
+  // a non-index binding; an index binding must carry both exact values.
+  planner::CanonicalPlannerUuid index_uuid;
+  std::uint64_t index_generation{0};
 };
 
 // Complete engine-owned executor inventory plus the exact statement-bound
@@ -50,20 +55,32 @@ struct CanonicalOptimizerProfileIdentities {
   planner::CanonicalPlannerUuid alternative_uuid;
   planner::CanonicalPlannerUuid transformation_uuid;
   planner::CanonicalPlannerUuid cost_vector_uuid;
+  planner::CanonicalPlannerUuid index_uuid;
+  std::uint64_t index_generation{0};
 };
 
 // Immutable per-planning-scope ownership. No process-global identity cache and
 // no label/hash-derived UUIDs. Creation publishes either every key or nothing.
 class CanonicalOptimizerProfileIdentityOwner {
  public:
-  using Key = std::pair<std::uint32_t, planner::CanonicalPlannerUuid>;
+  struct Key {
+    std::uint32_t logical_node_id{0};
+    planner::CanonicalPlannerUuid capability_uuid;
+    planner::CanonicalPlannerUuid index_uuid;
+    std::uint64_t index_generation{0};
+    auto operator<=>(const Key&) const = default;
+  };
   static std::shared_ptr<const CanonicalOptimizerProfileIdentityOwner> Create(
       std::string binding, std::vector<Key> keys,
       std::uint64_t maximum_count, std::uint64_t maximum_binding_bytes) noexcept;
   bool Matches(std::string_view binding) const noexcept { return binding_ == binding; }
   const planner::CanonicalPlannerUuid& ScopeUuid() const noexcept { return scope_uuid_; }
   const CanonicalOptimizerProfileIdentities* Find(
-      std::uint32_t node, const planner::CanonicalPlannerUuid& capability) const noexcept;
+      std::uint32_t node, const planner::CanonicalPlannerUuid& capability,
+      const planner::CanonicalPlannerUuid& index = {},
+      std::uint64_t index_generation = 0) const noexcept;
+  const CanonicalOptimizerProfileIdentities* FindAlternative(
+      const planner::CanonicalPlannerUuid& alternative) const noexcept;
   std::size_t Size() const noexcept { return identities_.size(); }
 
  private:

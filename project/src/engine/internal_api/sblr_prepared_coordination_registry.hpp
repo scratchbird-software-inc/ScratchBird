@@ -25,11 +25,11 @@ enum class SblrPreparedCoordinationKind : std::uint8_t {
 };
 
 struct SblrPreparedCoordinationSnapshot {
-  std::string coordination_uuid;
-  std::string operation_uuid;
-  std::string database_uuid;
-  std::string session_uuid;
-  std::string provisional_prepared_uuid;
+  EngineUuid coordination_uuid;
+  EngineUuid operation_uuid;
+  EngineUuid database_uuid;
+  EngineUuid session_uuid;
+  EngineUuid provisional_prepared_uuid;
   std::uint64_t provisional_prepared_generation{0};
   std::uint64_t coordinator_generation{0};
   std::uint64_t private_handle{0};
@@ -47,30 +47,30 @@ struct SblrPreparedCoordinationResult {
 };
 
 SblrPreparedCoordinationResult BeginSblrPreparedCoordination(
-    const EngineRequestContext& context, const std::string& operation_uuid);
+    const EngineRequestContext& context, const EngineUuid& operation_uuid);
 
 // Begins an execution-scoped coordination by resolving an already sealed
 // public prepared identity under the authenticated database/session owner.
 SblrPreparedCoordinationResult BeginSblrPreparedExecutionCoordination(
-    const EngineRequestContext& context, const std::string& operation_uuid,
-    const std::string& public_prepared_uuid);
+    const EngineRequestContext& context, const EngineUuid& operation_uuid,
+    const EngineUuid& public_prepared_uuid);
 
 SblrPreparedCoordinationResult AcquireSblrPreparedCoordination(
-    const EngineRequestContext& context, const std::string& coordination_uuid,
-    const std::string& operation_uuid,
+    const EngineRequestContext& context, const EngineUuid& coordination_uuid,
+    const EngineUuid& operation_uuid,
     std::uint64_t expected_coordinator_generation);
 
 SblrPreparedCoordinationResult SealSblrPreparedCoordination(
-    const EngineRequestContext& context, const std::string& coordination_uuid,
-    const std::string& operation_uuid,
+    const EngineRequestContext& context, const EngineUuid& coordination_uuid,
+    const EngineUuid& operation_uuid,
     std::uint64_t expected_coordinator_generation,
-    const std::string& expected_provisional_prepared_uuid,
+    const EngineUuid& expected_provisional_prepared_uuid,
     std::uint64_t expected_provisional_prepared_generation,
     const std::string& seal_evidence_sha256);
 
 SblrPreparedCoordinationResult RevokeSblrPreparedCoordination(
-    const EngineRequestContext& context, const std::string& coordination_uuid,
-    const std::string& operation_uuid,
+    const EngineRequestContext& context, const EngineUuid& coordination_uuid,
+    const EngineUuid& operation_uuid,
     std::uint64_t expected_coordinator_generation,
     const std::string& reason_code);
 

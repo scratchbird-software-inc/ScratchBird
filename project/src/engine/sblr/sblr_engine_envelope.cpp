@@ -555,6 +555,30 @@ bool ValidateValueBody(SblrValueKind kind,
       internal_api::RelationalTypeDescriptor descriptor;
       return depth == 1 && DecodeRelationalTypeDescriptorV1(data, size, &descriptor);
     }
+    case SblrValueKind::relational_expression: {
+      internal_api::RelationalExpressionRecord expression;
+      return depth == 1 && DecodeRelationalExpressionV1(data, size, &expression);
+    }
+    case SblrValueKind::relational_node_binding: {
+      RelationalNodeBindingRecord binding;
+      return depth == 1 && DecodeRelationalNodeBindingV1(data, size, &binding);
+    }
+    case SblrValueKind::relational_window_invocation: {
+      internal_api::RelationalWindowInvocationRecord invocation;
+      return depth == 1 && DecodeRelationalWindowInvocationV1(data, size, &invocation);
+    }
+    case SblrValueKind::relational_window_definition: {
+      internal_api::RelationalWindowDefinitionRecord definition;
+      return depth == 1 && DecodeRelationalWindowDefinitionV1(data, size, &definition);
+    }
+    case SblrValueKind::relational_property: {
+      internal_api::RelationalPropertyRecord property;
+      return depth == 1 && DecodeRelationalPropertyV1(data, size, &property);
+    }
+    case SblrValueKind::relational_row_pattern: {
+      internal_api::RelationalRowPatternRecord pattern;
+      return depth == 1 && DecodeRelationalRowPatternV1(data, size, &pattern);
+    }
     case SblrValueKind::descriptor_ref:
       // Core descriptor carriers use fixed-size descriptor bodies; envelope-level
       // validation narrows 320/384-byte forms to their exact operations.
@@ -1558,6 +1582,109 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
         fail("SBLR.OPERAND_INVALID", "relational context requires its exact binary UUID reference slot");
         break;
       }
+    }
+    if (operand.type == "relational_row_pattern_v1") {
+      fail("SBLR.OPERAND_INVALID", "text relational row patterns are not executable");
+      break;
+    }
+    if (operand.value_kind == SblrValueKind::relational_row_pattern || operand.type == "relational_row_pattern_v2") {
+      internal_api::RelationalRowPatternRecord pattern;
+      if (envelope.operation_id != "query.execute" || envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          envelope.opcode_code != 4615 || envelope.operation_version_major != 1 || envelope.operation_version_minor > 1 ||
+          operand.type != "relational_row_pattern_v2" || operand.value_kind != SblrValueKind::relational_row_pattern ||
+          !operand.value.empty() || !DecodeRelationalRowPatternV1(operand.value_body.data(), operand.value_body.size(), &pattern) ||
+          operand.name != "slot_" + std::to_string(pattern.pattern_id)) {
+        fail("SBLR.OPERAND_INVALID", "binary row pattern requires its exact query slot and pattern handle");
+        break;
+      }
+    }
+    if (operand.type == "relational_property_v1" || operand.type == "relational_property_v2") {
+      fail("SBLR.OPERAND_INVALID", "text relational properties are not executable");
+      break;
+    }
+    if (operand.value_kind == SblrValueKind::relational_property || operand.type == "relational_property_v3") {
+      internal_api::RelationalPropertyRecord property;
+      if (envelope.operation_id != "query.execute" || envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          envelope.opcode_code != 4615 || envelope.operation_version_major != 1 || envelope.operation_version_minor > 1 ||
+          operand.type != "relational_property_v3" || operand.name != "property" ||
+          operand.value_kind != SblrValueKind::relational_property || !operand.value.empty() ||
+          !DecodeRelationalPropertyV1(operand.value_body.data(), operand.value_body.size(), &property)) {
+        fail("SBLR.OPERAND_INVALID", "binary property requires its exact query slot and identity body");
+        break;
+      }
+    }
+    if (operand.type == "relational_window_definition_v1") {
+      fail("SBLR.OPERAND_INVALID", "text relational window definitions are not executable");
+      break;
+    }
+    if (operand.value_kind == SblrValueKind::relational_window_definition ||
+        operand.type == "relational_window_definition_v2") {
+      internal_api::RelationalWindowDefinitionRecord definition;
+      if (envelope.operation_id != "query.execute" || envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          envelope.opcode_code != 4615 || envelope.operation_version_major != 1 ||
+          envelope.operation_version_minor > 1 || operand.type != "relational_window_definition_v2" ||
+          operand.value_kind != SblrValueKind::relational_window_definition || !operand.value.empty() ||
+          !DecodeRelationalWindowDefinitionV1(operand.value_body.data(), operand.value_body.size(), &definition) ||
+          operand.name != "slot_" + std::to_string(definition.window_id)) {
+        fail("SBLR.OPERAND_INVALID", "binary window definition requires its exact query slot and handle");
+        break;
+      }
+    }
+    if (operand.type == "relational_window_invocation_v1") {
+      fail("SBLR.OPERAND_INVALID", "text relational window invocations are not executable");
+      break;
+    }
+    if (operand.value_kind == SblrValueKind::relational_window_invocation ||
+        operand.type == "relational_window_invocation_v2") {
+      internal_api::RelationalWindowInvocationRecord invocation;
+      if (envelope.operation_id != "query.execute" || envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          envelope.opcode_code != 4615 || envelope.operation_version_major != 1 ||
+          envelope.operation_version_minor > 1 || operand.type != "relational_window_invocation_v2" ||
+          operand.value_kind != SblrValueKind::relational_window_invocation || !operand.value.empty() ||
+          !DecodeRelationalWindowInvocationV1(operand.value_body.data(), operand.value_body.size(), &invocation) ||
+          operand.name != "slot_" + std::to_string(invocation.invocation_id)) {
+        fail("SBLR.OPERAND_INVALID", "binary window invocation requires its exact query slot and handle");
+        break;
+      }
+    }
+    if (operand.type == "relational_node_binding_v1") {
+      fail("SBLR.OPERAND_INVALID", "text relational node bindings are not executable");
+      break;
+    }
+    if (operand.value_kind == SblrValueKind::relational_node_binding ||
+        operand.type == "relational_node_binding_v2") {
+      RelationalNodeBindingRecord binding;
+      if (envelope.operation_id != "query.execute" || envelope.opcode != "SBLR_QUERY_EXECUTE" ||
+          envelope.opcode_code != 4615 || envelope.operation_version_major != 1 ||
+          envelope.operation_version_minor > 1 || operand.type != "relational_node_binding_v2" ||
+          operand.value_kind != SblrValueKind::relational_node_binding || !operand.value.empty() ||
+          !DecodeRelationalNodeBindingV1(operand.value_body.data(), operand.value_body.size(), &binding) ||
+          operand.name != "slot_" + std::to_string(binding.node_id)) {
+        fail("SBLR.OPERAND_INVALID", "binary relational node binding requires its exact query slot and handle");
+        break;
+      }
+    }
+    if (operand.value_kind == SblrValueKind::relational_expression ||
+        operand.type == "relational_expression_v2") {
+      internal_api::RelationalExpressionRecord expression;
+      const bool placement = envelope.operation_id == "query.execute" &&
+          envelope.opcode == "SBLR_QUERY_EXECUTE" && envelope.opcode_code == 4615 &&
+          envelope.operation_version_major == 1 && envelope.operation_version_minor <= 1 &&
+          operand.type == "relational_expression_v2" && operand.value.empty() &&
+          operand.value_kind == SblrValueKind::relational_expression &&
+          DecodeRelationalExpressionV1(operand.value_body.data(), operand.value_body.size(), &expression) &&
+          operand.name == "slot_" + std::to_string(expression.expression_id);
+      if (!placement) {
+        fail("SBLR.OPERAND_INVALID", "binary relational expression requires its exact query slot and handle");
+        break;
+      }
+    }
+    if (operand.type == "relational_expression_v1" &&
+        operand.value_kind != SblrValueKind::expression_node_ref &&
+        operand.value_kind != SblrValueKind::parameter_node_ref &&
+        operand.value_kind != SblrValueKind::variable_node_ref) {
+      fail("SBLR.OPERAND_INVALID", "text relational expression carriers are not executable");
+      break;
     }
     if (operand.value_kind == SblrValueKind::relational_type_descriptor ||
         operand.type == "relational_descriptor_v3") {

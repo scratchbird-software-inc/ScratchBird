@@ -1,6 +1,56 @@
 {
   "collations": [
     {
+      "name": "SB_UTF8_BINARY",
+      "charset": "UTF-8",
+      "comparison_profile": 1,
+      "case_insensitive": false,
+      "accent_insensitive": false,
+      "language": "und",
+      "description": "ScratchBird strict UTF-8 scalar order, no normalization or padding",
+      "supported_by": ["ScratchBird"]
+    },
+    {
+      "name": "SB_UCA_17_PRIMARY",
+      "charset": "UTF-8",
+      "comparison_profile": 2,
+      "case_insensitive": true,
+      "accent_insensitive": true,
+      "language": "und",
+      "description": "ScratchBird UCA17 root non-ignorable forward-secondary primary strength",
+      "supported_by": ["ScratchBird"]
+    },
+    {
+      "name": "SB_UCA_17_SECONDARY",
+      "charset": "UTF-8",
+      "comparison_profile": 3,
+      "case_insensitive": true,
+      "accent_insensitive": false,
+      "language": "und",
+      "description": "ScratchBird UCA17 root non-ignorable forward-secondary secondary strength",
+      "supported_by": ["ScratchBird"]
+    },
+    {
+      "name": "SB_UCA_17_TERTIARY",
+      "charset": "UTF-8",
+      "comparison_profile": 4,
+      "case_insensitive": false,
+      "accent_insensitive": false,
+      "language": "und",
+      "description": "ScratchBird UCA17 root non-ignorable forward-secondary tertiary strength",
+      "supported_by": ["ScratchBird"]
+    },
+    {
+      "name": "SB_UCA_17_IDENTICAL",
+      "charset": "UTF-8",
+      "comparison_profile": 5,
+      "case_insensitive": false,
+      "accent_insensitive": false,
+      "language": "und",
+      "description": "ScratchBird UCA17 root non-ignorable forward-secondary identical strength",
+      "supported_by": ["ScratchBird"]
+    },
+    {
       "name": "AL32UTF8",
       "charset": "UTF-8",
       "case_insensitive": false,

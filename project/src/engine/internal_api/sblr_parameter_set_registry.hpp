@@ -15,27 +15,27 @@ enum class SblrParameterSetState : std::uint8_t { active = 1, revoked = 2 };
 
 struct SblrParameterSlotDescriptor {
   std::uint32_t slot_ordinal{0};
-  std::string slot_uuid;
-  std::string datatype_descriptor_uuid;
+  EngineUuid slot_uuid;
+  EngineUuid datatype_descriptor_uuid;
   std::uint64_t datatype_descriptor_generation{0};
   SblrParameterDirection direction{SblrParameterDirection::in};
   bool nullable{false};
 };
 
 struct SblrParameterSetSnapshot {
-  std::string snapshot_uuid;
+  EngineUuid snapshot_uuid;
   std::uint64_t snapshot_generation{0};
-  std::string database_uuid;
-  std::string session_uuid;
-  std::string statement_receipt_uuid;
-  std::string execution_uuid;
-  std::string parameter_set_descriptor_uuid;
+  EngineUuid database_uuid;
+  EngineUuid session_uuid;
+  EngineUuid statement_receipt_uuid;
+  EngineUuid execution_uuid;
+  EngineUuid parameter_set_descriptor_uuid;
   std::uint64_t descriptor_generation{0};
-  std::string prepared_statement_uuid;
+  EngineUuid prepared_statement_uuid;
   std::uint64_t prepared_generation{0};
-  std::string batch_uuid;
+  EngineUuid batch_uuid;
   std::uint64_t batch_generation{0};
-  std::string dynamic_package_uuid;
+  EngineUuid dynamic_package_uuid;
   std::uint64_t dynamic_generation{0};
   std::uint64_t catalog_generation{0};
   std::uint64_t security_epoch{0};
@@ -47,20 +47,20 @@ struct SblrParameterSetSnapshot {
 };
 
 struct SblrParameterSlotIssueDemand {
-  std::string datatype_descriptor_uuid;
+  EngineUuid datatype_descriptor_uuid;
   std::uint64_t datatype_descriptor_generation{0};
   SblrParameterDirection direction{SblrParameterDirection::in};
   bool nullable{false};
 };
 
 struct SblrParameterSetIssueRequest {
-  std::string statement_receipt_uuid;
-  std::string execution_uuid;
-  std::string prepared_statement_uuid;
+  EngineUuid statement_receipt_uuid;
+  EngineUuid execution_uuid;
+  EngineUuid prepared_statement_uuid;
   std::uint64_t prepared_generation{0};
-  std::string batch_uuid;
+  EngineUuid batch_uuid;
   std::uint64_t batch_generation{0};
-  std::string dynamic_package_uuid;
+  EngineUuid dynamic_package_uuid;
   std::uint64_t dynamic_generation{0};
   std::vector<SblrParameterSlotIssueDemand> slots;
   std::string reason_code;
@@ -84,49 +84,49 @@ struct SblrParameterSetMutationResult {
 // public result.  Every identity here is an exact projection from an
 // authenticated statement receipt or an already-issued parameter-set row.
 struct SblrParameterBindPublicationRequest {
-  std::string statement_receipt_uuid;
-  std::string execution_uuid;
-  std::string prepared_statement_uuid;
+  EngineUuid statement_receipt_uuid;
+  EngineUuid execution_uuid;
+  EngineUuid prepared_statement_uuid;
   std::uint64_t prepared_generation{0};
-  std::string parameter_set_descriptor_uuid;
+  EngineUuid parameter_set_descriptor_uuid;
   std::uint64_t parameter_set_generation{0};
   std::string ordered_slot_table_sha256;
-  std::string batch_uuid;
+  EngineUuid batch_uuid;
   std::uint64_t batch_generation{0};
-  std::string dynamic_package_uuid;
+  EngineUuid dynamic_package_uuid;
   std::uint64_t dynamic_generation{0};
-  std::string catalog_snapshot_uuid;
+  EngineUuid catalog_snapshot_uuid;
   std::uint64_t catalog_generation{0};
   std::uint64_t security_epoch{0};
   std::uint64_t resource_epoch{0};
-  std::string mga_snapshot_uuid;
+  EngineUuid mga_snapshot_uuid;
   std::uint64_t executor_availability_generation{0};
   std::vector<std::uint8_t> canonical_value_vector;
   std::string value_vector_sha256;
 };
 
 struct SblrParameterBindPublicationSnapshot {
-  std::string database_uuid;
-  std::string session_uuid;
-  std::string statement_receipt_uuid;
-  std::string execution_uuid;
-  std::string prepared_statement_uuid;
+  EngineUuid database_uuid;
+  EngineUuid session_uuid;
+  EngineUuid statement_receipt_uuid;
+  EngineUuid execution_uuid;
+  EngineUuid prepared_statement_uuid;
   std::uint64_t prepared_generation{0};
-  std::string parameter_set_descriptor_uuid;
+  EngineUuid parameter_set_descriptor_uuid;
   std::uint64_t parameter_set_generation{0};
   std::string ordered_slot_table_sha256;
-  std::string batch_uuid;
+  EngineUuid batch_uuid;
   std::uint64_t batch_generation{0};
-  std::string dynamic_package_uuid;
+  EngineUuid dynamic_package_uuid;
   std::uint64_t dynamic_generation{0};
-  std::string catalog_snapshot_uuid;
+  EngineUuid catalog_snapshot_uuid;
   std::uint64_t catalog_generation{0};
   std::uint64_t security_epoch{0};
   std::uint64_t resource_epoch{0};
-  std::string mga_snapshot_uuid;
+  EngineUuid mga_snapshot_uuid;
   std::uint64_t executor_availability_generation{0};
   std::string value_vector_sha256;
-  std::string bind_evidence_uuid;
+  EngineUuid bind_evidence_uuid;
   std::string publication_evidence_sha256;
   std::vector<std::uint8_t> canonical_value_vector;
 };
@@ -145,7 +145,7 @@ SblrParameterSetMutationResult IssueSblrParameterSet(
 
 SblrParameterSetLoadResult LoadSblrParameterSet(
     const EngineRequestContext& context,
-    const std::string& parameter_set_descriptor_uuid);
+    const EngineUuid& parameter_set_descriptor_uuid);
 
 // Atomically publishes the canonical value vector for one active parameter
 // set.  Exact replay returns the original durable evidence; any drift is a
@@ -157,7 +157,7 @@ SblrParameterBindPublicationResult PublishSblrParameterBinding(
 
 SblrParameterBindPublicationResult LoadSblrParameterBinding(
     const EngineRequestContext& context,
-    const std::string& parameter_set_descriptor_uuid);
+    const EngineUuid& parameter_set_descriptor_uuid);
 
 // Startup/recovery boundary: durable descriptor metadata remains loadable,
 // while every execution/receipt authorization is revoked and must be reissued.
@@ -166,8 +166,8 @@ EngineApiDiagnostic BeginSblrParameterSetRegistryRecovery(
 
 SblrParameterSetMutationResult InvalidateSblrParameterSet(
     const EngineRequestContext& context,
-    const std::string& parameter_set_descriptor_uuid,
-    const std::string& expected_snapshot_uuid,
+    const EngineUuid& parameter_set_descriptor_uuid,
+    const EngineUuid& expected_snapshot_uuid,
     std::uint64_t expected_snapshot_generation,
     const std::string& reason_code);
 
@@ -176,13 +176,13 @@ SblrParameterSetMutationResult InvalidateSblrParameterSet(
 EngineApiDiagnostic RevalidateSblrParameterSet(
     const EngineRequestContext& context,
     const SblrParameterSetSnapshot& admitted,
-    const std::string& statement_receipt_uuid,
-    const std::string& execution_uuid,
-    const std::string& prepared_statement_uuid,
+    const EngineUuid& statement_receipt_uuid,
+    const EngineUuid& execution_uuid,
+    const EngineUuid& prepared_statement_uuid,
     std::uint64_t prepared_generation,
-    const std::string& batch_uuid,
+    const EngineUuid& batch_uuid,
     std::uint64_t batch_generation,
-    const std::string& dynamic_package_uuid,
+    const EngineUuid& dynamic_package_uuid,
     std::uint64_t dynamic_generation,
     SblrParameterSetSnapshot* current);
 

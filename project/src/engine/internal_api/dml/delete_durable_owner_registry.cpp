@@ -89,7 +89,7 @@ EngineDmlDeleteRecoveryObservationV1 ReconcileStore(const EngineRequestContext& 
   if (!result.ok) return result;
   if (result.disposition == Disposition::abandon_unexecuted) {
     const auto marker = ObserveUniqueMgaSavepointMarkerV1(context,
-        MgaSavepointUuidKey(datatype_operator_projection::UuidText(bundle.reserved_statement_savepoint_uuid)));
+        MgaSavepointUuidKey(datatype_operator_projection::UuidValue(bundle.reserved_statement_savepoint_uuid)));
     if (!marker.ok || marker.lifecycle == MgaSavepointMarkerLifecycle::released) {
       result.ok = false; result.diagnostic = Error("unbound_reserved_marker_history_invalid"); return result;
     }

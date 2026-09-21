@@ -398,7 +398,7 @@ MgaRelationStoreResult TransactionalRelationStore::LoadTriggerMetadataScope(
 
 MgaRelationStorageDescriptorLoadResult
 TransactionalRelationStore::LoadRelationDescriptor(
-    const std::string& relation_uuid) const {
+    const EngineUuid& relation_uuid) const {
   return LoadMgaRelationStorageDescriptor(context_, relation_uuid);
 }
 

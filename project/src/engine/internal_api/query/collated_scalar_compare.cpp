@@ -51,8 +51,8 @@ bool QowCompareCanonicalCollatedScalarsV1(
     return false;
   }
   if (resource_epoch == 0 || collation_epoch == 0 || !text_seed.active ||
-      text_seed.seed_pack_name.empty() || text_seed.seed_pack_version.empty() ||
-      text_seed.charset_name.empty() || text_seed.collation_name.empty()) {
+      text_seed.collation_uuid != collation_uuid ||
+      text_seed.resource_epoch != resource_epoch || text_seed.collation_epoch != collation_epoch) {
     *refusal_detail = "bound collation resource authority is incomplete";
     return false;
   }

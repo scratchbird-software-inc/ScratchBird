@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "resource_seed_pack.hpp"
 #include "resource_artifact_content_codec.hpp"
+#include "unicode_normalization.hpp"
 
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <iomanip>
 #include <new>
 #include <string>
+#include <sstream>
 #include <type_traits>
 #include <vector>
 
@@ -34,8 +37,90 @@ void Check(bool ok, const char* message) {
   if (!ok) { ++failures; std::cerr << message << '\n'; }
 }
 void ArtifactContent(const r::ResourceSeedCatalogImage& image) {
+  Check(image.unicode_normalization != nullptr, "seed admission omitted normalization authority");
+  Check(image.unicode_collation != nullptr, "seed admission omitted UCA table");
+  unsigned executable_profiles=0;
+  for(const auto& descriptor:image.collations) {
+    if(descriptor.comparison_profile==r::CollationProfile::unbound)continue;
+    ++executable_profiles;
+    Check(r::ValidCollationProfile(descriptor.comparison_profile,descriptor.case_insensitive,
+        descriptor.accent_insensitive),"seed profile contradicts display flags");
+  }
+  Check(executable_profiles==5,"native seed recipes missing");
+  auto invalid_profile=image;
+  invalid_profile.collations.front().comparison_profile=static_cast<r::CollationProfile>(6);
+  Check(!r::ValidateResourceSeedCatalogImage(invalid_profile,false).ok(),"unknown comparison recipe admitted");
+  invalid_profile=image;invalid_profile.collations.front().case_insensitive=true;
+  Check(!r::ValidateResourceSeedCatalogImage(invalid_profile,false).ok(),"binary recipe with folding flag admitted");
   static_assert(std::is_const_v<typename decltype(r::ResourceSeedArtifact::content)::element_type>);
   auto snapshot = image;
+  Check(snapshot.unicode_normalization == image.unicode_normalization,
+        "same-node snapshot lost immutable normalization ownership");
+  Check(snapshot.unicode_collation == image.unicode_collation,
+        "same-node snapshot lost immutable collation ownership");
+  // Re-sign the prototype corruption checks so missing/changed Unicode data
+  // must be caught by normalization admission, not an incidental FNV mismatch.
+  const auto fnv = [](std::string_view value) {
+    std::uint64_t hash = 14695981039346656037ULL;
+    for (unsigned char byte : value) { hash ^= byte; hash *= 1099511628211ULL; }
+    std::ostringstream text; text << "fnv1a64:" << std::hex << std::setfill('0') << std::setw(16) << hash;
+    return text.str();
+  };
+  const auto reseal = [&](r::ResourceSeedCatalogImage& changed) {
+    std::string all, collation;
+    for (auto& artifact : changed.artifacts) {
+      artifact.content_size_bytes = artifact.content->size(); artifact.content_hash = fnv(*artifact.content);
+      all += artifact.content_hash;
+      if (artifact.family == r::ResourceSeedFamily::collation || artifact.family == r::ResourceSeedFamily::uca ||
+          artifact.family == r::ResourceSeedFamily::uca_manifest) collation += artifact.content_hash;
+    }
+    changed.resource_artifact_records = changed.artifacts.size();
+    changed.content_hash = fnv(all); changed.collation_content_hash = fnv(collation);
+  };
+  const auto ucd = std::find_if(snapshot.artifacts.begin(), snapshot.artifacts.end(),
+      [](const auto& artifact) { return artifact.canonical_path == "resources/collations/uca/UnicodeData.txt"; });
+  Check(ucd != snapshot.artifacts.end(), "normalization input not in admitted resource image");
+  for (const char* path : {"resources/collations/uca/allkeys.txt", "resources/collations/uca/PropList.txt"}) {
+    const auto found = std::find_if(image.artifacts.begin(), image.artifacts.end(),
+        [&](const auto& artifact) { return artifact.canonical_path == path; });
+    Check(found != image.artifacts.end(), "UCA required artifact missing");
+    if (found == image.artifacts.end()) continue;
+    const auto index = std::distance(image.artifacts.begin(), found);
+    auto changed = image;
+    changed.artifacts[index].content = std::make_shared<const std::string>(found->content->substr(1)); reseal(changed);
+    const auto corrupted = r::ValidateResourceSeedCatalogImage(changed, false);
+    Check(!corrupted.ok() && !corrupted.image.unicode_collation &&
+        corrupted.diagnostic.message_key == "resource.seed_pack.unicode_collation_invalid",
+        "rehashed truncated UCA artifact admitted");
+    changed = image; changed.artifacts.erase(changed.artifacts.begin() + index); reseal(changed);
+    const auto missing = r::ValidateResourceSeedCatalogImage(changed, false);
+    Check(!missing.ok() && !missing.image.unicode_collation &&
+        missing.diagnostic.message_key == "resource.seed_pack.unicode_collation_missing",
+        "missing UCA artifact inherited stale compiled authority");
+    changed.minimal_bootstrap = true;
+    const auto minimal = r::ValidateResourceSeedCatalogImage(changed, true);
+    Check(minimal.ok() && minimal.image.unicode_normalization && !minimal.image.unicode_collation,
+        "restricted UCA image inherited caller-supplied authority");
+  }
+  if (ucd != snapshot.artifacts.end()) {
+    auto changed = image;
+    const auto index = std::distance(snapshot.artifacts.begin(), ucd);
+    auto bytes = *changed.artifacts[index].content; bytes[100] ^= 1;
+    changed.artifacts[index].content = std::make_shared<const std::string>(std::move(bytes)); reseal(changed);
+    const auto corrupt = r::ValidateResourceSeedCatalogImage(changed, false);
+    Check(!corrupt.ok() && !corrupt.image.unicode_normalization &&
+        corrupt.diagnostic.message_key == "resource.seed_pack.unicode_normalization_invalid",
+        "rehashed incomplete/wrong Unicode resource admitted");
+    changed = image; changed.artifacts.erase(changed.artifacts.begin() + index); reseal(changed);
+    const auto missing = r::ValidateResourceSeedCatalogImage(changed, false);
+    Check(!missing.ok() && !missing.image.unicode_normalization &&
+        missing.diagnostic.message_key == "resource.seed_pack.unicode_normalization_missing",
+        "missing Unicode resource inherited a stale compiled table");
+    changed.minimal_bootstrap = true;
+    const auto minimal = r::ValidateResourceSeedCatalogImage(changed, true);
+    Check(minimal.ok() && !minimal.image.unicode_normalization && !minimal.image.unicode_collation,
+        "minimal image inherited another cohort's compiled table");
+  }
   Check(snapshot.artifacts.front().content == image.artifacts.front().content,
         "same-node snapshot unnecessarily lost immutable content ownership");
   const auto invalid = [&](r::ResourceSeedCatalogImage changed) {

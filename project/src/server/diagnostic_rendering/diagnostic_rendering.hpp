@@ -22,8 +22,9 @@ using engine::internal_api::EngineDescriptor;
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_DIAGNOSTIC_RENDERING
 // Legacy in-process projection used by old parser/probe consumers. It is not
 // a validated DiagnosticVector, ExecutionResultEnvelope or MessageVectorSet.
-// This adapter belongs outside the engine. Its historical heuristic fields
-// remain required replacement work, not canonical source or policy authority.
+// This adapter belongs outside the engine. Registry facts are retained from
+// the source, never inferred from message text. This still-private legacy
+// carrier is not permission to publish a parser-facing message.
 
 struct EngineParserPackageRenderOptions {
   std::string parser_package_uuid;
@@ -42,14 +43,10 @@ struct EngineParserPackageRenderOptions {
 struct EngineRenderedDiagnostic {
   std::string code;
   std::string message_key;
-  std::string severity;
+  std::array<std::uint8_t,16> occurrence_uuid{};
+  std::optional<scratchbird::core::diagnostics::CanonicalDiagnosticMetadata> source_metadata;
   std::string detail;
-  std::string public_shape_id = "diag.message_vector.v1";
-  std::string private_shape_id = "diag.message_vector.v1";
-  std::string redaction_class = "diagnostic_safe";
-  std::string recommended_action;
   bool error = true;
-  bool retryable = false;
   bool internal_detail_redacted = false;
 };
 
@@ -58,6 +55,7 @@ struct EngineRenderedField {
   std::string descriptor_kind;
   std::string canonical_type_name;
   std::string encoded_value;
+  std::vector<std::uint8_t> binary_value;
   bool is_null = false;
 };
 
@@ -68,7 +66,7 @@ struct EngineRenderedRow {
 
 struct EngineRenderedEvidence {
   std::string evidence_kind;
-  std::string evidence_id;
+  engine::internal_api::EngineEvidenceValue evidence_id;
 };
 
 struct EngineRenderedResultEnvelope {

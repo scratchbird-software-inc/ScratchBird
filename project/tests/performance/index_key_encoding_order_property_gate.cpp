@@ -420,7 +420,8 @@ void RefusalAndUnsafeLegacyGuards() {
   idx::SortedBulkIndexBuildRequest bulk;
   bulk.metadata.index_uuid = TypedUuid(platform::UuidKind::object, 0x90);
   bulk.metadata.table_uuid = TypedUuid(platform::UuidKind::object, 0x91);
-  bulk.rows.push_back({AsString(legacy), "row-1", "version-1", "payload", 0});
+  bulk.rows.push_back({AsString(legacy), TypedUuid(platform::UuidKind::row, 0x92).value,
+                       TypedUuid(platform::UuidKind::row, 0x93).value, "payload", 0});
   const auto bulk_result = idx::BuildSortedExactBulkIndex(bulk);
   Require(!bulk_result.ok() &&
               bulk_result.diagnostic.diagnostic_code ==

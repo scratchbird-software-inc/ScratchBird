@@ -127,6 +127,11 @@ bool UuidPresent(const TypedUpdateUuid& value) {
                      [](byte octet) { return octet != 0; });
 }
 
+// Authority identities use RFC-variant UUIDv7; user value bytes are not identities.
+bool SystemUuid(const TypedUpdateUuid& value) {
+  return (value[6] & 0xf0u) == 0x70u && (value[8] & 0xc0u) == 0x80u;
+}
+
 bool HashPresent(const TypedUpdateHash& value) {
   return std::any_of(value.begin(), value.end(),
                      [](byte octet) { return octet != 0; });
@@ -138,7 +143,7 @@ bool AllZero(std::span<const byte> bytes) {
 }
 
 bool NilGenerationPair(const TypedUpdateUuid& uuid, u64 generation) {
-  return UuidPresent(uuid) == (generation != 0);
+  return UuidPresent(uuid) ? SystemUuid(uuid) && generation != 0 : generation == 0;
 }
 
 bool ValidCodecId(std::string_view value) {
@@ -296,10 +301,10 @@ bool RequireUuidGeneration(const TypedUpdateUuid& uuid,
                            std::string field,
                            TypedUpdateCarrierError* error,
                            u32 record_index = 0) {
-  if (!UuidPresent(uuid)) {
+  if (!SystemUuid(uuid)) {
     return Fail(error, TypedUpdateCarrierErrorCode::uuid_invalid,
                 kOperandInvalid, carrier, std::move(field), record_index,
-                "required UUID is zero");
+                "required system UUID is not RFC-variant UUIDv7");
   }
   if (generation == 0) {
     return Fail(error, TypedUpdateCarrierErrorCode::generation_invalid,
@@ -336,10 +341,10 @@ bool ValidateDescriptorFields(const TypedUpdateDescriptorCarrier& value,
        value.builtin_operator_registry_generation},
   };
   for (const auto& [uuid, generation] : identities) {
-    if (!UuidPresent(*uuid)) {
+    if (!SystemUuid(*uuid)) {
       return Fail(error, TypedUpdateCarrierErrorCode::uuid_invalid,
                   kOperandInvalid, carrier, "identity_uuid", 0,
-                  "one required descriptor UUID is zero");
+                  "required descriptor identity is not RFC-variant UUIDv7");
     }
     if (generation == 0) {
       return Fail(error, TypedUpdateCarrierErrorCode::generation_invalid,
@@ -354,11 +359,11 @@ bool ValidateDescriptorFields(const TypedUpdateDescriptorCarrier& value,
   };
   if (std::any_of(std::begin(uuid_only), std::end(uuid_only),
                   [](const TypedUpdateUuid* uuid) {
-                    return !UuidPresent(*uuid);
+                    return !SystemUuid(*uuid);
                   })) {
     return Fail(error, TypedUpdateCarrierErrorCode::uuid_invalid,
                 kOperandInvalid, carrier, "snapshot_or_receipt_uuid", 0,
-                "receipt and snapshot UUIDs must be nonzero");
+                "receipt and snapshot identities must be RFC-variant UUIDv7");
   }
   if (value.structural_occurrence_id == 0 ||
       value.owning_local_transaction_id == 0 ||
@@ -1098,9 +1103,9 @@ bool ValidatePredicateRecord(const TypedUpdatePredicateRecord& record,
     case TypedUpdatePredicateNodeKind::column_reference:
       if (record.left_child_node_id != 0 ||
           record.right_child_node_id != 0 ||
-          !UuidPresent(record.referenced_relation_occurrence_uuid) ||
-          !UuidPresent(record.referenced_column_occurrence_uuid) ||
-          !UuidPresent(record.referenced_column_uuid) ||
+          !SystemUuid(record.referenced_relation_occurrence_uuid) ||
+          !SystemUuid(record.referenced_column_occurrence_uuid) ||
+          !SystemUuid(record.referenced_column_uuid) ||
           UuidPresent(record.operator_uuid) ||
           record.value_state != TypedUpdateValueState::absent ||
           !record.canonical_value.empty()) {
@@ -2196,11 +2201,11 @@ bool ValidateTargetOrder(const TypedUpdateTargetOrderCarrier& value,
                              carrier, "relation_occurrence_identity", error)) {
     return false;
   }
-  if (!UuidPresent(value.authenticated_statement_receipt_uuid) ||
-      !UuidPresent(value.statement_snapshot_uuid)) {
+  if (!SystemUuid(value.authenticated_statement_receipt_uuid) ||
+      !SystemUuid(value.statement_snapshot_uuid)) {
     return Fail(error, TypedUpdateCarrierErrorCode::uuid_invalid,
                 kOperandInvalid, carrier, "receipt_or_snapshot", 0,
-                "target-order receipt and statement snapshot are nonzero");
+                "target-order receipt and statement snapshot must be RFC-variant UUIDv7");
   }
   if (value.maximum_candidate_rows > kTypedUpdateMaximumCandidateRows) {
     return Fail(error, TypedUpdateCarrierErrorCode::resource_limit_exceeded,
@@ -2225,11 +2230,11 @@ bool ValidateResourceBudget(const TypedUpdateResourceBudgetCarrier& value,
                              "grant_receipt_identity", error)) {
     return false;
   }
-  if (!UuidPresent(value.authenticated_statement_receipt_uuid) ||
-      !UuidPresent(value.owning_transaction_uuid)) {
+  if (!SystemUuid(value.authenticated_statement_receipt_uuid) ||
+      !SystemUuid(value.owning_transaction_uuid)) {
     return Fail(error, TypedUpdateCarrierErrorCode::uuid_invalid,
                 kOperandInvalid, carrier, "receipt_or_transaction", 0,
-                "resource receipt and transaction UUIDs are nonzero");
+                "resource receipt and transaction identities must be RFC-variant UUIDv7");
   }
   if (value.maximum_assignments > kTypedUpdateMaximumAssignments ||
       value.maximum_predicate_nodes > kTypedUpdateMaximumPredicateNodes ||
@@ -2262,12 +2267,12 @@ bool ValidateRecoveryToken(const TypedUpdateRecoveryTokenCarrier& value,
       return false;
     }
   }
-  if (!UuidPresent(value.authenticated_statement_receipt_uuid) ||
-      !UuidPresent(value.owning_transaction_uuid) ||
-      !UuidPresent(value.operation_uuid)) {
+  if (!SystemUuid(value.authenticated_statement_receipt_uuid) ||
+      !SystemUuid(value.owning_transaction_uuid) ||
+      !SystemUuid(value.operation_uuid)) {
     return Fail(error, TypedUpdateCarrierErrorCode::uuid_invalid,
                 kOperandInvalid, carrier, "receipt_transaction_operation", 0,
-                "recovery owner identities are nonzero");
+                "recovery owner identities must be RFC-variant UUIDv7");
   }
   return true;
 }
@@ -2569,10 +2574,10 @@ bool RequireSecurityUuidGeneration(const TypedUpdateUuid& uuid,
                                    std::string field,
                                    TypedUpdateCarrierError* error,
                                    u32 record_index = 0) {
-  if (!UuidPresent(uuid)) {
+  if (!SystemUuid(uuid)) {
     return Fail(error, TypedUpdateCarrierErrorCode::uuid_invalid,
                 kUpdateFailed, carrier, std::move(field), record_index,
-                "required durable authority UUID is zero");
+                "required durable authority UUID is not RFC-variant UUIDv7");
   }
   if (generation == 0) {
     return Fail(error, TypedUpdateCarrierErrorCode::generation_invalid,
@@ -2639,10 +2644,10 @@ bool ValidateSecurityPolicySourceRecord(
           "security_snapshot_identity", error, record_index)) {
     return false;
   }
-  if (!UuidPresent(record.policy_version_uuid)) {
+  if (!SystemUuid(record.policy_version_uuid)) {
     return Fail(error, TypedUpdateCarrierErrorCode::uuid_invalid,
                 kUpdateFailed, carrier, "policy_version_uuid",
-                record_index, "DUSR policy version UUID is zero");
+                record_index, "DUSR policy version identity must be RFC-variant UUIDv7");
   }
   if (record.effective_transaction_number == 0) {
     return Fail(error, TypedUpdateCarrierErrorCode::generation_invalid,
@@ -2990,11 +2995,11 @@ bool ValidateSecuritySnapshotProofFields(
   };
   if (std::any_of(std::begin(uuid_only), std::end(uuid_only),
                   [](const TypedUpdateUuid* uuid) {
-                    return !UuidPresent(*uuid);
+                    return !SystemUuid(*uuid);
                   })) {
     return Fail(error, TypedUpdateCarrierErrorCode::uuid_invalid,
                 kUpdateFailed, carrier, "authority_uuid", 0,
-                "DUSP database, receipt, transaction, and statement snapshot UUIDs are nonzero");
+                "DUSP database, receipt, transaction, and statement snapshot identities must be RFC-variant UUIDv7");
   }
   if (value.owning_local_transaction_id == 0 ||
       value.security_epoch == 0 || value.policy_generation == 0 ||
@@ -3257,12 +3262,12 @@ bool ValidateMgaRecoveryObservationFields(
       return false;
     }
   }
-  if (!UuidPresent(value.database_uuid) ||
-      !UuidPresent(value.authenticated_statement_receipt_uuid) ||
-      !UuidPresent(value.owning_transaction_uuid)) {
+  if (!SystemUuid(value.database_uuid) ||
+      !SystemUuid(value.authenticated_statement_receipt_uuid) ||
+      !SystemUuid(value.owning_transaction_uuid)) {
     return Fail(error, TypedUpdateCarrierErrorCode::uuid_invalid,
                 kUpdateFailed, carrier, "authority_uuid", 0,
-                "DUMO database, receipt, and transaction UUIDs are nonzero");
+                "DUMO database, receipt, and transaction identities must be RFC-variant UUIDv7");
   }
   if (value.owning_local_transaction_id == 0 ||
       value.durable_chain_head_sequence == 0 ||
@@ -3968,9 +3973,9 @@ bool ValidateBuiltinOperatorAuthorityRecord(
           record.right_descriptor_generation ||
       record.left_type_uuid != record.right_type_uuid ||
       record.left_type_generation != record.right_type_generation ||
-      !UuidPresent(record.left_descriptor_uuid) ||
+      !SystemUuid(record.left_descriptor_uuid) ||
       record.left_descriptor_generation == 0 ||
-      !UuidPresent(record.left_type_uuid) || record.left_type_generation == 0 ||
+      !SystemUuid(record.left_type_uuid) || record.left_type_generation == 0 ||
       record.result_descriptor_uuid != kTypedUpdateBooleanUuid ||
       record.result_descriptor_generation != 1 ||
       record.result_type_uuid != kTypedUpdateBooleanUuid ||
@@ -4456,8 +4461,8 @@ bool ValidateResultFields(const TypedUpdateResultCarrier& value,
                              "publication_barrier_identity", error)) {
     return false;
   }
-  if (!UuidPresent(value.operation_uuid) ||
-      !UuidPresent(value.owning_transaction_uuid) ||
+  if (!SystemUuid(value.operation_uuid) ||
+      !SystemUuid(value.owning_transaction_uuid) ||
       value.owning_local_transaction_id == 0) {
     return Fail(error, TypedUpdateCarrierErrorCode::result_invalid,
                 kUpdateFailed, carrier, "result_identity", 0,
@@ -4511,11 +4516,11 @@ bool ValidateJournalPreEvidence(const TypedUpdateJournalRecord& value,
                 kUpdateFailed, carrier, "lifecycle_state", 0,
                 "DUJR lifecycle state is outside 1 through 5");
   }
-  if (!UuidPresent(value.database_uuid) ||
-      !UuidPresent(value.authenticated_statement_receipt_uuid) ||
-      !UuidPresent(value.owning_transaction_uuid) ||
-      !UuidPresent(value.operation_uuid) ||
-      !UuidPresent(value.recovery_token_uuid) ||
+  if (!SystemUuid(value.database_uuid) ||
+      !SystemUuid(value.authenticated_statement_receipt_uuid) ||
+      !SystemUuid(value.owning_transaction_uuid) ||
+      !SystemUuid(value.operation_uuid) ||
+      !SystemUuid(value.recovery_token_uuid) ||
       value.owning_local_transaction_id == 0 ||
       value.recovery_generation == 0) {
     return Fail(error, TypedUpdateCarrierErrorCode::recovery_identity_invalid,
@@ -4523,7 +4528,8 @@ bool ValidateJournalPreEvidence(const TypedUpdateJournalRecord& value,
                 "DUJR owner identities and generations are nonzero");
   }
   const bool savepoint_present = UuidPresent(value.statement_savepoint_uuid);
-  if (savepoint_present != (value.statement_savepoint_generation != 0)) {
+  if (!NilGenerationPair(value.statement_savepoint_uuid,
+                         value.statement_savepoint_generation)) {
     return Fail(error, TypedUpdateCarrierErrorCode::generation_invalid,
                 kUpdateFailed, carrier, "statement_savepoint_identity", 0,
                 "savepoint UUID and generation must be nil/zero together");
@@ -4576,8 +4582,8 @@ bool ValidateJournalPreEvidence(const TypedUpdateJournalRecord& value,
       chain.prior_state == TypedUpdateJournalState::bound) {
     const bool provider_savepoint_present =
         UuidPresent(chain.prior_savepoint_uuid);
-    if (provider_savepoint_present !=
-        (chain.prior_savepoint_generation != 0)) {
+    if (!NilGenerationPair(chain.prior_savepoint_uuid,
+                           chain.prior_savepoint_generation)) {
       return Fail(
           error, TypedUpdateCarrierErrorCode::journal_chain_mismatch,
           kUpdateFailed, carrier, "prior_savepoint_authority", 0,
@@ -4668,11 +4674,11 @@ bool ValidateJournalOwnership(const TypedUpdateJournalRecord& value,
                               TypedUpdateCarrierError* error) {
   constexpr TypedUpdateCarrierKind carrier = TypedUpdateCarrierKind::journal;
   const auto& descriptor = value.descriptor;
-  if (!UuidPresent(value.database_uuid) ||
-      !UuidPresent(value.authenticated_statement_receipt_uuid) ||
-      !UuidPresent(value.owning_transaction_uuid) ||
-      !UuidPresent(value.operation_uuid) ||
-      !UuidPresent(value.recovery_token_uuid) ||
+  if (!SystemUuid(value.database_uuid) ||
+      !SystemUuid(value.authenticated_statement_receipt_uuid) ||
+      !SystemUuid(value.owning_transaction_uuid) ||
+      !SystemUuid(value.operation_uuid) ||
+      !SystemUuid(value.recovery_token_uuid) ||
       value.owning_local_transaction_id == 0 ||
       value.recovery_generation == 0) {
     return Fail(error, TypedUpdateCarrierErrorCode::recovery_identity_invalid,
@@ -4838,14 +4844,14 @@ bool EncodeTypedUpdateResultEvidenceMaterial(
                 kUpdateFailed, carrier, "material", 0,
                 "evidence material output pointer is null");
   }
-  if (!UuidPresent(value.update_descriptor_uuid) ||
-      !UuidPresent(value.operation_uuid) ||
-      !UuidPresent(value.owning_transaction_uuid) ||
-      !UuidPresent(value.relation_uuid)) {
+  if (!SystemUuid(value.update_descriptor_uuid) ||
+      !SystemUuid(value.operation_uuid) ||
+      !SystemUuid(value.owning_transaction_uuid) ||
+      !SystemUuid(value.relation_uuid)) {
     return Fail(error,
                 TypedUpdateCarrierErrorCode::result_evidence_material_invalid,
                 kUpdateFailed, carrier, "fixed_identity", 0,
-                "result evidence fixed UUID identities must be nonzero");
+                "result evidence fixed identities must be RFC-variant UUIDv7");
   }
   std::vector<std::vector<byte>> encoded_records;
   encoded_records.reserve(evidence.size());
@@ -5081,7 +5087,7 @@ bool DecodeAndValidateTypedUpdateJournalRecord(
   value.statement_savepoint_generation = LoadLittle64(encoded.data() + 168);
   value.prior_record_sha256 = LoadHash(encoded, 192);
   value.record_evidence_sha256 = LoadHash(encoded, 224);
-  if (!UuidPresent(header_descriptor_uuid) ||
+  if (!SystemUuid(header_descriptor_uuid) ||
       header_descriptor_generation == 0) {
     return Fail(error, TypedUpdateCarrierErrorCode::recovery_identity_invalid,
                 kUpdateFailed, TypedUpdateCarrierKind::journal,

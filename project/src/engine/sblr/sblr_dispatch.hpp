@@ -13,6 +13,7 @@
 #include "query/contextual_text_literal_authority.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_parameter_runtime.hpp"
+#include "query_execute_result_handle.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -64,6 +65,9 @@ struct SblrDispatchRequest {
 
 struct SblrDispatchResult {
   bool accepted = false;
+  // Allocation-free terminal failure. Callers must inspect this before
+  // diagnostic formatting, retries, private execution or success promotion.
+  bool resource_exhausted = false;
   bool envelope_validated = false;
   bool dispatched_to_api = false;
   bool logical_graph_populated = false;
@@ -82,7 +86,7 @@ struct SblrDispatchResult {
   std::size_t physical_node_count = 0;
   std::size_t canonical_result_column_count = 0;
   std::size_t canonical_result_row_count = 0;
-  std::string selected_plan_uuid;
+  scratchbird::engine::internal_api::EngineUuid selected_plan_uuid;
   std::string canonical_result_bytes;
   scratchbird::engine::internal_api::EngineApiResult api_result;
   // Typed semantic extension for opcode 793. The base result remains
@@ -100,33 +104,10 @@ struct SblrQueryPreflightResult {
   std::string detail;
 };
 
-struct QueryExecuteResultHandleFieldV1 {
-  std::string name;
-  std::string descriptor;
-  std::string value;
-};
-
-struct QueryExecuteResultHandleV1 {
-  std::string execution_uuid;
-  std::string result_set_uuid;
-  std::string row_descriptor_uuid;
-  std::string snapshot_uuid;
-};
-
-struct QueryExecuteResultHandleValidationV1 {
-  bool ok = false;
-  QueryExecuteResultHandleV1 handle;
-  std::string diagnostic_id;
-  std::string detail;
-};
 
 bool IsClusterOperationId(std::string_view operation_id);
 SblrQueryPreflightResult PreflightSblrQueryOperation(
     SblrDispatchRequest request);
-QueryExecuteResultHandleValidationV1 ValidateQueryExecuteResultHandleV1(
-    std::string_view result_shape_id,
-    std::uint32_t result_shape_version,
-    const std::vector<QueryExecuteResultHandleFieldV1>& fields);
 SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request);
 SblrDispatchResult DecodeAndDispatchSblrOperation(
     std::string_view encoded_envelope,

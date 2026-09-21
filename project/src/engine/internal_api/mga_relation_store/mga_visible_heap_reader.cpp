@@ -78,32 +78,26 @@ namespace {
 
 constexpr const char* kRowStoreMagic = "SBMGA1";
 
-std::string ScopedRelationSegmentName(const std::string& table_uuid) {
-  std::string name;
-  name.reserve(table_uuid.size());
-  for (const char ch : table_uuid) {
-    const bool safe = (ch >= 'a' && ch <= 'z') ||
-                      (ch >= 'A' && ch <= 'Z') ||
-                      (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
-    name.push_back(safe ? ch : '_');
-  }
-  return name.empty() ? std::string("unknown") : name;
-}
-
 std::string ScopedRelationStoreRoot(const EngineRequestContext& context) {
   return context.database_path + ".sb.mga_relation_scope";
 }
 
 std::string ScopedRowStorePath(const EngineRequestContext& context,
-                               const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".rows";
+                               const EngineUuid& table_uuid) {
+  const auto component = scratchbird::core::uuid::EngineIdentityPathComponent(table_uuid);
+  if (!component) return {};
+  auto path = std::filesystem::path(ScopedRelationStoreRoot(context)) / *component;
+  path += ".rows";
+  return path.string();
 }
 
 std::string ScopedRowBinaryStorePath(const EngineRequestContext& context,
-                                     const std::string& table_uuid) {
-  return ScopedRelationStoreRoot(context) + "/" +
-         ScopedRelationSegmentName(table_uuid) + ".rows.sbnr";
+                                     const EngineUuid& table_uuid) {
+  const auto component = scratchbird::core::uuid::EngineIdentityPathComponent(table_uuid);
+  if (!component) return {};
+  auto path = std::filesystem::path(ScopedRelationStoreRoot(context)) / *component;
+  path += ".rows.sbnr";
+  return path.string();
 }
 
 bool FileExistsAndNotEmpty(const std::string& path) {
@@ -194,93 +188,6 @@ std::vector<std::pair<std::string, std::string>> DecodeCrudPairsForHeapRead(
 
 }  // namespace
 
-bool AccountHeapReadEngineDescriptorMemory(
-    const EngineDescriptor& descriptor, std::uint64_t* total) {
-  return AccountHeapReadOwnedString(descriptor.descriptor_uuid,
-                                    total) &&
-         AccountHeapReadOwnedString(descriptor.descriptor_kind, total) &&
-         AccountHeapReadOwnedString(descriptor.canonical_type_name, total) &&
-         AccountHeapReadOwnedString(descriptor.encoded_descriptor, total);
-}
-
-std::optional<std::uint64_t> HeapReadStorageDescriptorMemoryBytes(
-    const MgaRelationStorageDescriptor& descriptor) {
-  std::uint64_t bytes = sizeof(descriptor);
-  std::uint64_t allocation_bytes = 0;
-  const auto account_uuid = [&](const EngineUuid& uuid) {
-    return AccountHeapReadOwnedString(uuid, &bytes);
-  };
-  if (!account_uuid(descriptor.descriptor_uuid) ||
-      !account_uuid(descriptor.database_uuid) ||
-      !account_uuid(descriptor.schema_uuid) ||
-      !account_uuid(descriptor.relation_uuid) ||
-      !account_uuid(descriptor.primary_filespace_uuid) ||
-      !AccountHeapReadOwnedString(descriptor.relation_kind, &bytes) ||
-      !AccountHeapReadOwnedString(descriptor.storage_profile, &bytes) ||
-      !AccountHeapReadOwnedString(descriptor.row_identity_rule, &bytes) ||
-      !AccountHeapReadOwnedString(descriptor.version_identity_rule, &bytes) ||
-      !AccountHeapReadOwnedString(descriptor.mutation_rule, &bytes) ||
-      !AccountHeapReadOwnedString(descriptor.visibility_rule, &bytes) ||
-      !AccountHeapReadOwnedString(descriptor.cleanup_rule, &bytes) ||
-      !AccountHeapReadOwnedString(descriptor.recovery_rule, &bytes) ||
-      !AccountHeapReadOwnedString(descriptor.descriptor_status, &bytes) ||
-      !CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(descriptor.columns.capacity()),
-          sizeof(MgaRelationColumnStorageDescriptor), &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
-      !CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(descriptor.indexes.capacity()),
-          sizeof(MgaRelationIndexStorageDescriptor), &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
-      !CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(
-              descriptor.required_evidence_kinds.capacity()),
-          sizeof(std::string), &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
-    return std::nullopt;
-  }
-  for (const auto& column : descriptor.columns) {
-    if (!account_uuid(column.column_uuid) ||
-        !AccountHeapReadOwnedString(column.canonical_name_key, &bytes) ||
-        !AccountHeapReadEngineDescriptorMemory(column.value_descriptor,
-                                               &bytes) ||
-        !AccountHeapReadOwnedString(column.storage_class, &bytes) ||
-        !AccountHeapReadOwnedString(column.charset_uuid, &bytes) ||
-        !AccountHeapReadOwnedString(column.collation_uuid, &bytes) ||
-        !AccountHeapReadOwnedString(column.overflow_policy, &bytes)) {
-      return std::nullopt;
-    }
-  }
-  for (const auto& index : descriptor.indexes) {
-    if (!account_uuid(index.index_uuid) ||
-        !AccountHeapReadOwnedString(index.family, &bytes) ||
-        !AccountHeapReadOwnedString(index.profile, &bytes) ||
-        !AccountHeapReadOwnedString(index.predicate_kind, &bytes) ||
-        !AccountHeapReadOwnedString(index.predicate_column, &bytes) ||
-        !AccountHeapReadOwnedString(index.predicate_value, &bytes) ||
-        !AccountHeapReadOwnedString(index.residency_policy, &bytes) ||
-        !CheckedHeapReadMemoryMultiply(
-            static_cast<std::uint64_t>(index.key_envelopes.capacity()),
-            sizeof(std::string), &allocation_bytes) ||
-        !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
-        !CheckedHeapReadMemoryMultiply(
-            static_cast<std::uint64_t>(index.include_columns.capacity()),
-            sizeof(std::string), &allocation_bytes) ||
-        !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
-      return std::nullopt;
-    }
-    for (const auto& value : index.key_envelopes) {
-      if (!AccountHeapReadOwnedString(value, &bytes)) return std::nullopt;
-    }
-    for (const auto& value : index.include_columns) {
-      if (!AccountHeapReadOwnedString(value, &bytes)) return std::nullopt;
-    }
-  }
-  for (const auto& value : descriptor.required_evidence_kinds) {
-    if (!AccountHeapReadOwnedString(value, &bytes)) return std::nullopt;
-  }
-  return bytes;
-}
 
 std::optional<std::uint64_t> HeapReadTransactionStateMemoryBytes(
     const std::map<std::uint64_t, std::string>& transactions) {
@@ -360,28 +267,6 @@ std::optional<std::uint64_t> HeapReadSavepointMemoryBytes(
   return bytes;
 }
 
-std::optional<std::uint64_t> HeapReadVisibilityMapMemoryBytes(
-    const std::unordered_map<std::string, std::size_t>& rows) {
-  constexpr std::uint64_t kNodeOverhead = 4 * sizeof(void*);
-  std::uint64_t bytes = sizeof(rows);
-  std::uint64_t allocation_bytes = 0;
-  if (!CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(rows.bucket_count()), sizeof(void*),
-          &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes) ||
-      !CheckedHeapReadMemoryMultiply(
-          static_cast<std::uint64_t>(rows.size()),
-          sizeof(std::pair<const std::string, std::size_t>) + kNodeOverhead,
-          &allocation_bytes) ||
-      !CheckedHeapReadMemoryAdd(allocation_bytes, &bytes)) {
-    return std::nullopt;
-  }
-  for (const auto& [uuid, ordinal] : rows) {
-    (void)ordinal;
-    if (!AccountHeapReadOwnedString(uuid, &bytes)) return std::nullopt;
-  }
-  return bytes;
-}
 
 MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
     const EngineRequestContext& context,
@@ -436,8 +321,8 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
                                   ? request.relation_uuid
                                   : *request.borrowed_relation_uuid;
 
-  if (relation_uuid.empty()) {
-    return invalid("relation_uuid_required");
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(relation_uuid)) {
+    return invalid("relation_uuid_v7_required");
   }
   if (context.local_transaction_id == 0 ||
       context.transaction_uuid.is_nil()) {
@@ -772,7 +657,7 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
                     MgaHeapReadFailureCategoryV1::kCorruptStorage);
     }
   }
-  std::unordered_map<std::string, std::size_t> newest_visible_by_row;
+  std::unordered_map<EngineUuid, std::size_t, EngineUuidHash> newest_visible_by_row;
   {
     const auto current_rows = HeapReadRowVectorMemoryBytes(row_versions);
     const auto admitted_rows =
@@ -803,7 +688,7 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
     }
     const auto& row = admitted_versions[index];
     ++result.visibility_recheck_count;
-    if ((!row.temporary_session_uuid.empty() &&
+    if ((!row.temporary_session_uuid.is_nil() &&
          row.temporary_session_uuid != context.session_uuid) ||
         !creator_visible(row.creator_tx)) {
       ++result.invisible_row_version_count;
@@ -1020,10 +905,7 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
     return invalid(control.refusal_detail, &control);
   }
   for (const auto& evidence : result.evidence) {
-    if (!AccountHeapReadOwnedString(evidence.evidence_kind,
-                                    &evidence_bytes) ||
-        !AccountHeapReadOwnedString(evidence.evidence_id,
-                                    &evidence_bytes)) {
+    if (!AccountHeapReadEvidenceDynamicMemory(evidence, &evidence_bytes)) {
       control.refusal_detail = "heap_read_result_memory_receipt_overflow";
       return invalid(control.refusal_detail, &control);
     }
@@ -1375,20 +1257,24 @@ class StreamingCountBinaryReader {
 
   bool ReadUuid(StreamingCountIdentity* identity) {
     if (identity == nullptr) return Fail("heap_count_row_identity_invalid");
+    EngineUuid candidate;
+    if (!ReadUuid(&candidate)) return false;
+    identity->canonical_bytes = candidate.bytes;
     identity->fallback_ordinal = kStreamingCountNoFallback;
-    return ReadExact(
-        reinterpret_cast<char*>(identity->canonical_bytes.data()),
-        identity->canonical_bytes.size());
+    return true;
   }
 
-  bool ReadUuidText(std::string* value) {
+  bool ReadUuid(EngineUuid* value) {
     if (value == nullptr) return Fail("heap_stream_row_identity_invalid");
     scratchbird::core::platform::Uuid uuid;
     if (!ReadExact(reinterpret_cast<char*>(uuid.bytes.data()),
                    uuid.bytes.size())) {
       return false;
     }
-    *value = scratchbird::core::uuid::UuidToString(uuid);
+    if (!scratchbird::core::uuid::IsEngineIdentityUuid(uuid)) {
+      return Fail("heap_stream_row_identity_invalid");
+    }
+    *value = uuid;
     return true;
   }
 
@@ -2544,8 +2430,8 @@ bool DecodeVisibleStreamBinaryFile(
         row.table_uuid = compact_table_uuid;
         row.temporary_session_uuid = compact_session_uuid;
         if (selected) {
-          if (!reader.ReadUuidText(&row.row_uuid) ||
-              !reader.ReadUuidText(&row.version_uuid)) {
+          if (!reader.ReadUuid(&row.row_uuid) ||
+              !reader.ReadUuid(&row.version_uuid)) {
             return false;
           }
         } else if (!reader.Skip(32)) {
@@ -2650,14 +2536,14 @@ bool DecodeVisibleStreamBinaryFile(
 
 PreparedMgaHeapReadAuthorityCohortResult PrepareMgaHeapReadAuthorities(
     const EngineRequestContext& context,
-    const std::span<const std::string> relation_uuids) {
+    const std::span<const EngineUuid> relation_uuids) {
   return PrepareMgaHeapReadAuthoritiesForStoreModule(context,
                                                      relation_uuids);
 }
 
 PreparedMgaHeapReadAuthorityCohortResult PrepareMgaHeapReadAuthorities(
     const EngineRequestContext& context,
-    const std::span<const std::string> relation_uuids,
+    const std::span<const EngineUuid> relation_uuids,
     const scratchbird::transaction::mga::SnapshotVectorDescriptor&
         resolved_statement_snapshot) {
   return PrepareMgaHeapReadAuthoritiesForStoreModule(
@@ -2751,13 +2637,13 @@ EngineApiDiagnostic RevalidatePreparedMgaHeapReadAuthorityCohort(
         relation->current_relation_base_generation == 0 ||
         (relation->temporary
              ? (relation->temporary_scope == "global"
-                    ? (!relation->temporary_session_uuid.empty() ||
+                    ? (!relation->temporary_session_uuid.is_nil() ||
                        context.session_uuid.is_nil())
                     : (relation->temporary_scope != "private" ||
                        relation->temporary_session_uuid !=
                            context.session_uuid))
              : (!relation->temporary_scope.empty() ||
-                !relation->temporary_session_uuid.empty()))) {
+                !relation->temporary_session_uuid.is_nil()))) {
       return MakeInvalidRequestDiagnostic(
           "mga.heap_relation_read.revalidate",
           "relation_authority_identity_stale");
@@ -2809,7 +2695,8 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
   auto* const effective_runtime_observation =
       runtime_observation == nullptr ? &owned_runtime_observation
                                      : runtime_observation;
-  if (relation_uuid.empty() || context.local_transaction_id == 0 ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(relation_uuid) ||
+      context.local_transaction_id == 0 ||
       context.transaction_uuid.is_nil()) {
     return refuse("exact_relation_transaction_and_snapshot_required",
                   MgaHeapReadFailureCategoryV1::kMgaContext);
@@ -3095,7 +2982,8 @@ static MgaVisibleHeapRelationStreamResult StreamVisibleMgaHeapRelationImpl(
       request.borrowed_cancellation_requested == nullptr
           ? request.cancellation_requested
           : *request.borrowed_cancellation_requested;
-  if (relation_uuid.empty() || request.maximum_decoded_bytes_per_pass == 0 ||
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(relation_uuid) ||
+      request.maximum_decoded_bytes_per_pass == 0 ||
       request.maximum_memory_bytes == 0 || !cancellation_requested ||
       !request.prepare_consumer_for_visible_rows ||
       !request.consumer_retained_memory_bytes ||
@@ -3307,7 +3195,7 @@ MgaVisibleHeapRelationStreamResult StreamMgaHeapForDmlDeleteV1(
     const EngineDmlDeleteBindingAuthorityV1& binding) {
   const auto inventory_guard = AcquireTransactionInventoryGuard(context.database_path);
   const auto& target = request.borrowed_relation_uuid ? *request.borrowed_relation_uuid : request.relation_uuid;
-  const std::array<std::string, 1> relations{target};
+  const std::array<EngineUuid, 1> relations{target};
   auto prepared = PrepareMgaHeapReadAuthoritiesForStoreModule(context, relations, nullptr, &binding);
   if (!prepared.ok || !prepared.cohort) {
     MgaVisibleHeapRelationStreamResult failure;

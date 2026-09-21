@@ -12,6 +12,7 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/pinned_descriptor_cache.hpp"
+#include "../../descriptor_content_encoding.hpp"
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -112,10 +113,10 @@ std::uint64_t OptionU64(const EngineApiRequest& request, std::string_view prefix
   }
 }
 
-std::vector<std::string> ObjectUuidsForPinnedDescriptorKey(const EngineGetDescriptorRequest& request,
-                                                           const std::string& descriptor_uuid) {
-  std::vector<std::string> uuids;
-  if (!descriptor_uuid.empty()) uuids.push_back(descriptor_uuid);
+std::vector<EngineUuid> ObjectUuidsForPinnedDescriptorKey(const EngineGetDescriptorRequest& request,
+                                                       const EngineUuid& descriptor_uuid) {
+  std::vector<EngineUuid> uuids;
+  if (!descriptor_uuid.is_nil()) uuids.push_back(descriptor_uuid);
   if (!request.target_object.uuid.is_nil()) uuids.push_back(request.target_object.uuid);
   if (!request.bound_object_identity.object_uuid.is_nil()) {
     uuids.push_back(request.bound_object_identity.object_uuid);
@@ -126,8 +127,8 @@ std::vector<std::string> ObjectUuidsForPinnedDescriptorKey(const EngineGetDescri
   return uuids;
 }
 
-std::vector<std::string> IndexUuidsForPinnedDescriptorKey(const EngineGetDescriptorRequest& request) {
-  std::vector<std::string> uuids;
+std::vector<EngineUuid> IndexUuidsForPinnedDescriptorKey(const EngineGetDescriptorRequest& request) {
+  std::vector<EngineUuid> uuids;
   for (const auto& index : request.indexes) {
     if (!index.requested_index_uuid.is_nil()) {
       uuids.push_back(index.requested_index_uuid);
@@ -137,7 +138,7 @@ std::vector<std::string> IndexUuidsForPinnedDescriptorKey(const EngineGetDescrip
 }
 
 CatalogPinnedDescriptorCacheKey DescriptorCacheKey(const EngineGetDescriptorRequest& request,
-                                                   const std::string& descriptor_uuid) {
+                                                   const EngineUuid& descriptor_uuid) {
   CatalogPinnedDescriptorCacheKey key;
   key.descriptor_family = OptionValue(request, "descriptor_family:");
   if (key.descriptor_family.empty()) key.descriptor_family = "catalog_descriptor";
@@ -155,9 +156,10 @@ CatalogPinnedDescriptorCacheKey DescriptorCacheKey(const EngineGetDescriptorRequ
   key.index_uuids = IndexUuidsForPinnedDescriptorKey(request);
   key.security_policy_identity = OptionValue(request, "security_policy_identity:");
   if (key.security_policy_identity.empty()) {
-    key.security_policy_identity = request.context.principal_uuid.is_nil()
-                                       ? "security_policy:default"
-                                       : "principal:" + request.context.principal_uuid;
+    metadata::ContentEncoder principal(7);
+    principal.Uuid(request.context.principal_uuid);
+    principal.Uuid(request.context.current_role_uuid);
+    key.security_policy_identity = principal.Digest();
   }
   key.redaction_policy_identity = OptionValue(request, "redaction_policy_identity:");
   if (key.redaction_policy_identity.empty()) key.redaction_policy_identity = "redaction_policy:default";
@@ -189,10 +191,10 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
 namespace {
 
 EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescriptorRequest& request) {
-  const std::string descriptor_uuid = !request.target_object.uuid.is_nil()
+  const EngineUuid descriptor_uuid = !request.target_object.uuid.is_nil()
                                           ? request.target_object.uuid
-                                          : (!request.descriptors.empty() ? request.descriptors.front().descriptor_uuid : std::string{});
-  if (descriptor_uuid.empty()) {
+                                          : (!request.descriptors.empty() ? request.descriptors.front().descriptor_uuid : EngineUuid{});
+  if (descriptor_uuid.is_nil()) {
     return MakeCrudDiagnosticResult<EngineGetDescriptorResult>(
         request.context,
         "catalog.get_descriptor",
@@ -301,10 +303,10 @@ EngineGetDescriptorResult EngineGetDescriptorUncachedImpl(const EngineGetDescrip
 }  // namespace
 
 EngineGetDescriptorResult EngineGetDescriptor(const EngineGetDescriptorRequest& request) {
-  const std::string descriptor_uuid = !request.target_object.uuid.is_nil()
+  const EngineUuid descriptor_uuid = !request.target_object.uuid.is_nil()
                                           ? request.target_object.uuid
-                                          : (!request.descriptors.empty() ? request.descriptors.front().descriptor_uuid : std::string{});
-  if (descriptor_uuid.empty()) {
+                                          : (!request.descriptors.empty() ? request.descriptors.front().descriptor_uuid : EngineUuid{});
+  if (descriptor_uuid.is_nil()) {
     return EngineGetDescriptorUncachedImpl(request);
   }
 

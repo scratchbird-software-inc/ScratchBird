@@ -51,6 +51,10 @@ int main() {
   inventory.entries.push_back(Entry(6, TransactionState::rolled_back));
   inventory.entries.push_back(Entry(7, TransactionState::limbo));
   inventory.entries.push_back(Entry(8, TransactionState::committing, true));
+  // Transaction 5 committed first in this explicit persisted-history fixture.
+  // Recovery must not infer commit order from its local transaction number.
+  inventory.entries[4].commit_sequence = 1;
+  inventory.next_commit_sequence = 2;
 
   const auto recovery = ClassifyLocalTransactionInventoryForRecovery(inventory);
   if (!recovery.ok()) {

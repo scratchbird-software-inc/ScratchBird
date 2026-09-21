@@ -16,6 +16,7 @@
 #include <future>
 #include <set>
 #include <sstream>
+#include <string_view>
 #include <unordered_set>
 
 namespace scratchbird::core::index {
@@ -248,21 +249,21 @@ std::string HashEvidence(
     const SortedBulkIndexBuildResult& build,
     const IndexBulkPublishRecoveryResult& recovery) {
   std::uint64_t hash = 1469598103934665603ull;
-  auto mix = [&hash](const std::string& text) {
+  auto mix = [&hash](const auto& text) {
     for (unsigned char ch : text) {
       hash ^= ch;
       hash *= 1099511628211ull;
     }
   };
   mix(request.route_label);
-  mix(IndexFamilyName(request.family));
+  mix(std::string_view(IndexFamilyName(request.family)));
   mix(std::to_string(build.candidate_root_generation.candidate_generation));
   mix(std::to_string(build.entries.size()));
   mix(std::to_string(recovery.active_metapage.root_generation));
   for (const auto& row : build.entries) {
     mix(row.encoded_key);
-    mix(row.row_uuid);
-    mix(row.version_uuid);
+    mix(row.row_uuid.bytes);
+    mix(row.version_uuid.bytes);
   }
   std::ostringstream out;
   out << "orh285:" << std::hex << hash;

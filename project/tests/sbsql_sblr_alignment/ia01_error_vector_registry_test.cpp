@@ -100,9 +100,15 @@ int main() {
     ++checks;
     if (!value) { ++failures; std::cerr << "FAIL " << requirement << '\n'; }
   };
-  const auto base = std::filesystem::temp_directory_path() /
-                    ("sb_error_vector_registry_" + std::to_string(
-                        std::chrono::steady_clock::now().time_since_epoch().count()));
+  const auto fixture = std::filesystem::temp_directory_path() /
+      ("sb_error_vector_registry_" + scratchbird::core::uuid::UuidToString(
+          Identity(scratchbird::core::platform::UuidKind::object)));
+  if(!std::filesystem::create_directory(fixture)) return 1;
+  struct FixtureCleanup {
+    std::filesystem::path path;
+    ~FixtureCleanup() { std::error_code ignored; std::filesystem::remove_all(path,ignored); }
+  } cleanup{fixture};
+  const auto base = fixture / "registry";
   const auto journal = base.string() + ".sb.sblr_error_vector_registry.v1";
 #if defined(SB_EV_LINUX_IO_FAULTS)
   const auto directory=base.parent_path().string();fault_directory=directory.c_str();
@@ -342,7 +348,7 @@ int main() {
   }
   replace(valid);
 #endif
-  unsigned allocation_failures=0;
+  unsigned allocation_failures=0, completed_with_observation_failure=0;
   for(bool issue_operation:{false,true}) {
     replace(valid);
     const auto active=IssueSblrErrorVectorDescriptorV1(
@@ -372,8 +378,29 @@ int main() {
         check(outcome.ok,"allocation sweep reaches a complete successful operation");complete=true;break;
       }
       ++allocation_failures;
-      check(!outcome.ok && outcome.diagnostic.error && outcome.snapshot.canonical_ervd.empty(),
-            "allocation failure returns no partial descriptor or fake success");
+      // FileDevice latency observations contain allocation failures and count
+      // them without changing completed I/O. Metrics are not storage/finality
+      // authority (Core storage/filespace metrics contract). Success after an
+      // injected allocation is allowed ONLY with the complete actual effect,
+      // never merely because the result flag is true.
+      if(outcome.ok) {
+        ++completed_with_observation_failure;
+        check(!outcome.diagnostic.error && !outcome.snapshot.canonical_ervd.empty(),
+              "accepted observation failure retains a complete descriptor");
+        const auto durable=LookupSblrErrorVectorDescriptorV1(
+            context,receipt_id,outcome.snapshot.descriptor_uuid,1);
+        check(durable.ok && durable.snapshot.canonical_ervd==outcome.snapshot.canonical_ervd &&
+              durable.snapshot.evidence_sha256==outcome.snapshot.evidence_sha256 &&
+              durable.snapshot.journal_sequence==outcome.snapshot.journal_sequence &&
+              durable.snapshot.registry_generation==41 &&
+              durable.snapshot.diagnostic_registry_generation==7,
+              "accepted observation failure requires exact durable reload evidence");
+        check(issue_operation || outcome.snapshot.canonical_ervd==active.snapshot.canonical_ervd,
+              "lookup with observation failure returns the exact admitted vector");
+      } else {
+        check(outcome.diagnostic.error && outcome.snapshot.canonical_ervd.empty(),
+              "mandatory allocation failure returns no partial descriptor or fake success");
+      }
       std::ifstream after_input(journal,std::ios::binary);
       const std::string after((std::istreambuf_iterator<char>(after_input)),{});
       if(!issue_operation) {
@@ -382,11 +409,15 @@ int main() {
               "failed read releases every provisional lock and permits immediate valid lookup");
       } else {
         check(after.substr(0,valid.size())==valid,"failed issue preserves all prior immutable evidence");
+        if(outcome.ok)
+          check(after.size()==valid.size()+280+outcome.snapshot.canonical_ervd.size()+64,
+                "successful issue with observation failure appends one complete frame");
       }
     }
     check(complete,"allocation sweep covers every reached standard allocation point");
   }
-  std::cout<<"ERROR_VECTOR allocation failures="<<allocation_failures<<'\n';
+  std::cout<<"ERROR_VECTOR allocation failures="<<allocation_failures
+           <<" completed_with_observation_failure="<<completed_with_observation_failure<<'\n';
   replace(valid);
   std::vector<scratchbird::engine::sblr::SblrErrorVectorEntryV1> maximum(4096,entry);
   for(std::size_t i=0;i<maximum.size();++i)maximum[i].occurrence_ordinal=i+1;

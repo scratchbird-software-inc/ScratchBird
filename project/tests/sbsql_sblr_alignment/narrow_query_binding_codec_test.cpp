@@ -4,6 +4,8 @@
 #include "wire/narrow_query_binding_codec.hpp"
 
 #include "runtime_platform.hpp"
+#include "canonical_diagnostic_catalog.hpp"
+#include "hash_digest.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -41,6 +43,8 @@ NarrowQueryUuid Uuid(unsigned seed) {
     value[index] = static_cast<byte>((seed * 29u + index * 17u) & 0xffu);
   }
   value[0] |= 1u;
+  value[6] = (value[6] & 0x0fu) | 0x70u;
+  value[8] = (value[8] & 0x3fu) | 0x80u;
   return value;
 }
 
@@ -256,6 +260,16 @@ NarrowQueryBinding Decode(const std::vector<byte>& encoded,
   return decoded;
 }
 
+void RequireRegisteredFailure(const std::string& code) {
+  const auto* row =
+      scratchbird::core::diagnostics::FindCanonicalDiagnosticCode(code);
+  Require(row && row->is_failure &&
+              row->severity == scratchbird::core::diagnostics::CanonicalSeverity::error &&
+              row->required_outcome != "not_specified" &&
+              row->retry_class != "not_specified",
+          "refusal emitted unregistered or incomplete canonical metadata: " + code);
+}
+
 void ExpectDecodeError(const std::vector<byte>& encoded,
                        const NarrowQueryBindingValidationContext& context,
                        NarrowQueryBindingErrorCode expected,
@@ -267,6 +281,7 @@ void ExpectDecodeError(const std::vector<byte>& encoded,
   Require(!DecodeAndValidateNarrowQueryBinding(encoded, context, &sentinel,
                                                 &error),
           "malformed carrier unexpectedly decoded");
+  RequireRegisteredFailure(error.diagnostic_code);
   Require(error.code == expected,
           std::string("wrong error: expected ") +
               NarrowQueryBindingErrorCodeName(expected) + " got " +
@@ -279,15 +294,19 @@ void ExpectDecodeError(const std::vector<byte>& encoded,
 }
 
 void ExpectEncodeError(const NarrowQueryBinding& binding,
-                       NarrowQueryBindingErrorCode expected) {
+                       NarrowQueryBindingErrorCode expected,
+                       std::string_view diagnostic = {}) {
   std::vector<byte> output{0xaa, 0xbb};
   NarrowQueryBindingError error;
   Require(!EncodeNarrowQueryBinding(binding, &output, &error),
           "invalid binding unexpectedly encoded");
+  RequireRegisteredFailure(error.diagnostic_code);
   Require(error.code == expected,
           std::string("wrong encode error: expected ") +
               NarrowQueryBindingErrorCodeName(expected) + " got " +
               NarrowQueryBindingErrorCodeName(error.code));
+  Require(diagnostic.empty() || error.diagnostic_code == diagnostic,
+          "encode refusal used the wrong canonical code");
   Require(output == std::vector<byte>({0xaa, 0xbb}),
           "encode refusal modified the caller output");
 }
@@ -457,25 +476,25 @@ void ResultBoundSemantics() {
   StoreLittle64(truncated_bound.data() + 16, truncated_bound.size());
   ExpectDecodeError(truncated_bound, Context(limit_zero),
                     NarrowQueryBindingErrorCode::extent_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   auto malformed_absent_value = limit_zero_bytes;
   StoreLittle64(malformed_absent_value.data() + 488, 1);
   ExpectDecodeError(malformed_absent_value, Context(limit_zero),
                     NarrowQueryBindingErrorCode::result_bound_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   auto unknown_flag = limit_zero_bytes;
   StoreLittle32(unknown_flag.data() + 12, 4);
   ExpectDecodeError(unknown_flag, Context(limit_zero),
                     NarrowQueryBindingErrorCode::reserved_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   auto evidence_mutation = window_bytes;
   StoreLittle64(evidence_mutation.data() + 480, 8);
   ExpectDecodeError(evidence_mutation, Context(window),
                     NarrowQueryBindingErrorCode::carrier_evidence_mismatch,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   auto resource_context = Context(window);
   resource_context.maximum_result_rows = 10;
@@ -521,13 +540,13 @@ void ScanByteResourcePolicy() {
   StoreLittle64(truncated.data() + 16u, truncated.size());
   ExpectDecodeError(truncated, context,
                     NarrowQueryBindingErrorCode::extent_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   auto hash_mutation = canonical;
   StoreLittle64(hash_mutation.data() + 472u, kScanBytes * 2u);
   ExpectDecodeError(hash_mutation, context,
                     NarrowQueryBindingErrorCode::carrier_evidence_mismatch,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   auto independent = binding;
   independent.maximum_mga_relation_decoded_bytes_per_pass =
@@ -559,68 +578,68 @@ void MalformedBytePrecedence() {
   mutated[0] ^= 1u;
   ExpectDecodeError(mutated, context,
                     NarrowQueryBindingErrorCode::magic_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   mutated = canonical;
   StoreLittle16(mutated.data() + 8, 2);
   ExpectDecodeError(mutated, context,
                     NarrowQueryBindingErrorCode::version_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   mutated = canonical;
   StoreLittle64(mutated.data() + 16, mutated.size() + 1);
   ExpectDecodeError(mutated, context,
                     NarrowQueryBindingErrorCode::extent_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   mutated = canonical;
   StoreLittle32(mutated.data() + 36, 1);
   ExpectDecodeError(mutated, context,
                     NarrowQueryBindingErrorCode::reserved_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   mutated = canonical;
   StoreLittle16(mutated.data() + 24, 99);
   ExpectDecodeError(mutated, context,
                     NarrowQueryBindingErrorCode::profile_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   mutated = canonical;
   StoreLittle16(mutated.data() + 26, 0);
   ExpectDecodeError(mutated, context,
                     NarrowQueryBindingErrorCode::count_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   mutated = canonical;
   StoreLittle32(mutated.data() + 480, 135);
   ExpectDecodeError(mutated, context,
                     NarrowQueryBindingErrorCode::extent_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   mutated = canonical;
   mutated[296] ^= 1u;
   ExpectDecodeError(mutated, context,
                     NarrowQueryBindingErrorCode::source_vector_evidence_mismatch,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   mutated = canonical;
   mutated[352] ^= 1u;
   ExpectDecodeError(mutated, context,
                     NarrowQueryBindingErrorCode::output_vector_evidence_mismatch,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   mutated = canonical;
   mutated[408] ^= 1u;
   ExpectDecodeError(
       mutated, context,
       NarrowQueryBindingErrorCode::ordering_vector_evidence_mismatch,
-      "SBLR.OPERAND.INVALID");
+      "SBLR.OPERAND_INVALID");
 
   mutated = canonical;
   mutated[440] ^= 1u;
   ExpectDecodeError(mutated, context,
                     NarrowQueryBindingErrorCode::carrier_evidence_mismatch,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
 
   auto limited_context = context;
   limited_context.maximum_total_bytes = canonical.size() - 1;
@@ -637,7 +656,7 @@ void ContextAndAuthorityPrecedence() {
   context.statement_receipt_uuid = Uuid(900);
   ExpectDecodeError(encoded, context,
                     NarrowQueryBindingErrorCode::statement_receipt_mismatch,
-                    "MGA.TRANSACTION.STALE");
+                    "SBLR.QUERY_BINDING.STALE");
 
   context = Context(binding);
   context.security_context_uuid = Uuid(901);
@@ -668,7 +687,7 @@ void ContextAndAuthorityPrecedence() {
   };
   ExpectDecodeError(encoded, context,
                     NarrowQueryBindingErrorCode::ordering_collation_invalid,
-                    "SORT.COLLATION_PROFILE_INVALID");
+                    "SORT.COLLATION_PROFILE.INVALID");
 
   context = Context(binding);
   context.cancelled = true;
@@ -680,7 +699,229 @@ void ContextAndAuthorityPrecedence() {
   context.validate_source = {};
   ExpectDecodeError(encoded, context,
                     NarrowQueryBindingErrorCode::validation_context_invalid,
-                    "SBLR.OPERAND.INVALID");
+                    "SBLR.OPERAND_INVALID");
+}
+
+std::vector<NarrowQueryUuid> InvalidSystemUuids() {
+  std::vector<NarrowQueryUuid> values(1);  // Nil is invalid when required.
+  for (unsigned version = 0; version != 16; ++version) {
+    if (version == 7) continue;
+    auto uuid = Uuid(213);
+    uuid[6] = static_cast<byte>((uuid[6] & 0x0fu) | (version << 4u));
+    values.push_back(uuid);
+  }
+  for (const unsigned variant : {0u, 0x40u, 0xc0u}) {
+    auto uuid = Uuid(213);
+    uuid[8] = static_cast<byte>((uuid[8] & 0x3fu) | variant);
+    values.push_back(uuid);
+  }
+  return values;
+}
+
+// Independent byte-layout oracle: hashes are recomputed so identity rejection
+// cannot be credited to a stale checksum. This creates no live authority.
+void RehashBinding(std::vector<byte>* bytes) {
+  auto hash = [&](std::string_view domain, const std::vector<byte>& body,
+                  std::size_t destination) {
+    std::vector<byte> input(domain.begin(), domain.end());
+    input.insert(input.end(), body.begin(), body.end());
+    const auto digest = scratchbird::core::hash::ComputeSha256Digest(input);
+    Require(digest.ok() && digest.digest_bytes == 32, "test SHA256 failed");
+    std::copy(digest.digest.begin(), digest.digest.end(), bytes->begin() + destination);
+  };
+  std::size_t begin = 480;
+  const std::array<u32, 3> counts{
+      LoadLittle16(bytes->data() + 26), LoadLittle32(bytes->data() + 28),
+      LoadLittle32(bytes->data() + 32)};
+  const std::array<std::string_view, 3> domains{
+      "ScratchBird.QuerySourceOccurrenceVector.V1",
+      "ScratchBird.QueryOutputOccurrenceVector.V1",
+      "ScratchBird.QueryOrderingTermVector.V1"};
+  for (unsigned vector = 0; vector != 3; ++vector) {
+    auto end = begin;
+    for (u32 row = 0; row != counts[vector]; ++row)
+      end += vector == 2 ? 112 : LoadLittle32(bytes->data() + end);
+    std::vector<byte> body(4);
+    StoreLittle32(body.data(), counts[vector]);
+    body.insert(body.end(), bytes->begin() + begin, bytes->begin() + end);
+    hash(domains[vector], body, std::array<std::size_t, 3>{296, 352, 408}[vector]);
+    begin = end;
+  }
+  Require(begin == bytes->size(), "test vector extents drifted");
+  std::fill_n(bytes->begin() + 440, 32, 0);
+  hash("ScratchBird.QueryNarrowProfileBinding.V1", *bytes, 440);
+}
+
+std::vector<NarrowQueryUuid*> RequiredIdentities(NarrowQueryBinding& binding) {
+  std::vector<NarrowQueryUuid*> ids{
+      &binding.statement_receipt_uuid, &binding.owning_transaction_uuid,
+      &binding.statement_snapshot_uuid, &binding.datatype_catalog_snapshot_uuid,
+      &binding.security_context_uuid, &binding.policy_snapshot_uuid,
+      &binding.resource_grant_receipt_uuid, &binding.cancellation_receipt_uuid,
+      &binding.execution_uuid, &binding.result_set_uuid, &binding.row_descriptor_uuid,
+      &binding.source_vector_uuid, &binding.output_vector_uuid, &binding.ordering_vector_uuid};
+  for (auto& source : binding.sources)
+    for (auto* id : {&source.source_occurrence_uuid, &source.relation_descriptor_uuid,
+                    &source.relation_object_uuid, &source.schema_uuid}) ids.push_back(id);
+  for (auto& output : binding.outputs)
+    for (auto* id : {&output.output_occurrence_uuid, &output.source_occurrence_uuid,
+                    &output.source_column_uuid, &output.output_descriptor_uuid,
+                    &output.datatype_descriptor_uuid, &output.datatype_type_uuid}) ids.push_back(id);
+  for (auto& term : binding.ordering_terms)
+    for (auto* id : {&term.ordering_term_uuid, &term.source_occurrence_uuid,
+                    &term.source_column_uuid}) ids.push_back(id);
+  return ids;
+}
+
+void SystemIdentityVersions() {
+  const auto canonical = OrderedBinding(); // No optional result-bound extent.
+  const auto bytes = Encode(canonical);
+  auto rehashed = bytes;
+  RehashBinding(&rehashed);
+  Require(rehashed == bytes, "independent vector/carrier hash oracle differs");
+  std::vector<std::size_t> offsets{
+      40, 56, 80, 96, 128, 144, 168, 192, 216, 232, 248, 272, 328, 384};
+  std::size_t at = 480;
+  for (std::size_t row = 0; row != canonical.sources.size(); ++row) {
+    for (const unsigned offset : {16u, 40u, 64u, 80u}) offsets.push_back(at + offset);
+    at += LoadLittle32(bytes.data() + at);
+  }
+  for (std::size_t row = 0; row != canonical.outputs.size(); ++row) {
+    for (const unsigned offset : {16u, 40u, 64u, 88u, 112u, 136u})
+      offsets.push_back(at + offset);
+    at += LoadLittle32(bytes.data() + at);
+  }
+  for (std::size_t row = 0; row != canonical.ordering_terms.size(); ++row) {
+    for (const unsigned offset : {8u, 32u, 56u}) offsets.push_back(at + offset);
+    at += 112;
+  }
+  auto encode_refuses = [](const NarrowQueryBinding& candidate) {
+    NarrowQueryBindingError error;
+    std::vector<byte> output{0xa5};
+    Require(!EncodeNarrowQueryBinding(candidate, &output, &error),
+            "non-v7 system identity encoded");
+    RequireRegisteredFailure(error.diagnostic_code);
+    Require(output == std::vector<byte>{0xa5}, "invalid identity published bytes");
+  };
+  for (const auto& invalid : InvalidSystemUuids()) {
+    for (std::size_t field = 0; field != offsets.size(); ++field) {
+      auto candidate = canonical;
+      auto identities = RequiredIdentities(candidate);
+      Require(identities.size() == offsets.size(), "identity field oracle incomplete");
+      *identities[field] = invalid;
+      encode_refuses(candidate);
+      auto bad_bytes = bytes;
+      std::copy(invalid.begin(), invalid.end(), bad_bytes.begin() + offsets[field]);
+      RehashBinding(&bad_bytes);
+      auto decoded = canonical;
+      NarrowQueryBindingError error;
+      Require(!DecodeAndValidateNarrowQueryBinding(bad_bytes, Context(canonical), &decoded, &error),
+              "hashed non-v7 system identity decoded");
+      RequireRegisteredFailure(error.diagnostic_code);
+      Require(error.code != NarrowQueryBindingErrorCode::carrier_evidence_mismatch &&
+                  error.code != NarrowQueryBindingErrorCode::source_vector_evidence_mismatch &&
+                  error.code != NarrowQueryBindingErrorCode::output_vector_evidence_mismatch &&
+                  error.code != NarrowQueryBindingErrorCode::ordering_vector_evidence_mismatch,
+              "invalid identity test only rejected a stale hash");
+      Require(Encode(decoded) == bytes, "invalid decoded identity changed caller output");
+    }
+    for (unsigned field = 0; field != 11; ++field) {
+      auto context = Context(canonical);
+      const std::array<NarrowQueryUuid*, 11> identities{
+          &context.statement_receipt_uuid, &context.owning_transaction_uuid,
+          &context.statement_snapshot_uuid, &context.datatype_catalog_snapshot_uuid,
+          &context.security_context_uuid, &context.policy_snapshot_uuid,
+          &context.resource_grant_receipt_uuid, &context.cancellation_receipt_uuid,
+          &context.execution_uuid, &context.result_set_uuid, &context.row_descriptor_uuid};
+      *identities[field] = invalid;
+      ExpectDecodeError(bytes, context, NarrowQueryBindingErrorCode::validation_context_invalid,
+                        "SBLR.OPERAND_INVALID");
+    }
+    auto collated = canonical;
+    collated.ordering_terms[0].collation_uuid = invalid;
+    collated.ordering_terms[0].collation_generation = 1;
+    encode_refuses(collated);
+    if (invalid != NarrowQueryUuid{}) {
+      collated.ordering_terms[0].collation_generation = 0;
+      encode_refuses(collated);
+      auto unordered = DuplicateProjectionBinding();
+      unordered.ordering_vector_uuid = invalid;
+      encode_refuses(unordered);
+    }
+  }
+  // Optional identities must fail decode even when their own presence flag or
+  // generation claims absence and all hashes have been recomputed.
+  const auto first_order = at - canonical.ordering_terms.size() * 112;
+  for (const auto& invalid : InvalidSystemUuids()) {
+    for (const u64 generation : {u64{0}, u64{1}}) {
+      if (generation == 0 && invalid == NarrowQueryUuid{}) continue;
+      auto bad_bytes = bytes;
+      std::copy(invalid.begin(), invalid.end(), bad_bytes.begin() + first_order + 80);
+      StoreLittle64(bad_bytes.data() + first_order + 96, generation);
+      RehashBinding(&bad_bytes);
+      auto output = canonical;
+      NarrowQueryBindingError error;
+      Require(!DecodeAndValidateNarrowQueryBinding(bad_bytes, Context(canonical), &output, &error),
+              "hashed malformed optional collation admitted");
+      Require(error.code == NarrowQueryBindingErrorCode::ordering_record_invalid,
+              "optional collation only failed unrelated validation");
+      Require(Encode(output) == bytes, "optional collation failure published output");
+    }
+  }
+  auto collated = canonical;
+  collated.ordering_terms[0].collation_uuid = Uuid(214);
+  collated.ordering_terms[0].collation_generation = 1;
+  Require(!Encode(collated).empty(), "valid optional collation rejected");
+  std::cout << "system UUID fields=" << offsets.size()
+            << " invalid_shapes=" << InvalidSystemUuids().size() << '\n';
+}
+
+void ExactDiagnosticCauses() {
+  auto binding = OrderedBinding();
+  binding.owning_local_transaction_id = 0;
+  ExpectEncodeError(binding, NarrowQueryBindingErrorCode::transaction_invalid,
+                    "MGA.TRANSACTION_INVALID");
+  binding = OrderedBinding();
+  binding.statement_receipt_uuid = {};
+  ExpectEncodeError(binding, NarrowQueryBindingErrorCode::statement_receipt_mismatch,
+                    "SBLR.QUERY_BINDING.STALE");
+  binding = OrderedBinding();
+  binding.sources[0].relation_object_uuid = {};
+  ExpectEncodeError(binding, NarrowQueryBindingErrorCode::source_identity_invalid,
+                    "SBLR.PLAN_TREE.INVALID_HANDLE");
+  binding = OrderedBinding();
+  binding.outputs[0].source_occurrence_uuid = Uuid(201);
+  ExpectEncodeError(binding, NarrowQueryBindingErrorCode::output_source_invalid,
+                    "PROJECTION.EXPRESSION_VECTOR.INVALID");
+  binding = OrderedBinding();
+  binding.outputs[0].output_occurrence_uuid = {};
+  ExpectEncodeError(binding, NarrowQueryBindingErrorCode::output_identity_invalid,
+                    "PROJECTION.OUTPUT_ROWSET.INVALID");
+  binding = OrderedBinding();
+  binding.ordering_vector_uuid = {};
+  ExpectEncodeError(binding, NarrowQueryBindingErrorCode::profile_shape_invalid,
+                    "SORT.ORDERING_VECTOR.INVALID");
+  binding = OrderedBinding();
+  binding.result_set_uuid = {};
+  ExpectEncodeError(binding, NarrowQueryBindingErrorCode::result_handle_mismatch,
+                    "RESULT_SET.SHAPE_INVALID");
+  binding = OrderedBinding();
+  const auto encoded = Encode(binding);
+  auto context = Context(binding);
+  context.owning_transaction_uuid = Uuid(202);
+  ExpectDecodeError(encoded, context, NarrowQueryBindingErrorCode::transaction_stale,
+                    "SBLR.QUERY_BINDING.STALE");
+  context = Context(binding);
+  context.row_descriptor_generation += 1;
+  ExpectDecodeError(encoded, context, NarrowQueryBindingErrorCode::result_handle_mismatch,
+                    "RESULT_SET.SHAPE_INVALID");
+  context = Context(binding);
+  context.validate_collation = [](const NarrowQueryOrderingTerm&) {
+    return NarrowQueryAuthorityDecision::stale_or_mismatched;
+  };
+  ExpectDecodeError(encoded, context,
+                    NarrowQueryBindingErrorCode::ordering_collation_invalid,
+                    "SORT.COLLATION_PROFILE.INVALID");
 }
 
 void StructuralProfileRefusals() {
@@ -761,6 +1002,8 @@ int main() {
   MalformedBytePrecedence();
   ContextAndAuthorityPrecedence();
   StructuralProfileRefusals();
+  ExactDiagnosticCauses();
+  SystemIdentityVersions();
   std::cout << "PASS narrow_query_binding_codec exact SBQNPB01 profiles=3"
             << " hashes=4 result_bound=1 malformed_precedence=1"
             << " occurrence_identity=1\n";

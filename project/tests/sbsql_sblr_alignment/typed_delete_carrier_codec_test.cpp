@@ -196,6 +196,19 @@ int main() try {
   Require(w::EncodeTypedDeleteDescriptor(decoded, &again, &error) && again == encoded, "descriptor roundtrip");
   CorruptionMatrix(encoded, [&](auto bytes) { return w::DecodeAndValidateTypedDeleteDescriptor(bytes, &decoded, &error); });
   for (auto offset : {16, 40, 64, 88, 112, 128, 160, 176, 200, 224, 248, 320, 384, 448, 512, 536, 560, 592}) {
+    for (unsigned version = 0; version != 16; ++version) {
+      for (unsigned variant = 0; variant != 4; ++variant) {
+        if (version == 7 && variant == 2) continue;
+        auto malformed = encoded;
+        malformed[offset + 6] = static_cast<w::byte>(version << 4);
+        malformed[offset + 8] = static_cast<w::byte>(variant << 6);
+        Rehash(malformed, 616, "ScratchBird.SblrDmlDeleteRowsDescriptor.V1");
+        const auto before = decoded.exact_bytes;
+        Require(!w::DecodeAndValidateTypedDeleteDescriptor(malformed, &decoded, &error),
+                "non-v7 DELETE system identity with valid hash admitted");
+        Require(decoded.exact_bytes == before, "invalid DELETE identity changed output");
+      }
+    }
     auto bad = encoded; std::fill_n(bad.begin() + offset, 16, 0);
     Rehash(bad, 616, "ScratchBird.SblrDmlDeleteRowsDescriptor.V1");
     Require(!w::DecodeAndValidateTypedDeleteDescriptor(bad, &decoded, &error), "nil identity with valid hash");
@@ -265,6 +278,31 @@ int main() try {
   journal.lifecycle_state = w::TypedUpdateJournalState::intent;
   journal.statement_savepoint_uuid = Uuid(55); journal.statement_savepoint_generation = 1;
   const auto intent = Roundtrip(journal, &bound);
+  for (unsigned version = 0; version != 16; ++version) {
+    for (unsigned variant = 0; variant != 4; ++variant) {
+      if (version == 7 && variant == 2) continue;
+      for (const w::u64 generation : {w::u64{0}, w::u64{1}}) {
+        auto malformed = intent;
+        malformed.statement_savepoint_uuid[6] = static_cast<w::byte>(version << 4);
+        malformed.statement_savepoint_uuid[8] = static_cast<w::byte>(variant << 6);
+        malformed.statement_savepoint_generation = generation;
+        std::vector<w::byte> untouched{0xde, 0xad};
+        Require(!w::EncodeTypedDeleteJournal(malformed, &bound, &untouched, &error) &&
+                    untouched == std::vector<w::byte>({0xde, 0xad}),
+                "malformed DELETE savepoint admitted or changed output");
+        auto wire = intent.exact_bytes;
+        std::copy(malformed.statement_savepoint_uuid.begin(),
+                  malformed.statement_savepoint_uuid.end(), wire.begin() + 152);
+        for (unsigned i = 0; i != 8; ++i)
+          wire[168 + i] = static_cast<w::byte>(generation >> (8 * i));
+        Rehash(wire, 224, "ScratchBird.SblrDmlDeleteRowsJournalRecord.V1", 256);
+        auto decoded_journal = bound;
+        Require(!w::DecodeAndValidateTypedDeleteJournal(wire, &bound, &decoded_journal, &error) &&
+                    decoded_journal.exact_bytes == bound.exact_bytes,
+                "rehashed malformed DELETE savepoint admitted or changed output");
+      }
+    }
+  }
   journal = intent; journal.journal_sequence = 3; journal.prior_record_sha256 = intent.record_evidence_sha256;
   journal.lifecycle_state = w::TypedUpdateJournalState::aborted;
   const auto intent_abort = Roundtrip(journal, &intent);

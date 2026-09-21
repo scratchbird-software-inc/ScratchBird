@@ -13,6 +13,7 @@
 #include "disk_device.hpp"
 #include "transaction_horizon.hpp"
 #include "transaction_inventory.hpp"
+#include "inventory_publication_io.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -27,6 +28,7 @@ struct LocalTransactionStoreResult {
   scratchbird::transaction::mga::LocalTransactionInventory inventory;
   scratchbird::transaction::mga::LocalTransactionHorizons horizons;
   DiagnosticRecord diagnostic;
+  InventoryPublicationIo publication_io;
 
   bool ok() const {
     return status.ok();
@@ -100,7 +102,8 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(
     u32 page_size);
 LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
     std::string path,
-    scratchbird::transaction::mga::LocalTransactionInventory inventory);
+    scratchbird::transaction::mga::LocalTransactionInventory inventory,
+    InventoryPageSyncPolicy sync_policy = InventoryPageSyncPolicy::batched);
 // Replacement must retain the database-bound publication_base issued by native
 // loading (or the preceding successful publication). Missing/stale bases refuse
 // before writes. Initial creation uses its dedicated lifecycle publisher, never
@@ -114,6 +117,7 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
 LocalTransactionStoreResult PersistLocalTransactionInventoryToOpenDevice(
     scratchbird::storage::disk::FileDevice* device,
     u32 page_size,
-    scratchbird::transaction::mga::LocalTransactionInventory inventory);
+    scratchbird::transaction::mga::LocalTransactionInventory inventory,
+    InventoryPageSyncPolicy sync_policy = InventoryPageSyncPolicy::batched);
 
 }  // namespace scratchbird::storage::database

@@ -70,6 +70,11 @@ struct CrudTableRecord {
   std::string temporary_scope;
   EngineUuid temporary_session_uuid;
   std::string on_commit_action;
+  // Exact creation input and catalog-issued generations. The string columns
+  // above are not identity authority and cannot rebuild a missing binding.
+  std::vector<EngineColumnDefinition> bound_columns;
+  std::uint64_t bound_relation_generation = 0;
+  std::uint64_t bound_column_generation = 0;
 };
 
 struct CrudRowVersionRecord {

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "wire/contextual_operand_freeze.hpp"
+#include "binder/relational_property_identity.hpp"
 
 namespace scratchbird::parser::sbsql {
 namespace {
@@ -234,6 +235,14 @@ std::optional<CanonicalBytes> FreezeContextualReservationSkeletonV2(
       bound.native_relational.snapshot_visible_through_local_transaction_id);
   CanonicalAppendU32(&frozen, bound.native_relational.root_relation_id);
   CanonicalAppendU32(&frozen, bound.native_relational.root_scope_id);
+  if (!ValidateRelationalPropertyIdentities(bound.native_relational)) return std::nullopt;
+  CanonicalAppendU32(&frozen, ReservationCount(bound.native_relational.property_identities.size()));
+  for (const auto& identity : bound.native_relational.property_identities) {
+    CanonicalAppendU32(&frozen, identity.key.relation_id);
+    CanonicalAppendU32(&frozen, identity.key.subject_id);
+    CanonicalAppendU16(&frozen, static_cast<std::uint16_t>(identity.key.role));
+    CanonicalAppendUuid(&frozen, identity.uuid);
+  }
 
   CanonicalAppendU32(
       &frozen,

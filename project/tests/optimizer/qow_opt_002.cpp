@@ -30,11 +30,11 @@ bool Require(const bool condition, const std::string_view detail) {
   return condition;
 }
 
-std::string Uuid(const std::uint64_t suffix) {
-  auto text = std::string("019f0000-0000-7700-8000-000000000000");
-  const auto digits = std::to_string(suffix);
-  text.replace(text.size() - digits.size(), digits.size(), digits);
-  return text;
+plan::CanonicalPlannerUuid Uuid(const std::uint64_t suffix) {
+  plan::CanonicalPlannerUuid value{{0x01, 0x9f, 0, 0, 0, 0, 0x77, 0, 0x80, 0, 0, 0, 0, 0, 0, 0}};
+  for (unsigned index = 0; index < 6; ++index)
+    value.bytes[15 - index] = static_cast<std::uint8_t>(suffix >> (index * 8));
+  return value;
 }
 
 plan::CanonicalMgaStatementContext MgaContext() {
@@ -196,11 +196,17 @@ bool ValidateIdentityAndShapeRefusal() {
   catalog.alternatives[1].implementation_id =
       catalog.alternatives[0].implementation_id;
   result = plan::ValidateCanonicalLogicalPhysicalBoundary(Graph(), catalog);
+  passed &= Require(result.accepted && !result.data_access_allowed,
+                    "distinct alternatives sharing an implementation were refused");
+
+  catalog.alternatives[1].alternative_uuid =
+      catalog.alternatives[0].alternative_uuid;
+  result = plan::ValidateCanonicalLogicalPhysicalBoundary(Graph(), catalog);
   passed &= Require(!result.accepted &&
                         HasIssue(result,
                                  "QOW-DIAG-PHYSICAL-ALTERNATIVE-IDENTITY-V1",
                                  1),
-                    "duplicate node implementation alternative was accepted");
+                    "duplicate alternative UUID was accepted");
 
   catalog = Catalog();
   catalog.alternatives[0].logical_node_id = 999;
@@ -271,7 +277,7 @@ bool ValidateBoundaryAndAvailabilityEvidence() {
       "stale alternative-catalog context was accepted");
   passed &= expect_context_refusal(
       [](auto&, auto& changed) {
-        changed.mga_statement_context.statement_uuid.clear();
+        changed.mga_statement_context.statement_uuid = {};
       },
       "missing alternative-catalog statement UUID was accepted");
   passed &= expect_context_refusal(

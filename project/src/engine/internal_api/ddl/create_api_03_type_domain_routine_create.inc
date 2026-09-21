@@ -237,21 +237,6 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
   if (target_table.uuid.is_nil() && request.target_object.object_kind == "table") {
     target_table = request.target_object;
   }
-  if (target_table.uuid.is_nil()) {
-    for (const auto& related : request.related_objects) {
-      if (related.object_kind == "table" && !related.uuid.is_nil()) {
-        target_table = related;
-        break;
-      }
-    }
-  }
-  if (target_table.uuid.is_nil()) {
-    target_table.uuid = SecurityOptionValue(request, "statistics_target_uuid:");
-    target_table.object_kind = SecurityOptionValue(request, "statistics_target_kind:");
-  }
-  if (target_table.uuid.is_nil()) {
-    target_table.uuid = SecurityOptionValue(request, "target_table_uuid:");
-  }
   if (target_table.object_kind.empty()) { target_table.object_kind = "table"; }
   if (target_table.uuid.is_nil()) {
     return MakeApiBehaviorDiagnostic<EngineCreateStatisticsResult>(
@@ -304,12 +289,10 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
         MakeInvalidRequestDiagnostic(kOperation, "statistics_expression_required"));
   }
 
-  const std::string statistics_uuid =
+  const EngineUuid statistics_uuid =
       !request.requested_statistics_uuid.is_nil()
           ? request.requested_statistics_uuid
-          : (request.target_object.object_kind == "statistics" && !request.target_object.uuid.is_nil()
-                 ? request.target_object.uuid
-                 : GenerateCrudEngineUuid("object"));
+          : GenerateCrudEngineUuid("object");
   std::vector<EngineLocalizedName> names = request.statistics_names.empty()
                                                ? request.localized_names
                                                : request.statistics_names;
@@ -321,7 +304,6 @@ EngineCreateStatisticsResult EngineCreateStatistics(const EngineCreateStatistics
   record_request.localized_names = names;
   record_request.related_objects.push_back(target_table);
   record_request.option_envelopes.push_back("statistics_catalog_table:sys.optimizer.statistics_descriptor");
-  record_request.option_envelopes.push_back("statistics_target_uuid:" + target_table.uuid);
   record_request.option_envelopes.push_back("statistics_target_kind:table");
   record_request.option_envelopes.push_back("statistics_kind:" + statistics_kind);
   record_request.option_envelopes.push_back("statistics_expression_count:" + std::to_string(expression_count));

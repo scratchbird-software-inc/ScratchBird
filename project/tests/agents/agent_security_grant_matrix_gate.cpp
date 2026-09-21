@@ -101,18 +101,22 @@ void TestGroupAndExplicitRightMapping() {
   Require(agents::AgentContextHasRight(Context({"OBS_AGENT_CONTROL"}, {"APP"}),
                                        "OBS_AGENT_CONTROL"),
           "explicit APP right was not accepted as authority");
-  Require(agents::AgentContextHasRight(Context({}, {"SUP"}),
+  Require(agents::AgentContextHasRight(Context({"OBS_SUPPORT_BUNDLE_READ"}, {"SUP"}),
                                        "OBS_SUPPORT_BUNDLE_READ"),
-          "SUP support-bundle read default missing");
+          "evaluated support-bundle read grant missing");
   Require(!agents::AgentContextHasRight(Context({}, {"SEC"}),
                                         "OBS_AGENT_CONTROL"),
           "SEC received generic platform control by default");
-  Require(agents::AgentContextHasRight(Context({}, {"SEC"}),
+  Require(agents::AgentContextHasRight(Context({"SEC_AUTH_METRICS_READ"}, {"SEC"}),
                                        "SEC_AUTH_METRICS_READ"),
-          "SEC security metric default missing");
-  Require(agents::AgentContextHasRight(Context({}, {"OPS"}),
+          "evaluated security metric grant missing");
+  Require(agents::AgentContextHasRight(Context({"OBS_CLUSTER_CONTROL"}, {"OPS"}),
                                        "OBS_CLUSTER_CONTROL"),
-          "OPS cluster control default missing");
+          "evaluated cluster control grant missing");
+  for (const auto& label : {"ROOT", "OPS", "SUP", "SEC", "DBA"}) {
+    Require(!agents::AgentContextHasRight(Context({}, {label}), "OBS_AGENT_CONTROL"),
+            "group display label granted control without evaluated authority");
+  }
 }
 
 void TestCommandFamilyRequiredRights() {
@@ -270,10 +274,15 @@ void TestActionContractPermissionEnforcement() {
   internal_context.trace_tags.push_back("engine.internal");
   auto internal_request = RequestFor(internal_contract, internal_context,
                                      &internal_policy);
+  const auto internal_denied =
+      agents::EvaluateAgentActionContract(internal_contract, internal_request);
+  Require(internal_denied.diagnostic_code == "ACTION.PERMISSION_DENIED",
+          "internal trace tag bypassed action permission");
+  internal_request.context.rights = {"OBS_AGENT_INTERNAL"};
   const auto internal_allowed =
       agents::EvaluateAgentActionContract(internal_contract, internal_request);
   Require(internal_allowed.diagnostic_code != "ACTION.PERMISSION_DENIED",
-          "internal trace tag did not satisfy internal action permission");
+          "explicit internal capability did not satisfy internal action permission");
 }
 
 void TestEvidencePolicyMetricsAndSupportRedaction() {
@@ -294,7 +303,7 @@ void TestEvidencePolicyMetricsAndSupportRedaction() {
 
   evidence.redaction_class = "support_safe";
   const auto support_visible =
-      agents::RedactAgentEvidenceForSecurity(evidence, Context({}, {"SUP"}), true);
+      agents::RedactAgentEvidenceForSecurity(evidence, Context({"OBS_SUPPORT_BUNDLE_READ"}, {"SUP"}), true);
   Require(support_visible.visible, "support-safe evidence hidden from SUP");
   Require(!support_visible.redacted, "support-safe evidence was redacted");
 

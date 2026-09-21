@@ -8,6 +8,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -25,13 +26,23 @@ bool source_file(const std::filesystem::path& path) {
 
 bool file_has_forbidden_text(const std::filesystem::path& path, const std::vector<std::string>& forbidden) {
   std::ifstream in(path);
+  if (!in) {
+    std::cerr << "Cannot read source-boundary input: " << path << '\n';
+    return true;
+  }
   std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  if (in.bad()) {
+    std::cerr << "Cannot complete source-boundary read: " << path << '\n';
+    return true;
+  }
+  bool violated = false;
   for (const auto& needle : forbidden) {
     if (contains(text, needle)) {
-      return true;
+      std::cerr << path << ": forbidden source-boundary text: " << needle << '\n';
+      violated = true;
     }
   }
-  return false;
+  return violated;
 }
 
 }  // namespace
@@ -41,6 +52,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   const std::vector<std::string> no_spin = {"spinlock", "SpinLock", "pthread_spin", "atomic_flag"};
+  bool spin_violation = false;
   for (int i = 1; i < argc; ++i) {
     const std::filesystem::path root = argv[i];
     for (const auto& entry : std::filesystem::recursive_directory_iterator(root)) {
@@ -48,7 +60,7 @@ int main(int argc, char** argv) {
         continue;
       }
       if (file_has_forbidden_text(entry.path(), no_spin)) {
-        return 2;
+        spin_violation = true;
       }
     }
   }
@@ -68,13 +80,14 @@ int main(int argc, char** argv) {
       "#include \"sblr_engine_envelope.hpp\"",
   };
   const std::filesystem::path server_root = argv[2];
+  bool server_violation = false;
   for (const auto& entry : std::filesystem::recursive_directory_iterator(server_root)) {
     if (!entry.is_regular_file() || !source_file(entry.path())) {
       continue;
     }
     if (file_has_forbidden_text(entry.path(), server_forbidden)) {
-      return 3;
+      server_violation = true;
     }
   }
-  return 0;
+  return server_violation ? 3 : spin_violation ? 2 : 0;
 }

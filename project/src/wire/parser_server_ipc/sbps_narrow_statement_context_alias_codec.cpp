@@ -23,7 +23,7 @@ constexpr const char* kFrameInvalid =
     "PARSER_SERVER_IPC.FRAME_PAYLOAD_INVALID";
 constexpr const char* kSessionMismatch =
     "PARSER_SERVER_IPC.SESSION_MISMATCH";
-constexpr const char* kTransactionStale = "MGA.TRANSACTION.STALE";
+constexpr const char* kTransactionInvalid = "MGA.TRANSACTION_INVALID";
 constexpr const char* kResourceExceeded =
     "PARSER_SERVER_IPC.RESOURCE_LIMIT_EXCEEDED";
 constexpr const char* kBudgetExceeded = "RESOURCE.BUDGET_EXCEEDED";
@@ -121,7 +121,7 @@ bool AnyNonzero(std::span<const byte> value) {
 
 bool ExactPair(const PsStatementContextUuidV1& uuid,
                std::uint64_t generation) {
-  return UuidPresent(uuid) == (generation != 0);
+  return generation == 0 ? !UuidPresent(uuid) : UuidV7(uuid);
 }
 
 bool AddWithin(std::size_t left,
@@ -240,9 +240,9 @@ bool ValidStatementTimestamp(std::string_view value) {
 
 PsStatementContextAliasDiagnosticV1 ValidateRequestContext(
     const PsNarrowStatementContextRequestValidationContextV1& context) {
-  if (!UuidPresent(context.expected_session_uuid) ||
+  if (!UuidV7(context.expected_session_uuid) ||
       context.expected_owning_local_transaction_id == 0 ||
-      !UuidPresent(context.expected_owning_transaction_uuid)) {
+      !UuidV7(context.expected_owning_transaction_uuid)) {
     return Error(PsStatementContextAliasStatusV1::invalid_argument,
                  kFrameInvalid, "validation_context",
                  "statement_context_request_authority_is_incomplete");
@@ -255,20 +255,20 @@ PsStatementContextAliasDiagnosticV1 ValidateRequest(
     const PsNarrowStatementContextRequestValidationContextV1& context) {
   auto outcome = ValidateRequestContext(context);
   if (!outcome.ok()) return outcome;
-  if (!UuidPresent(request.session_uuid) ||
+  if (!UuidV7(request.session_uuid) ||
       request.session_uuid != context.expected_session_uuid) {
     return Error(PsStatementContextAliasStatusV1::request_authority_mismatch,
                  kSessionMismatch, "session_uuid",
                  "schema7031_session_does_not_match_bound_frame");
   }
   if (request.owning_local_transaction_id == 0 ||
-      !UuidPresent(request.owning_transaction_uuid) ||
+      !UuidV7(request.owning_transaction_uuid) ||
       request.owning_local_transaction_id !=
           context.expected_owning_local_transaction_id ||
       request.owning_transaction_uuid !=
           context.expected_owning_transaction_uuid) {
     return Error(PsStatementContextAliasStatusV1::request_authority_mismatch,
-                 kTransactionStale, "owning_transaction",
+                 kTransactionInvalid, "owning_transaction",
                  "schema7031_transaction_selector_is_not_live_authority");
   }
   return Ok();
@@ -306,7 +306,7 @@ PsStatementContextAliasDiagnosticV1 ValidateFunctionProfiles(
     const auto uuid = LoadUuid(payload, *offset);
     *offset += 16;
     const auto executable = payload[(*offset)++];
-    if (!UuidPresent(uuid) || executable != 1 ||
+    if (!UuidV7(uuid) || executable != 1 ||
         !builtin_ids.insert(builtin_id).second ||
         !function_uuids.insert(uuid).second) {
       return Invalid(std::string(field),
@@ -337,11 +337,11 @@ PsStatementContextAliasDiagnosticV1 LocateAndValidateSchema7032Base(
   const auto statement_metadata_snapshot = LoadUuid(payload, 59);
   const auto catalog_epoch = LoadUuid(payload, 75);
   const auto security_context = LoadUuid(payload, 91);
-  if (!UuidPresent(statement_uuid) || local_transaction_id == 0 ||
-      !UuidPresent(transaction_uuid) || !UuidPresent(statement_snapshot) ||
-      !UuidPresent(statement_metadata_snapshot) ||
-      !UuidPresent(catalog_epoch) || !UuidPresent(security_context)) {
-    return Invalid("schema7032_base", "base_identity_is_zero");
+  if (!UuidV7(statement_uuid) || local_transaction_id == 0 ||
+      !UuidV7(transaction_uuid) || !UuidV7(statement_snapshot) ||
+      !UuidV7(statement_metadata_snapshot) ||
+      !UuidV7(catalog_epoch) || !UuidV7(security_context)) {
+    return Invalid("schema7032_base", "base_identity_is_not_system_uuidv7");
   }
 
   std::size_t offset = kSchema7032BasePrefixBytes;
@@ -354,8 +354,8 @@ PsStatementContextAliasDiagnosticV1 LocateAndValidateSchema7032Base(
     return Invalid("schema7032_base", "callable_identity_prefix_truncated");
   }
   for (std::size_t index = 0; index < 6; ++index) {
-    if (!UuidPresent(LoadUuid(payload, offset + index * 16))) {
-      return Invalid("schema7032_base", "callable_identity_is_zero");
+    if (!UuidV7(LoadUuid(payload, offset + index * 16))) {
+      return Invalid("schema7032_base", "callable_identity_is_not_system_uuidv7");
     }
   }
   offset += 6 * 16;
@@ -415,9 +415,8 @@ PsStatementContextAliasDiagnosticV1 LocateAndValidateSchema7032Base(
     const bool expected_nullable =
         (kind <= 10 && kind % 2 == 0) || (kind >= 14 && kind % 2 == 1);
     if (kind != expected_kind || slot != expected_slot ||
-        !UuidV7(descriptor_uuid) || !UuidPresent(type_uuid) ||
-        (type_uuid[6] & 0xf0u) == 0 ||
-        (type_uuid[8] & 0xc0u) != 0x80u || nullable > 1 ||
+        !UuidV7(descriptor_uuid) || !UuidV7(type_uuid) ||
+        (UuidPresent(collation_uuid) && !UuidV7(collation_uuid)) || nullable > 1 ||
         (nullable == 1) != expected_nullable || scale > precision ||
         !descriptor_uuids.insert(descriptor_uuid).second ||
         (kind >= 11 &&
@@ -436,9 +435,9 @@ PsStatementContextAliasDiagnosticV1 LocateAndValidateSchema7032Base(
       }
     }
   }
-  if (!UuidPresent(exact_type_uuids[11]) ||
-      !UuidPresent(exact_type_uuids[12]) ||
-      !UuidPresent(exact_type_uuids[13]) ||
+  if (!UuidV7(exact_type_uuids[11]) ||
+      !UuidV7(exact_type_uuids[12]) ||
+      !UuidV7(exact_type_uuids[13]) ||
       exact_type_uuids[11] == exact_type_uuids[12] ||
       exact_type_uuids[11] == exact_type_uuids[13] ||
       exact_type_uuids[12] == exact_type_uuids[13] ||
@@ -509,7 +508,7 @@ PsStatementContextAliasDiagnosticV1 ValidateSchema7032ExtensionV71(
   const auto diagnostic_generation = LoadU64(payload, extension + 244);
   const auto diagnostic_count = LoadU32(payload, extension + 252);
   const auto diagnostic_row_bytes = LoadU32(payload, extension + 256);
-  if (!UuidPresent(receipt_uuid) || !UuidPresent(literal_catalog_uuid) ||
+  if (!UuidV7(receipt_uuid) || !UuidV7(literal_catalog_uuid) ||
       literal_generation == 0 || security_epoch == 0 || resource_epoch == 0 ||
       extension_snapshot != statement_snapshot_uuid ||
       !ExactPair(prepared_uuid, prepared_generation) ||
@@ -571,8 +570,8 @@ PsStatementContextAliasDiagnosticV1 ValidateSchema7032ExtensionV71(
   const auto begin_wait = payload[trailer + 66];
   const auto commit_generation = LoadU64(payload, trailer + 80);
   const auto rollback_generation = LoadU64(payload, trailer + 104);
-  if (!UuidPresent(isolation_uuid) || isolation_generation == 0 ||
-      !UuidPresent(policy_uuid) || policy_generation == 0 ||
+  if (!UuidV7(isolation_uuid) || isolation_generation == 0 ||
+      !UuidV7(policy_uuid) || policy_generation == 0 ||
       begin_executor_generation == 0 || LoadU64(payload, trailer + 56) != 0 ||
       begin_read_mode < 1 || begin_read_mode > 2 || begin_scope < 1 ||
       begin_scope > 2 || begin_wait < 1 || begin_wait > 2 ||
@@ -606,7 +605,7 @@ PsStatementContextAliasDiagnosticV1 ValidateSchema7032ExtensionV71(
       LoadU32(payload, handle + 12) != 0 ||
       LoadUuid(payload, handle + 16) != owning_transaction_uuid ||
       LoadU64(payload, handle + 32) != owning_local_transaction_id ||
-      !UuidPresent(LoadUuid(payload, handle + 40)) ||
+      !UuidV7(LoadUuid(payload, handle + 40)) ||
       LoadUuid(payload, handle + 56) != isolation_uuid ||
       LoadU64(payload, handle + 72) != isolation_generation ||
       LoadUuid(payload, handle + 80) != policy_uuid ||

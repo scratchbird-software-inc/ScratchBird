@@ -10,6 +10,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
@@ -27,11 +28,9 @@ void Require(bool condition, const char* message) {
   }
 }
 
-std::string TypedKey(const std::string& index_uuid, unsigned char value) {
+std::string TypedKey(const api::EngineUuid& index_uuid, unsigned char value) {
   idx::IndexKeyEncodingComponent component;
-  const auto identity = uuid::ParseTypedUuid(UuidKind::object, index_uuid);
-  Require(identity.ok(), "test index identity invalid");
-  component.type_descriptor_uuid = identity.value;
+  component.type_descriptor_uuid = {UuidKind::object, index_uuid};
   component.payload = {0x80, 0, 0, 0, 0, 0, 0, value};
   const auto encoded = idx::EncodeIndexKey({component}, {});
   Require(encoded.ok(), "test typed key encoding failed");
@@ -46,8 +45,10 @@ std::string TypedKey(const std::string& index_uuid, unsigned char value) {
 
 int main() {
   api::CrudIndexRecord index;
-  index.index_uuid = "019f3000-0000-7000-8000-000000000201";
-  index.table_uuid = "019f3000-0000-7000-8000-000000000101";
+  index.index_uuid.bytes = {0x01, 0x9f, 0x30, 0, 0, 0, 0x70, 0,
+                           0x80, 0, 0, 0, 0, 0, 0x02, 0x01};
+  index.table_uuid.bytes = {0x01, 0x9f, 0x30, 0, 0, 0, 0x70, 0,
+                           0x80, 0, 0, 0, 0, 0, 0x01, 0x01};
   index.column_name = "id";
   index.key_envelopes = {"id", "unique"};
   index.unique = true;
@@ -69,8 +70,8 @@ int main() {
   const auto typed8 = TypedKey(index.index_uuid, 8);
   cache::DirectStoreAppendIndexEntryCache(context, index.table_uuid, 2, view,
                                         {entry("6", "6"), entry(typed8, "8")});
-  std::map<std::string, std::set<std::string>> keys;
-  std::map<std::string, std::map<std::string, api::CrudIndexEntryRecord>> entries;
+  std::map<api::EngineUuid, std::set<std::string>> keys;
+  std::map<api::EngineUuid, std::map<std::string, api::CrudIndexEntryRecord>> entries;
   Require(cache::DirectBuildAppendIndexConflictCaches(context, index.table_uuid, 2,
       {index}, {{{"id", "6"}}, {{"id", "8"}}, {{"id", "9"}}}, &keys, &entries),
       "mixed key cache lookup failed");
@@ -84,6 +85,35 @@ int main() {
   Require(keys[index.index_uuid] == std::set<std::string>{"6", "8"},
           "typed-only lookup did not return the complete logical key set");
 
+  // Cache identity is a tuple of raw UUIDs and authority generations, not a
+  // delimited text spelling. Every identity byte must distinguish owners.
+  for (const auto member : {&api::EngineRequestContext::database_uuid,
+                            &api::EngineRequestContext::transaction_uuid,
+                            &api::EngineRequestContext::session_uuid,
+                            &api::EngineRequestContext::principal_uuid,
+                            &api::EngineRequestContext::current_role_uuid}) {
+    for (std::size_t byte = 0; byte < 16; ++byte) {
+      auto changed = context;
+      (changed.*member).bytes[byte] ^= 0x80;
+      Require(!cache::DirectAppendIndexEntryCacheAvailable(
+                  changed, index.table_uuid, 2),
+              "binary owner byte aliased another cache");
+    }
+  }
+  for (std::size_t byte = 0; byte < 16; ++byte) {
+    auto changed = index.table_uuid;
+    changed.bytes[byte] ^= 0x80;
+    Require(!cache::DirectAppendIndexEntryCacheAvailable(context, changed, 2),
+            "binary table byte aliased another cache");
+  }
+  for (const auto member : {&api::EngineRequestContext::catalog_generation_id,
+                            &api::EngineRequestContext::security_epoch}) {
+    auto changed = context;
+    ++(changed.*member);
+    Require(!cache::DirectAppendIndexEntryCacheAvailable(
+                changed, index.table_uuid, 2), "stale authority epoch accepted");
+  }
+
   api::MgaExactIndexEntryAppendBatch batch;
   batch.index = index;
   batch.table_uuid = index.table_uuid;
@@ -95,6 +125,18 @@ int main() {
       {index}, {{{"id", "9"}}}, &keys, nullptr), "incremental lookup failed");
   Require(keys[index.index_uuid] == std::set<std::string>{"9"},
           "projection missed a newly appended typed key");
+  Require(!cache::DirectBuildAppendIndexConflictCaches(
+              context, index.table_uuid, 3, {index}, {}, nullptr, &entries),
+          "key-only projection falsely claimed complete entry lookup");
+  // Switching back to a materialized lookup must include the key-only append.
+  cache::DirectAppendIndexBatchesToCache(context, index.table_uuid, 3, 0,
+                                        {}, {}, true);
+  entries.clear();
+  Require(cache::DirectBuildAppendIndexConflictCaches(
+              context, index.table_uuid, 3, {index}, {}, nullptr, &entries) &&
+              entries[index.index_uuid].size() == 3 &&
+              entries[index.index_uuid].contains(TypedKey(index.index_uuid, 9)),
+          "entry lookup promotion omitted earlier key-only rows");
   keys.clear();
   Require(!cache::DirectBuildAppendIndexConflictCaches(context, index.table_uuid, 2,
       {index}, {}, &keys, nullptr), "stale row count accepted");
@@ -111,7 +153,17 @@ int main() {
 
   // Eviction after proof but before publication cannot turn an append delta
   // into a complete cache for a nonempty relation.
+  auto alternate_owner = context;
+  alternate_owner.session_uuid.bytes[15] = 1;
+  cache::DirectStoreAppendIndexEntryCache(alternate_owner, index.table_uuid, 1,
+                                        view, {entry("6", "6")});
+  Require(cache::DirectAppendIndexEntryCacheAvailable(
+              alternate_owner, index.table_uuid, 1),
+          "alternate owner cache was not stored");
   cache::DirectEvictAppendIndexEntryCache(context, index.table_uuid);
+  Require(!cache::DirectAppendIndexEntryCacheAvailable(
+              alternate_owner, index.table_uuid, 1),
+          "table eviction left another owner's cache live");
   cache::DirectAppendIndexBatchesToCache(context, index.table_uuid, 1, 1, {}, {});
   Require(!cache::DirectAppendIndexEntryCacheAvailable(context, index.table_uuid, 2),
           "cache loss certified an incomplete append delta");
@@ -130,6 +182,12 @@ int main() {
   Require(cache::DirectBuildAppendIndexConflictCaches(context, index.table_uuid, 1,
       {index}, {}, &keys, nullptr) && keys[index.index_uuid] == std::set<std::string>{"9"},
       "scalar cache empty-baseline rebuild failed");
+
+  cache::DirectAppendIndexEntriesToCache(
+      context, index.table_uuid, 1,
+      std::numeric_limits<std::uint64_t>::max(), {});
+  Require(!cache::DirectAppendIndexEntryCacheAvailable(context, index.table_uuid, 0),
+          "row-count overflow certified a cache");
 
   api::CrudTableRecord table;
   table.table_uuid = index.table_uuid;

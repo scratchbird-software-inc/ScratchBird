@@ -26,10 +26,10 @@ namespace scratchbird::engine::internal_api {
 // sole authority for finality and visibility.
 struct DmlTransactionalIndexEntryRequest {
   CrudIndexRecord index;
-  std::string table_uuid;
-  std::string row_uuid;
-  std::string version_uuid;
-  std::string predecessor_version_uuid;
+  EngineUuid table_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
+  EngineUuid predecessor_version_uuid;
   std::string key_value;
   std::string payload_value;
 };
@@ -49,6 +49,9 @@ struct DmlTransactionalIndexProviderResult {
 bool IsReleasedOrderedBtreeTransactionalFamily(const CrudIndexRecord& index);
 bool IsAdmittedMgaTransactionalIndexFamily(const CrudIndexRecord& index);
 
+// V2 framed SHA-256 evidence digest, not an issued UUID or finality authority.
+// Empty means invalid identity/cohort/kind or failed hashing. Allocation failure
+// propagates before callers append a mutation.
 std::string DmlTransactionalIndexMutationIdentity(
     const EngineRequestContext& context,
     const DmlTransactionalIndexEntryRequest& request,

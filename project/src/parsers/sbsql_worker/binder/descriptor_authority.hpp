@@ -7,8 +7,25 @@
 #include "core/datatypes/datatype_catalog_manifest.hpp"
 #include "wire/parser_server_ipc/parser_client_types.hpp"
 #include "core/uuid/uuid.hpp"
+#include <utility>
 
 namespace scratchbird::parser::sbsql {
+
+// Role-preserving binary cache key; names or formatted UUIDs are never keys.
+using NativeDescriptorIdentityKey = std::pair<core::platform::Uuid, core::platform::Uuid>;
+
+// Expected builtin identity only. This does not issue a descriptor or replace
+// the engine receipt/registry tuple checked by PreserveNativeDescriptorAuthority.
+inline std::optional<core::platform::Uuid> LookupNativeCanonicalTypeIdentity(
+    const core::datatypes::DatatypeCatalogManifest& manifest,
+    core::datatypes::CanonicalTypeId type) {
+  const auto row = core::datatypes::LookupDatatypeCatalogRow(manifest, type);
+  if (!row.ok() || row.manifest.descriptor_rows.size() != 1 ||
+      !row.manifest.descriptor_rows.front().descriptor_uuid.valid()) return std::nullopt;
+  const auto identity = row.manifest.descriptor_rows.front().descriptor_uuid.value;
+  if (!core::uuid::IsEngineIdentityUuid(identity)) return std::nullopt;
+  return identity;
+}
 
 // This is a consistency projection of an already acquired engine context,
 // never an issuer or an authorization check. The canonical dispatcher must

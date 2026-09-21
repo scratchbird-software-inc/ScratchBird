@@ -43,8 +43,10 @@ struct SortedBulkIndexMetadata {
 
 struct SortedBulkIndexRowInput {
   std::string encoded_key;
-  std::string row_uuid;
-  std::string version_uuid;
+  // Engine-owned identities stay binary16 through sort, reservation and page
+  // packing. Admission checks UUIDv7/RFC variant; key/payload data is separate.
+  scratchbird::core::platform::Uuid row_uuid;
+  scratchbird::core::platform::Uuid version_uuid;
   std::string payload_value;
   u64 source_ordinal = 0;
   bool null_key = false;
@@ -52,8 +54,8 @@ struct SortedBulkIndexRowInput {
 
 struct SortedBulkIndexEntry {
   std::string encoded_key;
-  std::string row_uuid;
-  std::string version_uuid;
+  scratchbird::core::platform::Uuid row_uuid;
+  scratchbird::core::platform::Uuid version_uuid;
   std::string payload_value;
   u64 source_ordinal = 0;
   u64 sorted_ordinal = 0;

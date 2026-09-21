@@ -10,6 +10,11 @@
 
 #include "api_types.hpp"
 #include "relational_type_descriptor.hpp"
+#include "relational_expression_record.hpp"
+#include "relational_window_invocation_record.hpp"
+#include "relational_window_definition_record.hpp"
+#include "relational_property_record.hpp"
+#include "relational_row_pattern_record.hpp"
 #include "catalog/sys_information_projection.hpp"
 #include "../../executor/descriptor_value_runtime.hpp"
 #include "../../executor/physical_node_abi.hpp"
@@ -49,68 +54,6 @@ enum class RelationalDagNodeKind : std::uint8_t {
   kTableFunctionInvoke,
 };
 
-enum class RelationalExpressionKind : std::uint8_t {
-  kLiteral = 1,
-  kParameter,
-  kIdentifier,
-  kFunctionCall,
-  kUnary,
-  kBinary,
-  kParenthesized,
-};
-
-enum class RelationalLiteralKind : std::uint8_t {
-  kNumeric = 1,
-  kString,
-  kBinary,
-  kTemporal,
-  kUuid,
-  kBoolean,
-  kNull,
-  kDefault,
-  kDocument,
-  kVector,
-  kRegex,
-  kRange,
-};
-
-struct RelationalExpressionRecord {
-  std::uint32_t expression_id{0};
-  RelationalExpressionKind expression_kind{RelationalExpressionKind::kLiteral};
-  std::vector<std::uint32_t> child_expression_ids;
-  std::uint32_t result_descriptor_id{0};
-  std::optional<EngineUuid> function_uuid;
-  std::optional<EngineUuid> bound_name_uuid;
-  std::optional<RelationalLiteralKind> literal_kind;
-  std::optional<std::string> operator_name;
-  std::optional<std::string> literal_or_parameter_ref;
-  struct LiteralTypedValueV1 {
-    EngineUuid descriptor_uuid;
-    std::uint64_t descriptor_generation{0};
-    std::string value_state;
-    std::vector<std::uint8_t> canonical_value_bytes;
-    std::array<std::uint8_t,32> canonical_value_sha256{};
-  };
-  std::optional<LiteralTypedValueV1> literal_typed_value_v1;
-  struct ParameterTypedValueV1 {
-    EngineUuid descriptor_uuid;
-    std::uint64_t descriptor_generation{0};
-    std::string value_state;
-    std::vector<std::uint8_t> canonical_value_bytes;
-    std::array<std::uint8_t,32> canonical_value_sha256{};
-  };
-  std::optional<ParameterTypedValueV1> parameter_typed_value_v1;
-  // query.execute-1.1 keeps d718/gen1 in the ordinary descriptor table.  This
-  // structural marker carries only the exact SBXN occurrence/node/handle
-  // coordinates required to resolve the receipt-owned contextual lease.
-  struct ContextualTextLiteralReferenceV2 {
-    std::uint64_t literal_occurrence{0};
-    std::uint64_t node_id{0};
-    std::uint32_t literal_descriptor_handle{0};
-  };
-  std::optional<ContextualTextLiteralReferenceV2>
-      contextual_text_literal_v2;
-};
 
 struct RelationalOutputRecord {
   std::uint32_t output_id{0};
@@ -133,193 +76,10 @@ struct RelationalGroupingSetRecord {
   std::vector<std::uint32_t> expression_ids;
 };
 
-enum class RelationalWindowFrameUnit : std::uint8_t {
-  kRows = 1,
-  kRange,
-  kGroups,
-};
 
-enum class RelationalWindowFrameBoundKind : std::uint8_t {
-  kUnboundedPreceding = 1,
-  kPreceding,
-  kCurrentRow,
-  kFollowing,
-  kUnboundedFollowing,
-};
 
-enum class RelationalWindowFrameExclusion : std::uint8_t {
-  kNoOthers = 1,
-  kCurrentRow,
-  kGroup,
-  kTies,
-};
 
-struct RelationalWindowFrameBoundRecord {
-  RelationalWindowFrameBoundKind bound_kind{
-      RelationalWindowFrameBoundKind::kCurrentRow};
-  std::optional<std::uint32_t> offset_expression_id;
-};
 
-enum class RelationalPropertyKind : std::uint8_t {
-  kOrdering = 1,
-  kGrouping,
-  kPartitioning,
-  kWindow,
-  kExpressionEquivalence,
-  kDistribution,
-  kUniqueness,
-  kMaterialization,
-  kRewindability,
-  kVectorOrdering,
-  kTextScoreOrdering,
-  kTimeOrdering,
-  kLocality,
-  kSecurityVisibility,
-};
-
-enum class RelationalPropertyDistributionKind : std::uint8_t {
-  kNone = 0,
-  kSingle,
-  kReplicated,
-  kHashPartitioned,
-  kRangePartitioned,
-  kRoundRobin,
-  kOwnerRouted,
-};
-
-enum class RelationalPropertyMaterializationKind : std::uint8_t {
-  kNone = 0,
-  kStreaming,
-  kMaterialized,
-  kSpillBacked,
-};
-
-enum class RelationalPropertyRewindabilityKind : std::uint8_t {
-  kNone = 0,
-  kForwardOnly,
-  kRewindable,
-  kMarkRestore,
-};
-
-enum class RelationalPropertyLocalityKind : std::uint8_t {
-  kNone = 0,
-  kLocalProcess,
-  kLocalNode,
-  kFilespace,
-  kShardOwner,
-  kRemoteAllowed,
-};
-
-enum class RelationalPropertySortDirection : std::uint8_t {
-  kAscending = 1,
-  kDescending,
-};
-
-enum class RelationalPropertyNullPlacement : std::uint8_t {
-  kNullsFirst = 1,
-  kNullsLast,
-};
-
-struct RelationalPropertyOrderingTerm {
-  std::uint32_t expression_id{0};
-  RelationalPropertySortDirection direction{
-      RelationalPropertySortDirection::kAscending};
-  RelationalPropertyNullPlacement null_placement{
-      RelationalPropertyNullPlacement::kNullsLast};
-  EngineUuid collation_uuid;
-};
-
-struct RelationalWindowDefinitionRecord {
-  std::uint32_t window_id{0};
-  std::uint32_t relation_node_id{0};
-  std::optional<std::string> canonical_name_key;
-  std::optional<std::uint32_t> inherited_window_id;
-  std::vector<std::uint32_t> partition_expression_ids;
-  std::vector<RelationalPropertyOrderingTerm> ordering_terms;
-  std::optional<RelationalWindowFrameUnit> frame_unit;
-  std::optional<RelationalWindowFrameBoundRecord> frame_start;
-  std::optional<RelationalWindowFrameBoundRecord> frame_end;
-  RelationalWindowFrameExclusion exclusion{
-      RelationalWindowFrameExclusion::kNoOthers};
-};
-
-struct RelationalWindowInvocationRecord {
-  std::uint32_t invocation_id{0};
-  std::uint32_t relation_node_id{0};
-  std::uint32_t function_expression_id{0};
-  std::uint32_t window_definition_id{0};
-  std::uint16_t function_abi_version{0};
-  std::string builtin_id;
-  EngineUuid function_uuid;
-  std::uint32_t result_descriptor_id{0};
-  std::string output_name_utf8;
-  std::vector<std::uint32_t> argument_expression_ids;
-};
-
-enum class RelationalRowPatternRowsPerMatch : std::uint8_t {
-  kOne = 1,
-  kAll,
-};
-
-enum class RelationalRowPatternAfterMatchSkip : std::uint8_t {
-  kPastLastRow = 1,
-  kToNextRow,
-  kToFirstVariable,
-  kToLastVariable,
-};
-
-struct RelationalRowPatternVariableRecord {
-  std::string canonical_name_key;
-  std::uint32_t minimum_occurrences{1};
-  std::optional<std::uint32_t> maximum_occurrences;
-  bool reluctant{false};
-  std::optional<std::uint32_t> define_expression_id;
-  bool define_always_true{false};
-};
-
-struct RelationalRowPatternRecord {
-  std::uint32_t pattern_id{0};
-  std::uint32_t relation_node_id{0};
-  std::vector<std::uint32_t> partition_expression_ids;
-  std::vector<RelationalPropertyOrderingTerm> ordering_terms;
-  std::vector<RelationalRowPatternVariableRecord> variables;
-  std::vector<std::uint32_t> measure_expression_ids;
-  RelationalRowPatternRowsPerMatch rows_per_match{
-      RelationalRowPatternRowsPerMatch::kOne};
-  RelationalRowPatternAfterMatchSkip after_match_skip{
-      RelationalRowPatternAfterMatchSkip::kToNextRow};
-  std::optional<std::string> skip_target_key;
-  std::uint32_t maximum_partition_rows{0};
-  std::uint32_t maximum_active_states{0};
-  std::uint32_t maximum_output_rows{0};
-  bool stable_row_identity_tie_break_allowed{false};
-};
-
-struct RelationalPropertyRecord {
-  // `relational_property_v1` carries the first six generic fields and is
-  // retained for ordering/grouping/partitioning/window/equivalence plans.
-  // `relational_property_v2` appends the four specialized enum values,
-  // locality UUID, security-context UUID, and visibility generation so the
-  // complete optimizer property state survives the SBLR boundary.
-  EngineUuid property_uuid;
-  RelationalPropertyKind property_kind{RelationalPropertyKind::kOrdering};
-  std::uint32_t origin_node_id{0};
-  std::vector<std::uint32_t> expression_ids;
-  std::vector<RelationalPropertyOrderingTerm> ordering_terms;
-  std::vector<EngineUuid> dependency_property_uuids;
-  EngineUuid window_frame_descriptor_uuid;
-  RelationalPropertyDistributionKind distribution_kind{
-      RelationalPropertyDistributionKind::kNone};
-  RelationalPropertyMaterializationKind materialization_kind{
-      RelationalPropertyMaterializationKind::kNone};
-  RelationalPropertyRewindabilityKind rewindability_kind{
-      RelationalPropertyRewindabilityKind::kNone};
-  RelationalPropertyLocalityKind locality_kind{
-      RelationalPropertyLocalityKind::kNone};
-  EngineUuid locality_uuid;
-  EngineUuid security_visibility_context_uuid;
-  std::uint64_t security_visibility_generation{0};
-};
 
 struct RelationalDagNode {
   std::uint32_t node_id{0};

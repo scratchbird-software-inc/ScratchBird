@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction/transaction_api.hpp"
+#include "transaction/named_lock_key.hpp"
+#include "../../statement_snapshot_acquisition_guard.hpp"
 #include "whole_store_crash_injection.hpp"
 
 #include "api_diagnostics.hpp"
@@ -26,7 +28,6 @@
 #include "transaction_prepare.hpp"
 #include "transaction_state.hpp"
 #include "uuid.hpp"
-#include "write_path_batching.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -42,6 +43,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
@@ -53,14 +55,8 @@ using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::TypedUuid;
 using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::GenerateDurableEngineIdentityV7;
-using scratchbird::core::uuid::GenerateEngineIdentityV7;
-using scratchbird::core::uuid::ParseTypedUuid;
-using scratchbird::core::uuid::UuidToString;
 using scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase;
 using scratchbird::storage::database::PersistLocalTransactionInventoryToDatabase;
-using scratchbird::storage::database::WritePathBatchingRequest;
-using scratchbird::storage::database::WritePathBatchingResult;
-using scratchbird::storage::database::ExecuteDurabilityWritePathBatch;
 using scratchbird::transaction::mga::CommitLocalTransaction;
 using scratchbird::transaction::mga::CompletePreparedLocalTransactionCommit;
 using scratchbird::transaction::mga::CompletePreparedLocalTransactionRollback;
@@ -530,7 +526,7 @@ void ClassifyCommitRefusalBeforeInventoryMutation(
   if (exact_entry != nullptr) {
     result->local_transaction_id = exact_entry->identity.local_id.value;
     result->transaction_uuid =
-        UuidToString(exact_entry->identity.transaction_uuid.value);
+        exact_entry->identity.transaction_uuid.value;
   }
   result->evidence.push_back(
       {"mga_finality_state", "not_committed_by_engine_inventory"});
@@ -551,7 +547,7 @@ void ClassifyRollbackRefusalBeforeInventoryMutation(
   if (exact_entry != nullptr) {
     result->local_transaction_id = exact_entry->identity.local_id.value;
     result->transaction_uuid =
-        UuidToString(exact_entry->identity.transaction_uuid.value);
+        exact_entry->identity.transaction_uuid.value;
   }
   result->evidence.push_back(
       {"mga_finality_state", "not_rolled_back_by_engine_inventory"});
@@ -570,7 +566,7 @@ void ClassifyCommitInventoryPersistenceOutcomeUnknown(
   result->post_inventory_secondary_failure = false;
   result->local_transaction_id = exact_entry.identity.local_id.value;
   result->transaction_uuid =
-      UuidToString(exact_entry.identity.transaction_uuid.value);
+      exact_entry.identity.transaction_uuid.value;
   result->evidence.push_back(
       {"mga_finality_state", "inventory_persistence_outcome_unknown"});
   result->evidence.push_back({"engine_finality_known", "false"});
@@ -588,7 +584,7 @@ void ClassifyRollbackInventoryPersistenceOutcomeUnknown(
   result->post_inventory_secondary_failure = false;
   result->local_transaction_id = exact_entry.identity.local_id.value;
   result->transaction_uuid =
-      UuidToString(exact_entry.identity.transaction_uuid.value);
+      exact_entry.identity.transaction_uuid.value;
   result->evidence.push_back(
       {"mga_finality_state", "inventory_persistence_outcome_unknown"});
   result->evidence.push_back({"engine_finality_known", "false"});
@@ -674,197 +670,40 @@ bool RequestOptionBool(const EngineApiRequest& request, const std::string& prefi
   return fallback;
 }
 
-std::uint64_t RequestOptionU64(const EngineApiRequest& request,
-                               const std::string& prefix,
-                               std::uint64_t fallback) {
-  const auto value = RequestOptionValue(request, prefix);
-  return IsDigits(value) ? ParseU64(value) : fallback;
+using scratchbird::storage::database::InventoryPageSyncPolicy;
+using scratchbird::storage::database::InventoryPublicationIo;
+
+EngineApiDiagnostic ValidateInventoryPublicationPolicy(
+    const EngineApiRequest& request, InventoryPageSyncPolicy policy,
+    const std::string& operation_id) {
+  if (policy != InventoryPageSyncPolicy::batched &&
+      policy != InventoryPageSyncPolicy::per_page) {
+    return MakeInvalidRequestDiagnostic(operation_id, "inventory_page_sync_policy_invalid");
+  }
+  for (const auto& option : request.option_envelopes) {
+    if (StartsWith(option, "commit.durability_write_batching")) {
+      return MakeInvalidRequestDiagnostic(operation_id,
+          "benchmark_options_are_not_inventory_publication_authority");
+    }
+  }
+  return MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
 }
 
-TypedUuid ParseOrGenerateTypedUuid(UuidKind kind,
-                                   const std::string& text,
-                                   std::uint64_t salt) {
-  if (!text.empty()) {
-    const auto parsed = ParseTypedUuid(kind, text);
-    if (parsed.ok()) { return parsed.value; }
-  }
-  const auto generated = GenerateEngineIdentityV7(kind, CurrentUnixMillis() + salt);
-  return generated.ok() ? generated.value : TypedUuid{};
-}
-
-struct CommitDurabilityBatchDecision {
-  bool requested = false;
-  bool required = false;
-  WritePathBatchingResult result;
-};
-
-CommitDurabilityBatchDecision EvaluateCommitDurabilityBatching(
-    const EngineCommitTransactionRequest& request,
-    const TransactionInventoryEntry& committing_entry) {
-  CommitDurabilityBatchDecision decision;
-  std::string mode =
-      NormalizedOptionText(RequestOptionValue(request,
-                                             "commit.durability_write_batching:"));
-  if (mode.empty() && RequestOptionBool(
-                          request,
-                          "commit.durability_write_batching.enabled:",
-                          false)) {
-    mode = "enabled";
-  }
-  if (mode.empty() || mode == "off" || mode == "disabled" || mode == "false") {
-    return decision;
-  }
-
-  decision.requested = true;
-  decision.required =
-      mode == "required" ||
-      RequestOptionBool(request,
-                        "commit.durability_write_batching.required:",
-                        false);
-
-  WritePathBatchingRequest batch;
-  batch.route_label = RequestOptionValue(
-      request,
-      "commit.durability_write_batching.route_label:");
-  if (batch.route_label.empty()) { batch.route_label = "transaction.commit"; }
-  const auto scratch =
-      RequestOptionValue(request,
-                         "commit.durability_write_batching.scratch:");
-  batch.scratch_directory =
-      scratch.empty()
-          ? std::filesystem::temp_directory_path() /
-                ("scratchbird_commit_durability_batch_" +
-                 std::to_string(request.context.local_transaction_id))
-          : std::filesystem::path(scratch);
-  batch.database_uuid = ParseOrGenerateTypedUuid(
-      UuidKind::database,
-      request.context.database_uuid,
-      request.context.local_transaction_id + 1000);
-  batch.filespace_uuid = ParseOrGenerateTypedUuid(
-      UuidKind::filespace,
-      RequestOptionValue(request,
-                         "commit.durability_write_batching.filespace_uuid:"),
-      request.context.local_transaction_id + 2000);
-  batch.transaction_uuid = ParseOrGenerateTypedUuid(
-      UuidKind::transaction,
-      request.context.transaction_uuid.is_nil()
-          ? UuidToString(committing_entry.identity.transaction_uuid.value)
-          : request.context.transaction_uuid,
-      request.context.local_transaction_id + 3000);
-  batch.local_transaction_id = request.context.local_transaction_id;
-  batch.batching_generation = RequestOptionU64(
-      request,
-      "commit.durability_write_batching.generation:",
-      std::max<std::uint64_t>(1, request.context.local_transaction_id));
-  batch.expected_batching_generation = RequestOptionU64(
-      request,
-      "commit.durability_write_batching.expected_generation:",
-      batch.batching_generation);
-  batch.dirty_page_count = RequestOptionU64(
-      request,
-      "commit.durability_write_batching.dirty_pages:",
-      4);
-  batch.page_generation = RequestOptionU64(
-      request,
-      "commit.durability_write_batching.page_generation:",
-      batch.batching_generation + 1);
-  batch.extent_page_count = RequestOptionU64(
-      request,
-      "commit.durability_write_batching.extent_pages:",
-      batch.dirty_page_count == 0 ? 1 : batch.dirty_page_count);
-  batch.authority.engine_mga_tip_authoritative =
-      !RequestOptionBool(request,
-                         "commit.durability_write_batching.mga_authority_false:",
-                         false);
-  batch.authority.durable_transaction_inventory_proven =
-      !RequestOptionBool(request,
-                         "commit.durability_write_batching.inventory_unproven:",
-                         false);
-  batch.authority.parser_client_or_reference_write_batch_authority =
-      RequestOptionBool(request,
-                        "commit.durability_write_batching.parser_authority:",
-                        false);
-  batch.authority.batch_metadata_finality_or_visibility_authority =
-      RequestOptionBool(request,
-                        "commit.durability_write_batching.metadata_finality_authority:",
-                        false);
-  batch.authority.batch_metadata_recovery_authority =
-      RequestOptionBool(request,
-                        "commit.durability_write_batching.metadata_recovery_authority:",
-                        false);
-  batch.authority.recovery_from_batch_metadata_alone =
-      RequestOptionBool(request,
-                        "commit.durability_write_batching.metadata_only_recovery:",
-                        false);
-  batch.runtime_enabled = !RequestOptionBool(
-      request,
-      "commit.durability_write_batching.runtime_disabled:",
-      false);
-  batch.dirty_page_accounting_available = !RequestOptionBool(
-      request,
-      "commit.durability_write_batching.dirty_accounting_missing:",
-      false);
-  batch.extent_allocation_matches = !RequestOptionBool(
-      request,
-      "commit.durability_write_batching.extent_mismatch:",
-      false);
-  batch.fsync_open_proof_available = !RequestOptionBool(
-      request,
-      "commit.durability_write_batching.fsync_open_missing:",
-      false);
-  batch.crash_reopen_recovery_proof_available = !RequestOptionBool(
-      request,
-      "commit.durability_write_batching.recovery_proof_missing:",
-      false);
-  batch.exact_fallback_available =
-      RequestOptionBool(request,
-                        "commit.durability_write_batching.exact_fallback:",
-                        true);
-  batch.resource_pressure = RequestOptionBool(
-      request,
-      "commit.durability_write_batching.resource_pressure:",
-      false);
-  batch.expected_state_hash = RequestOptionValue(
-      request,
-      "commit.durability_write_batching.expected_state_hash:");
-
-  decision.result = ExecuteDurabilityWritePathBatch(batch);
-  return decision;
-}
-
-void AppendCommitDurabilityBatchingEvidence(
-    EngineCommitTransactionResult* result,
-    const CommitDurabilityBatchDecision& decision) {
-  if (!decision.requested) { return; }
-  const auto& batch = decision.result;
-  result->evidence.push_back({"commit_durability_batching",
-                              batch.ok ? "accepted" :
-                                         (batch.fallback_used ? "fallback" :
-                                                              "refused")});
-  result->evidence.push_back({"commit_durability_batching_required",
-                              decision.required ? "true" : "false"});
-  result->evidence.push_back({"commit_durability_batching_diagnostic",
-                              batch.diagnostic_code});
-  result->evidence.push_back({"commit_durability_batching_fallback_reason",
-                              batch.fallback_reason});
-  result->evidence.push_back({"commit_durability_batching_batched_flushes",
-                              std::to_string(batch.batched_flush_operations)});
-  result->evidence.push_back({"commit_durability_batching_flushed_pages",
-                              std::to_string(batch.flushed_pages)});
-  result->evidence.push_back({"commit_durability_batching_state_hash",
-                              batch.state_hash});
-  for (const auto& item : batch.evidence) {
-    result->evidence.push_back({"commit_durability_batching_evidence", item});
-  }
-}
-
-std::uint64_t DirtyPagesFencedForCommit(bool read_only_commit,
-                                        const CommitDurabilityBatchDecision& decision) {
-  if (read_only_commit) return 0;
-  if (decision.requested && decision.result.flushed_pages != 0) {
-    return decision.result.flushed_pages;
-  }
-  return 1;
+void AppendInventoryPublicationEvidence(
+    EngineCommitTransactionResult* result, const InventoryPublicationIo& io) {
+  result->inventory_publication_io = io;
+  result->evidence.push_back({"inventory_publication_io_complete",
+                             io.complete ? "true" : "false"});
+  if (!io.complete) return;
+  result->evidence.push_back({"inventory_database_uuid", io.database_uuid});
+  result->evidence.push_back({"inventory_filespace_uuid", io.filespace_uuid});
+  result->evidence.push_back({"inventory_page_sync_policy",
+      io.sync_policy == InventoryPageSyncPolicy::batched ? "batched" : "per_page"});
+  result->evidence.push_back({"inventory_generation", std::to_string(io.inventory_generation)});
+  result->evidence.push_back({"inventory_publications", std::to_string(io.publications)});
+  result->evidence.push_back({"inventory_page_body_writes", std::to_string(io.page_body_writes)});
+  result->evidence.push_back({"inventory_body_bytes_written", std::to_string(io.body_bytes_written)});
+  result->evidence.push_back({"inventory_page_sync_calls", std::to_string(io.page_sync_calls)});
 }
 
 void AppendIparTransactionBoundaryTelemetry(
@@ -872,21 +711,22 @@ void AppendIparTransactionBoundaryTelemetry(
     std::string boundary_kind,
     std::uint64_t transaction_inventory_fences,
     std::uint64_t visibility_rechecks,
-    std::uint64_t dirty_pages_fenced) {
+    std::optional<std::uint64_t> dirty_pages_fenced) {
   if (evidence == nullptr) return;
   evidence->push_back({"ipar_transaction_boundary", std::move(boundary_kind)});
   evidence->push_back({"transaction_inventory_fences",
                        std::to_string(transaction_inventory_fences)});
   evidence->push_back({"visibility_rechecks",
                        std::to_string(visibility_rechecks)});
-  evidence->push_back({"dirty_pages_fenced",
-                       std::to_string(dirty_pages_fenced)});
+  evidence->push_back({"dirty_pages_fenced_observed",
+                       dirty_pages_fenced.has_value() ? "true" : "false"});
+  if (dirty_pages_fenced.has_value()) {
+    evidence->push_back({"dirty_pages_fenced", std::to_string(*dirty_pages_fenced)});
+  }
   evidence->push_back({"ipar_transaction_boundary_authority",
                        "durable_mga_transaction_inventory"});
   evidence->push_back({"ipar_visibility_authority",
                        "mga_transaction_inventory_snapshot"});
-  evidence->push_back({"ipar_dirty_page_fence_authority",
-                       "engine_commit_inventory_fence"});
 }
 
 std::string ProfileValue(const EngineProfileSet& profiles, const std::string& prefix) {
@@ -1095,33 +935,11 @@ std::uint64_t ParseU64OrZero(const std::string& value) {
   return ParseU64(value);
 }
 
-std::string DecodeSbsqlStringLiteral(std::string value) {
-  if (value.size() < 2 || value.front() != '\'' || value.back() != '\'') {
-    return value;
-  }
-  std::string decoded;
-  decoded.reserve(value.size() - 2);
-  for (std::size_t index = 1; index + 1 < value.size(); ++index) {
-    if (value[index] == '\'' && index + 1 < value.size() - 1 &&
-        value[index + 1] == '\'') {
-      decoded.push_back('\'');
-      ++index;
-    } else {
-      decoded.push_back(value[index]);
-    }
-  }
-  return decoded;
-}
-
 std::string NamedLockResourceKey(const EngineApiRequest& request) {
   std::string descriptor = RequestOptionValue(request, "lock_descriptor:");
   if (descriptor.empty()) descriptor = RequestOptionValue(request, "lock_target:");
   if (descriptor.empty()) descriptor = RequestOptionValue(request, "lock_name:");
-  descriptor = DecodeSbsqlStringLiteral(std::move(descriptor));
-  if (descriptor.empty()) return {};
-  std::string database = request.context.database_uuid;
-  if (database.empty()) database = "database:unknown";
-  return "named:" + database + ":" + descriptor;
+  return MakeNamedLockBinaryKey(request.context.database_uuid, descriptor);
 }
 
 std::string TableLockModeForRequest(const EngineApiRequest& request) {
@@ -1172,11 +990,11 @@ bool EngineOwnedTableFenceAuthorized(const EngineLockTableRequest& request) {
 
 template <typename TResult>
 void AddNamedLockDecisionEvidence(TResult* result,
-                                  const std::string& resource_key,
+                                  const std::string& key_fingerprint,
                                   const std::string& decision,
                                   std::uint64_t blocking_transaction = 0) {
   result->evidence.push_back({"lock_decision", decision});
-  result->evidence.push_back({"lock_resource_key", resource_key});
+  result->evidence.push_back({"lock_resource_key_sha256", key_fingerprint});
   if (blocking_transaction != 0) {
     result->evidence.push_back({"blocking_local_transaction_id",
                                 std::to_string(blocking_transaction)});
@@ -1462,18 +1280,6 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
       MaxCommittedLocalTransactionId(loaded.inventory);
   observation.transaction_timestamp = transaction_timestamp;
   observation.state = EngineTransactionInventoryState::unknown;
-  const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, begun.inventory);
-  if (!persisted.ok()) {
-    auto result = MakeTxnError<EngineBeginTransactionResult>(
-        request.context,
-        operation_id,
-        DiagnosticFromMGA(persisted.diagnostic,
-                          "SB-MGA-TXN-INV-PERSIST-FAILED",
-                          "mga.transaction_inventory.persist_failed"));
-    result.inventory_observation = std::move(observation);
-    return result;
-  }
-
   auto result = MakeTxnOk<EngineBeginTransactionResult>(request.context, operation_id);
   observation.state = EngineTransactionInventoryState::active;
   result.inventory_observation = std::move(observation);
@@ -1513,6 +1319,21 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
         {"transaction_lock_timeout_ms",
          std::to_string(begin_policy.lock_timeout_millis)});
   }
+  // No allocating result/evidence work may follow the successful MGA barrier.
+  static_assert(std::is_nothrow_move_constructible_v<EngineBeginTransactionResult>);
+  const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, begun.inventory);
+  if (!persisted.ok()) {
+    auto failure = MakeTxnError<EngineBeginTransactionResult>(
+        request.context,
+        operation_id,
+        DiagnosticFromMGA(persisted.diagnostic,
+                          "SB-MGA-TXN-INV-PERSIST-FAILED",
+                          "mga.transaction_inventory.persist_failed"));
+    failure.inventory_observation = std::move(result.inventory_observation);
+    failure.inventory_observation.state = EngineTransactionInventoryState::unknown;
+    return failure;
+  }
+
   return result;
 }
 
@@ -1583,20 +1404,14 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
                           "SB-MGA-SNAPSHOT-VECTOR-PUBLISH-FAILED",
                           "mga.snapshot_vector.publish_failed"));
   }
+  scratchbird::engine::StatementSnapshotAcquisitionGuard snapshot_owner(
+      published.descriptor.snapshot_uuid);
   const auto snapshot_uuid = published.descriptor.snapshot_uuid.value;
-  if (!RegisterStatementSnapshotBinding(
-          {request.context.database_path,
-           canonical_statement_uuid,
-           snapshot_uuid,
-           published.descriptor.owning_transaction_uuid,
-           published.descriptor.owning_transaction})) {
-    RevokePublishedSnapshotVector(published.descriptor.snapshot_uuid);
-    return MakeTxnError<EnginePublishStatementSnapshotResult>(
-        request.context,
-        operation_id,
-        MakeInvalidRequestDiagnostic(operation_id,
-                                     "statement_snapshot_binding_collision"));
-  }
+  StatementSnapshotBinding binding{request.context.database_path,
+                                   canonical_statement_uuid,
+                                   snapshot_uuid,
+                                   published.descriptor.owning_transaction_uuid,
+                                   published.descriptor.owning_transaction};
 
   auto result = MakeTxnOk<EnginePublishStatementSnapshotResult>(
       request.context, operation_id);
@@ -1622,6 +1437,15 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
       {"statement_snapshot_publication_inventory_next",
        std::to_string(result.snapshot_vector
                           .publication_inventory_next_local_transaction_id)});
+  static_assert(std::is_nothrow_move_constructible_v<EnginePublishStatementSnapshotResult>);
+  if (!RegisterStatementSnapshotBinding(std::move(binding))) {
+    return MakeTxnError<EnginePublishStatementSnapshotResult>(
+        request.context,
+        operation_id,
+        MakeInvalidRequestDiagnostic(operation_id,
+                                     "statement_snapshot_binding_collision"));
+  }
+  snapshot_owner.TransferToOwner();
   return result;
 }
 
@@ -1847,31 +1671,20 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
       committing_entry->state == TransactionState::prepared;
   std::uint64_t temporary_deleted_rows = 0;
   std::uint64_t temporary_reclaimed_large_values = 0;
-  CommitDurabilityBatchDecision durability_batch;
+  const auto publication_policy = ValidateInventoryPublicationPolicy(
+      request, request.inventory_page_sync_policy, operation_id);
+  if (publication_policy.error) {
+    auto result = MakeTxnError<EngineCommitTransactionResult>(
+        request.context, operation_id, publication_policy);
+    ClassifyCommitRefusalBeforeInventoryMutation(&result, &*committing_entry);
+    return trace_and_return(std::move(result));
+  }
   if (!read_only_commit && !prepared_commit) {
     const auto deferred_constraints = ValidateDeferredTransactionConstraints(request.context);
     mark_phase("validate_deferred_constraints");
     if (deferred_constraints.error) {
       auto result = MakeTxnError<EngineCommitTransactionResult>(
           request.context, operation_id, deferred_constraints);
-      ClassifyCommitRefusalBeforeInventoryMutation(
-          &result, &*committing_entry);
-      return trace_and_return(std::move(result));
-    }
-    durability_batch = EvaluateCommitDurabilityBatching(request, *committing_entry);
-    mark_phase("evaluate_commit_durability_batching");
-    if (durability_batch.requested && !durability_batch.result.ok &&
-        (durability_batch.required || durability_batch.result.fail_closed)) {
-      auto result = MakeTxnError<EngineCommitTransactionResult>(
-          request.context,
-          operation_id,
-          MakeEngineApiDiagnostic(
-              durability_batch.result.diagnostic_code.empty()
-                  ? "SB-IPAR-COMMIT-DURABILITY-BATCHING-REFUSED"
-                  : durability_batch.result.diagnostic_code,
-              "transaction.commit.durability_batching_refused",
-              durability_batch.result.fallback_reason,
-              true));
       ClassifyCommitRefusalBeforeInventoryMutation(
           &result, &*committing_entry);
       return trace_and_return(std::move(result));
@@ -1899,7 +1712,7 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
                             "phase=before_inventory_commit"));
     result.local_transaction_id = committing_entry->identity.local_id.value;
     result.transaction_uuid =
-        UuidToString(committing_entry->identity.transaction_uuid.value);
+        committing_entry->identity.transaction_uuid.value;
     static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
     static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
     result.commit_finality_state = "refused_before_inventory_commit";
@@ -1961,7 +1774,8 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
       whole_store_crash_scope(!read_only_commit &&
                                   !publication_barrier.mutations.empty(),
                               request.context.local_transaction_id);
-  const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, committed.inventory);
+  const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, committed.inventory,
+                                                                   request.inventory_page_sync_policy);
   mark_phase("persist_transaction_inventory");
   if (!persisted.ok()) {
     auto result = MakeTxnError<EngineCommitTransactionResult>(
@@ -1979,7 +1793,7 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
       committed.entry.identity.local_id);
   auto result = MakeTxnOk<EngineCommitTransactionResult>(request.context, operation_id);
   result.local_transaction_id = committed.entry.identity.local_id.value;
-  result.transaction_uuid = UuidToString(committed.entry.identity.transaction_uuid.value);
+  result.transaction_uuid = committed.entry.identity.transaction_uuid.value;
   static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
   result.commit_finality_state = "committed_by_engine_inventory";
@@ -2014,8 +1828,8 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
       "commit",
       1,
       1,
-      DirtyPagesFencedForCommit(read_only_commit, durability_batch));
-  AppendCommitDurabilityBatchingEvidence(&result, durability_batch);
+      std::nullopt);
+  AppendInventoryPublicationEvidence(&result, persisted.publication_io);
   mark_phase("shape_commit_result");
   return trace_and_return(std::move(result));
 }
@@ -2139,6 +1953,12 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   }
   const bool read_only_finalize =
       current_entry->state == TransactionState::read_only_active;
+  const auto publication_policy = ValidateInventoryPublicationPolicy(
+      request, request.inventory_page_sync_policy, operation_id);
+  if (publication_policy.error) {
+    return MakeTxnError<EngineAutocommitBoundaryResult>(
+        request.context, operation_id, publication_policy);
+  }
   if (request.statement_succeeded &&
       (!PrepareDmlUpdateTransactionFinalityV1(request.context) ||
        !PrepareDmlDeleteTransactionFinalityV1(request.context))) {
@@ -2147,7 +1967,6 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   }
   std::uint64_t temporary_deleted_rows = 0;
   std::uint64_t temporary_reclaimed_large_values = 0;
-  CommitDurabilityBatchDecision durability_batch;
   if (request.statement_succeeded && !read_only_finalize) {
     const auto deferred_constraints =
         ValidateDeferredTransactionConstraints(request.context);
@@ -2157,26 +1976,6 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
       WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
       return MakeTxnError<EngineAutocommitBoundaryResult>(
           request.context, operation_id, deferred_constraints);
-    }
-    EngineCommitTransactionRequest commit_shape;
-    commit_shape.context = request.context;
-    commit_shape.option_envelopes = request.option_envelopes;
-    durability_batch = EvaluateCommitDurabilityBatching(commit_shape, *current_entry);
-    mark_phase("evaluate_commit_durability_batching");
-    if (durability_batch.requested && !durability_batch.result.ok &&
-        (durability_batch.required || durability_batch.result.fail_closed)) {
-      trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
-      WriteTransactionApiPhaseTrace(operation_id, false, trace_phases);
-      return MakeTxnError<EngineAutocommitBoundaryResult>(
-          request.context,
-          operation_id,
-          MakeEngineApiDiagnostic(
-              durability_batch.result.diagnostic_code.empty()
-                  ? "SB-IPAR-COMMIT-DURABILITY-BATCHING-REFUSED"
-                  : durability_batch.result.diagnostic_code,
-              "transaction.commit.durability_batching_refused",
-              durability_batch.result.fallback_reason,
-              true));
     }
     const auto temporary_cleanup =
         ApplyMgaTemporaryOnCommitActions(request.context,
@@ -2339,7 +2138,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
                               request.context.local_transaction_id);
   const auto persisted =
       PersistLocalTransactionInventoryToDatabase(request.context.database_path,
-                                                begun.inventory);
+                                                begun.inventory, request.inventory_page_sync_policy);
   mark_phase("persist_transaction_inventory");
   if (!persisted.ok()) {
     trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
@@ -2358,7 +2157,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   auto result = MakeTxnOk<EngineAutocommitBoundaryResult>(request.context, operation_id);
   result.local_transaction_id = finalized_entry.identity.local_id.value;
   result.transaction_uuid =
-      UuidToString(finalized_entry.identity.transaction_uuid.value);
+      finalized_entry.identity.transaction_uuid.value;
   static_cast<EngineApiResult&>(result).local_transaction_id =
       result.local_transaction_id;
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
@@ -2369,7 +2168,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   result.post_inventory_secondary_failure = false;
   result.replacement_local_transaction_id = begun.entry.identity.local_id.value;
   result.replacement_transaction_uuid =
-      UuidToString(begun.entry.identity.transaction_uuid.value);
+      begun.entry.identity.transaction_uuid.value;
   result.replacement_snapshot_visible_through_local_transaction_id =
       MaxCommittedLocalTransactionId(finalized_inventory);
   result.replacement_transaction_timestamp = replacement_timestamp;
@@ -2421,9 +2220,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
                                   : "autocommit_rollback_and_begin",
       1,
       1,
-      request.statement_succeeded
-          ? DirtyPagesFencedForCommit(read_only_finalize, durability_batch)
-          : 0);
+      std::nullopt);
   result.evidence.push_back({"max_active_millis",
                              std::to_string(begin_policy.max_active_millis)});
   result.evidence.push_back({"max_idle_millis",
@@ -2440,9 +2237,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
     result.evidence.push_back({"read_only_rollback_delta_cleanup",
                                "skipped_no_mutation_authority"});
   }
-  if (request.statement_succeeded) {
-    AppendCommitDurabilityBatchingEvidence(&result, durability_batch);
-  }
+  AppendInventoryPublicationEvidence(&result, persisted.publication_io);
   mark_phase("shape_autocommit_result");
 
   if (!request.statement_succeeded && !read_only_finalize) {
@@ -2523,7 +2318,7 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
                             "phase=before_inventory_rollback"));
     result.local_transaction_id = rollback_entry->identity.local_id.value;
     result.transaction_uuid =
-        UuidToString(rollback_entry->identity.transaction_uuid.value);
+        rollback_entry->identity.transaction_uuid.value;
     static_cast<EngineApiResult&>(result).local_transaction_id =
         result.local_transaction_id;
     static_cast<EngineApiResult&>(result).transaction_uuid =
@@ -2581,8 +2376,7 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
               "phase=after_inventory_rollback_before_secondary_cleanup"));
       result.local_transaction_id =
           rolled_back.entry.identity.local_id.value;
-      result.transaction_uuid = UuidToString(
-          rolled_back.entry.identity.transaction_uuid.value);
+      result.transaction_uuid = rolled_back.entry.identity.transaction_uuid.value;
       static_cast<EngineApiResult&>(result).local_transaction_id =
           result.local_transaction_id;
       static_cast<EngineApiResult&>(result).transaction_uuid =
@@ -2613,8 +2407,7 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
           rolled_back_deltas);
       result.local_transaction_id =
           rolled_back.entry.identity.local_id.value;
-      result.transaction_uuid = UuidToString(
-          rolled_back.entry.identity.transaction_uuid.value);
+      result.transaction_uuid = rolled_back.entry.identity.transaction_uuid.value;
       static_cast<EngineApiResult&>(result).local_transaction_id =
           result.local_transaction_id;
       static_cast<EngineApiResult&>(result).transaction_uuid =
@@ -2634,7 +2427,7 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
   }
   auto result = MakeTxnOk<EngineRollbackTransactionResult>(request.context, operation_id);
   result.local_transaction_id = rolled_back.entry.identity.local_id.value;
-  result.transaction_uuid = UuidToString(rolled_back.entry.identity.transaction_uuid.value);
+  result.transaction_uuid = rolled_back.entry.identity.transaction_uuid.value;
   static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
   result.rollback_finality_state = "rolled_back_by_engine_inventory";
@@ -2876,7 +2669,7 @@ EnginePrepareTransactionResult EnginePrepareTransaction(const EnginePrepareTrans
   }
   auto result = MakeTxnOk<EnginePrepareTransactionResult>(request.context, operation_id);
   result.local_transaction_id = prepared.entry.identity.local_id.value;
-  result.transaction_uuid = UuidToString(prepared.entry.identity.transaction_uuid.value);
+  result.transaction_uuid = prepared.entry.identity.transaction_uuid.value;
   static_cast<EngineApiResult&>(result).local_transaction_id = result.local_transaction_id;
   static_cast<EngineApiResult&>(result).transaction_uuid = result.transaction_uuid;
   result.evidence.push_back({"transaction_state", "prepared"});
@@ -3102,6 +2895,15 @@ EngineLockNamedResult EngineLockNamed(const EngineLockNamedRequest& request) {
         "advisory_lock");
   }
 
+  const auto key_fingerprint = NamedLockKeyFingerprint(resource_key);
+  if (key_fingerprint.empty()) {
+    return MakeLockError<EngineLockNamedResult>(
+        request.context, operation_id,
+        MakeEngineApiDiagnostic("SBLR.EXECUTION_FAILED",
+                                "transaction.named_lock.key_hash_failed", {}),
+        surface, "advisory_lock");
+  }
+
   TransactionLockRequest lock_request;
   lock_request.requester = MakeLocalTransactionId(request.context.local_transaction_id);
   lock_request.resource_key = resource_key;
@@ -3112,9 +2914,9 @@ EngineLockNamedResult EngineLockNamed(const EngineLockNamedRequest& request) {
   const std::string decision = TransactionLockDecisionName(lock.decision);
 
   if (!lock.ok()) {
-    EngineApiDiagnostic diagnostic = LockNotAvailableDiagnostic(resource_key);
+    EngineApiDiagnostic diagnostic = LockNotAvailableDiagnostic(key_fingerprint);
     if (decision == "timeout" || decision == "wait_required") {
-      diagnostic = LockTimeoutDiagnostic(resource_key);
+      diagnostic = LockTimeoutDiagnostic(key_fingerprint);
     } else if (decision == "invalid_request") {
       diagnostic = MakeInvalidRequestDiagnostic(operation_id, "named_lock_invalid_request");
     }
@@ -3125,7 +2927,7 @@ EngineLockNamedResult EngineLockNamed(const EngineLockNamedRequest& request) {
     result.resource_key = resource_key;
     result.acquired = false;
     AddNamedLockDecisionEvidence(&result,
-                                 resource_key,
+                                 key_fingerprint,
                                  decision,
                                  lock.blocking_transaction.value);
     AddLockBehaviorRow(&result,
@@ -3133,7 +2935,7 @@ EngineLockNamedResult EngineLockNamed(const EngineLockNamedRequest& request) {
                        surface,
                        "advisory_lock",
                        NamedLockOutcomeForDecision(decision),
-                       resource_key);
+                       key_fingerprint);
     return result;
   }
 
@@ -3145,13 +2947,13 @@ EngineLockNamedResult EngineLockNamed(const EngineLockNamedRequest& request) {
   AddLockInvariantEvidence(&result);
   result.evidence.push_back({"lock_surface", surface});
   result.evidence.push_back({"lock_policy", "advisory_lock"});
-  AddNamedLockDecisionEvidence(&result, resource_key, decision);
+  AddNamedLockDecisionEvidence(&result, key_fingerprint, decision);
   AddLockBehaviorRow(&result,
                      operation_id,
                      surface,
                      "advisory_lock",
                      NamedLockOutcomeForDecision(decision),
-                     resource_key);
+                     key_fingerprint);
   return result;
 }
 
@@ -3178,6 +2980,15 @@ EngineUnlockNamedResult EngineUnlockNamed(const EngineUnlockNamedRequest& reques
         "advisory_lock_release");
   }
 
+  const auto key_fingerprint = NamedLockKeyFingerprint(resource_key);
+  if (key_fingerprint.empty()) {
+    return MakeLockError<EngineUnlockNamedResult>(
+        request.context, operation_id,
+        MakeEngineApiDiagnostic("SBLR.EXECUTION_FAILED",
+                                "transaction.named_lock.key_hash_failed", {}),
+        surface, "advisory_lock");
+  }
+
   const auto release = NamedAdvisoryLockTable().Release(
       MakeLocalTransactionId(request.context.local_transaction_id),
       resource_key);
@@ -3190,13 +3001,13 @@ EngineUnlockNamedResult EngineUnlockNamed(const EngineUnlockNamedRequest& reques
   result.evidence.push_back({"lock_surface", surface});
   result.evidence.push_back({"lock_policy", "advisory_lock_release"});
   result.evidence.push_back({"release_outcome", result.release_outcome});
-  result.evidence.push_back({"lock_resource_key", resource_key});
+  result.evidence.push_back({"lock_resource_key_sha256", key_fingerprint});
   AddLockBehaviorRow(&result,
                      operation_id,
                      surface,
                      "advisory_lock_release",
                      result.release_outcome,
-                     resource_key);
+                     key_fingerprint);
   return result;
 }
 

@@ -4,6 +4,10 @@
 #include "current_row_map.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "../../src/engine/internal_api/api_types.hpp"
+#include "../../src/engine/internal_api/mga_relation_store/mga_relation_metadata_store.hpp"
+#include "../../src/engine/internal_api/mga_relation_store/mga_heap_memory.hpp"
+#include "../../src/engine/internal_api/mga_relation_store/mga_binary_identity_codec.hpp"
+#include "../../src/engine/internal_api/mga_relation_store/mga_binary_fields.hpp"
 #include "../../src/wire/parser_server_ipc/public_resolution_cache_key.hpp"
 #include "../../src/wire/parser_server_ipc/binary_identity_io.hpp"
 #include "../../src/engine/executor/canonical_aggregate_registry.hpp"
@@ -45,6 +49,297 @@ static_assert(!std::is_assignable_v<EngineUuid&, std::string>);
 
 void Require(bool condition, const char* message) {
   if (!condition) throw std::runtime_error(message);
+}
+
+void RelationMetadataBinaryIdentityContract() {
+  namespace api = scratchbird::engine::internal_api;
+  using Statement = api::PreparedMgaHeapStatementAuthority;
+  using Relation = api::PreparedMgaHeapReadAuthority;
+  using Cohort = api::PreparedMgaHeapReadAuthorityCohort;
+  static_assert(std::is_same_v<decltype(Statement::database_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(Statement::statement_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(Statement::transaction_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(Statement::statement_snapshot_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(Statement::statement_metadata_snapshot_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(Statement::catalog_epoch_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(Statement::authorization_authority_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(Relation::relation_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(Relation::temporary_session_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(api::MgaMetadataCacheKey::database_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(api::MgaRelationColumnStorageDescriptor::charset_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(api::MgaRelationColumnStorageDescriptor::collation_uuid), Uuid>);
+  static_assert(std::is_same_v<api::DescriptorFieldsByRelation::key_type, Uuid>);
+  static_assert(std::is_same_v<decltype(Cohort::relations)::key_type, Uuid>);
+  static_assert(std::is_same_v<decltype(api::MgaVisibleHeapRelationReadRequest::relation_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(api::MgaVisibleHeapRelationCountRequest::relation_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(api::MgaVisibleHeapRelationStreamRequest::relation_uuid), Uuid>);
+  static_assert(std::is_same_v<decltype(api::MgaVisibleHeapRelationReadRequest::borrowed_relation_uuid), const Uuid*>);
+  static_assert(std::is_same_v<decltype(api::MgaVisibleHeapRelationCountRequest::borrowed_relation_uuid), const Uuid*>);
+  static_assert(std::is_same_v<decltype(api::MgaVisibleHeapRelationStreamRequest::borrowed_relation_uuid), const Uuid*>);
+  using Load = api::MgaRelationStorageDescriptorLoadResult(*)(const api::EngineRequestContext&, const Uuid&);
+  static_assert(std::is_same_v<decltype(&api::LoadMgaRelationStorageDescriptor), Load>);
+  const Uuid base{{0,0,0,0,0,1,0x70,0,0x80,0,0,0,0,0,0,1}};
+  api::DescriptorFieldsByRelation descriptors;
+  Cohort cohort;
+  std::map<api::MgaMetadataCacheKey, unsigned> metadata;
+  unsigned count = 0;
+  for (unsigned byte = 0; byte < 16; ++byte) {
+    for (unsigned bit = 0; bit < 8; ++bit) {
+      if ((byte == 6 && bit >= 4) || (byte == 8 && bit >= 6)) continue;
+      auto id = base;
+      id.bytes[byte] ^= static_cast<std::uint8_t>(1u << bit);
+      Require(uuid::IsEngineIdentityUuid(id), "test metadata identity is not v7");
+      const auto ordinal = ++count;
+      Require(descriptors.emplace(id, std::vector<std::pair<std::string, std::string>>{{"marker",std::to_string(ordinal)}}).second,
+              "descriptor binary keys collapsed distinct UUID bits");
+      auto relation = std::make_shared<Relation>();
+      relation->relation_uuid = id;
+      relation->current_relation_base_generation = ordinal;
+      Require(cohort.relations.emplace(id, relation).second,
+              "prepared relation keys collapsed distinct UUID bits");
+      api::MgaMetadataCacheKey key;
+      key.database_uuid = id;
+      Require(metadata.emplace(key, ordinal).second,
+              "metadata key omitted database UUID bits");
+      Require(descriptors.at(id).front().second == std::to_string(ordinal) &&
+              cohort.relations.at(id)->relation_uuid == id && metadata.at(key) == ordinal,
+              "metadata lookup changed binary identity or payload");
+    }
+  }
+  Require(count == 122 && descriptors.size() == count && cohort.relations.size() == count && metadata.size() == count,
+          "metadata identity key coverage incomplete");
+  std::cout << "relation metadata binary identities=" << count << '\n';
+}
+
+void HeapBinaryIdentityCodecContract() {
+  namespace api = scratchbird::engine::internal_api;
+  const Uuid identity{{0,0x09,0x0a,0x7f,0x80,0xff,0x7f,0,0xbf,0,1,2,3,4,5,6}};
+  const Uuid sentinel{{1,2,3,4,5,6,0x70,0,0x80,0,0,0,0,0,0,9}};
+  unsigned checks = 0;
+  const auto check = [&](bool pass, const char* detail) { ++checks; Require(pass, detail); };
+  for (std::size_t prefix = 0; prefix < 64; ++prefix) {
+    std::string encoded(prefix, '\0');
+    check(api::AppendBinaryEngineUuid(&encoded, identity) && encoded.size() == prefix + 16,
+          "heap identity append did not write exactly sixteen bytes");
+    for (unsigned n = 0; n < 16; ++n)
+      check(static_cast<unsigned char>(encoded[prefix + n]) == identity.bytes[n],
+            "heap identity encoding changed network-order bytes");
+    const auto bytes = std::span(reinterpret_cast<const std::uint8_t*>(encoded.data()), encoded.size());
+    std::size_t offset = prefix;
+    auto decoded = sentinel;
+    check(api::ReadBinaryEngineUuid(bytes, &offset, &decoded) && decoded == identity && offset == prefix + 16,
+          "heap identity unaligned decode changed bytes or cursor");
+    for (unsigned length = 0; length < 16; ++length) {
+      offset = prefix; decoded = sentinel;
+      check(!api::ReadBinaryEngineUuid(bytes.first(prefix + length), &offset, &decoded) &&
+            offset == prefix && decoded == sentinel, "truncated heap identity changed cursor or destination");
+    }
+  }
+  for (unsigned version = 0; version < 16; ++version) {
+    for (unsigned variant = 0; variant < 4; ++variant) {
+      auto changed = identity;
+      changed.bytes[6] = static_cast<std::uint8_t>((version << 4) | 0xf);
+      changed.bytes[8] = static_cast<std::uint8_t>((variant << 6) | 0x3f);
+      const bool accepted = version == 7 && variant == 2;
+      std::string encoded("prefix\0", 7);
+      const auto original = encoded;
+      check(api::AppendBinaryEngineUuid(&encoded, changed) == accepted &&
+            (accepted ? encoded.size() == original.size() + 16 : encoded == original),
+            "heap identity encoder admitted wrong system UUID shape or changed rejected output");
+      std::size_t offset = 0;
+      auto decoded = sentinel;
+      check(api::ReadBinaryEngineUuid(changed.bytes, &offset, &decoded) == accepted &&
+            offset == (accepted ? 16u : 0u) && decoded == (accepted ? changed : sentinel),
+            "heap identity decoder admitted wrong system UUID shape or changed rejected output");
+    }
+  }
+  std::string encoded = "unchanged";
+  check(!api::AppendBinaryEngineUuid(&encoded, Uuid{}) && encoded == "unchanged" &&
+        !api::AppendBinaryEngineUuid(nullptr, identity), "nil or null heap identity append accepted");
+  for (const auto position : {std::size_t{0}, std::size_t{1}, std::size_t{16},
+                             std::numeric_limits<std::size_t>::max() - 15,
+                             std::numeric_limits<std::size_t>::max()}) {
+    auto decoded = sentinel;
+    auto offset = position;
+    const Uuid nil{};
+    check(!api::ReadBinaryEngineUuid(nil.bytes, &offset, &decoded) && offset == position && decoded == sentinel,
+          "nil or wrapped heap identity cursor accepted");
+  }
+  std::size_t offset = 0;
+  auto decoded = sentinel;
+  check(!api::ReadBinaryEngineUuid(identity.bytes, nullptr, &decoded) && decoded == sentinel &&
+        !api::ReadBinaryEngineUuid(identity.bytes, &offset, nullptr) && offset == 0,
+        "heap identity null destination changed state");
+  const std::string text = "019d0000-0000-7000-8000-00000000d701";
+  check(!api::ReadBinaryEngineUuid({reinterpret_cast<const std::uint8_t*>(text.data()), text.size()}, &offset, &decoded) &&
+        offset == 0 && decoded == sentinel, "heap identity codec reintroduced text UUID authority");
+  std::cout << "heap binary identity codec checks=" << checks << '\n';
+}
+
+void HeapBinaryFieldsContract() {
+  namespace api = scratchbird::engine::internal_api;
+  unsigned checks = 0;
+  const auto check = [&](bool pass, const char* detail) { ++checks; Require(pass, detail); };
+  const auto scalars = [&]<class UInt>(auto read) {
+    for (const UInt value : {UInt{0}, UInt{1}, static_cast<UInt>(0xa5), std::numeric_limits<UInt>::max()}) {
+      for (std::size_t prefix = 0; prefix < 17; ++prefix) {
+        std::vector<std::uint8_t> bytes(prefix, 0xee);
+        auto digits = static_cast<std::uint64_t>(value);
+        for (unsigned n = 0; n < sizeof(UInt); ++n) { bytes.push_back(digits % 256); digits /= 256; }
+        auto offset = prefix;
+        UInt out = 17;
+        check(read(bytes, &offset, &out) && offset == bytes.size() && out == value,
+              "heap little-endian field oracle mismatch");
+        for (std::size_t end = prefix; end < bytes.size(); ++end) {
+          offset = prefix; out = 17;
+          check(!read(std::span(bytes).first(end), &offset, &out) && offset == prefix && out == 17,
+                "truncated scalar changed output or cursor");
+        }
+        for (const auto invalid : {bytes.size() + 1, std::numeric_limits<std::size_t>::max() - sizeof(UInt) + 1,
+                                   std::numeric_limits<std::size_t>::max()}) {
+          offset = invalid; out = 17;
+          check(!read(bytes, &offset, &out) && offset == invalid && out == 17,
+                "wrapped scalar cursor was dereferenced or published");
+        }
+        offset = prefix; out = 17;
+        check(!read(bytes, nullptr, &out) && out == 17 && !read(bytes, &offset, nullptr) && offset == prefix,
+              "null scalar output changed state");
+      }
+    }
+  };
+  scalars.template operator()<std::uint8_t>(api::ReadBinaryU8);
+  scalars.template operator()<std::uint16_t>(api::ReadBinaryU16);
+  scalars.template operator()<std::uint32_t>(api::ReadBinaryU32);
+  scalars.template operator()<std::uint64_t>(api::ReadBinaryU64);
+  for (const unsigned length : {0u,1u,16u,255u,1024u,4096u}) {
+    for (const unsigned prefix : {0u,1u,7u,31u}) {
+      std::string expected(length, '\0');
+      for (unsigned n = 0; n < length; ++n) expected[n] = static_cast<char>((n * 73) % 256);
+      std::vector<std::uint8_t> bytes(prefix, 0xfa);
+      auto word = length;
+      for (unsigned n = 0; n < 4; ++n) { bytes.push_back(word % 256); word /= 256; }
+      bytes.insert(bytes.end(), expected.begin(), expected.end());
+      std::size_t offset = prefix;
+      std::string out = "sentinel";
+      check(api::ReadBinaryString(bytes, &offset, &out) && offset == bytes.size() && out == expected,
+            "heap framed byte-string oracle mismatch");
+      for (std::size_t end = prefix; end < bytes.size(); ++end) {
+        offset = prefix; out = "sentinel";
+        check(!api::ReadBinaryString(std::span(bytes).first(end), &offset, &out) && offset == prefix && out == "sentinel",
+              "truncated string consumed its length or changed caller output");
+      }
+      std::fill_n(bytes.begin() + prefix, 4, 0xff);
+      offset = prefix; out = "sentinel";
+      check(!api::ReadBinaryString(bytes, &offset, &out) && offset == prefix && out == "sentinel",
+            "oversized framed string published output");
+      offset = std::numeric_limits<std::size_t>::max();
+      check(!api::ReadBinaryString(bytes, &offset, &out) && offset == std::numeric_limits<std::size_t>::max() && out == "sentinel",
+            "wrapped string cursor changed caller state");
+      offset = 0;
+      check(!api::ReadBinaryString(bytes, nullptr, &out) && out == "sentinel" &&
+            !api::ReadBinaryString(bytes, &offset, nullptr) && offset == 0,
+            "null framed string output changed caller state");
+    }
+  }
+  std::cout << "heap binary field decoder checks=" << checks << '\n';
+}
+
+void HeapBinaryMemoryContract() {
+  namespace api = scratchbird::engine::internal_api;
+  const auto string_bytes = [](const std::string& value) {
+    return static_cast<std::uint64_t>(value.capacity()) + 1;
+  };
+  unsigned checks = 0;
+  const auto check = [&](bool pass, const char* detail) { ++checks; Require(pass, detail); };
+  const auto max = std::numeric_limits<std::uint64_t>::max();
+  for(bool binary:{false,true}) {
+    api::EngineEvidenceReference evidence{"fixture.evidence.kind",std::string(80,'v')};
+    if(binary)evidence.evidence_id=Uuid{};
+    const auto expected=string_bytes(evidence.evidence_kind)+
+        (binary ? 0 : string_bytes(std::get<std::string>(evidence.evidence_id)));
+    std::uint64_t total=31;
+    check(api::AccountHeapReadEvidenceDynamicMemory(evidence,&total) && total==31+expected,
+          "evidence memory accounting charged binary reference as text or lost text capacity");
+    total=max-expected;
+    check(api::AccountHeapReadEvidenceDynamicMemory(evidence,&total) && total==max,
+          "evidence accounting lost exact upper boundary");
+    total=max-expected+1;const auto prior=total;
+    check(!api::AccountHeapReadEvidenceDynamicMemory(evidence,&total) && total==prior,
+          "evidence accounting overflow changed output");
+    check(!api::AccountHeapReadEvidenceDynamicMemory(evidence,nullptr),"evidence accounting accepted null output");
+  }
+  for (const auto value : {std::uint64_t{0}, std::uint64_t{1}, max / 2, max}) {
+    std::uint64_t total = max - value;
+    check(api::CheckedHeapReadMemoryAdd(value, &total) && total == max, "heap byte sum lost boundary value");
+    total = max;
+    check(api::CheckedHeapReadMemoryAdd(value, &total) == (value == 0) && total == max,
+          "heap byte overflow changed output or succeeded");
+    std::uint64_t product = 71;
+    check(api::CheckedHeapReadMemoryMultiply(value, 1, &product) && product == value,
+          "heap byte product changed exact value");
+    product = 71;
+    check(api::CheckedHeapReadMemoryMultiply(value, 2, &product) == (value <= max / 2) &&
+          product == (value <= max / 2 ? value * 2 : 71), "heap multiplication overflow changed output");
+  }
+  check(!api::CheckedHeapReadMemoryAdd(0, nullptr) &&
+        !api::CheckedHeapReadMemoryMultiply(0, 0, nullptr), "heap arithmetic accepted null output");
+  using Row = api::CrudRowVersionRecord;
+  for (unsigned count = 0; count <= 64; ++count) {
+    std::vector<Row> rows(count);
+    rows.reserve(count + 3);
+    std::uint64_t expected = sizeof(rows) + rows.capacity() * sizeof(Row);
+    for (unsigned n = 0; n < count; ++n) {
+      auto& row = rows[n];
+      row.values.reserve(3);
+      row.values.emplace_back("payload", std::string(n + 17, 'x'));
+      const auto dynamic = row.values.capacity() * sizeof(row.values[0]) +
+          string_bytes(row.values[0].first) + string_bytes(row.values[0].second);
+      expected += dynamic;
+      std::uint64_t measured = 13;
+      check(api::AccountHeapReadRowDynamicMemoryBytes(row, &measured) && measured == 13 + dynamic,
+            "row dynamic accounting charged inline UUIDs or omitted value capacity");
+    }
+    check(api::HeapReadRowVectorMemoryBytes(rows) == expected, "row vector accounting differs from independent size oracle");
+    for (auto& row : rows) {
+      row.table_uuid.bytes.fill(0xa5); row.row_uuid.bytes.fill(0x5a);
+      row.version_uuid.bytes.fill(0x01); row.previous_version_uuid.bytes.fill(0xfe);
+      row.temporary_session_uuid.bytes.fill(0x7f);
+    }
+    check(api::HeapReadRowVectorMemoryBytes(rows) == expected, "fixed UUID contents changed row memory charge");
+    using Versions = std::unordered_map<Uuid, const Row*, api::EngineUuidHash>;
+    using Visible = std::unordered_map<Uuid, std::size_t, api::EngineUuidHash>;
+    check(api::HeapReadVersionIndexProjectionMemoryBytes(rows) ==
+          sizeof(Versions) + count * (2 * sizeof(void*) + sizeof(Versions::value_type) + 4 * sizeof(void*)),
+          "version projection still accounts text keys");
+    check(api::HeapReadVisibilityMapProjectionMemoryBytes(rows) ==
+          sizeof(Visible) + count * (2 * sizeof(void*) + sizeof(Visible::value_type) + 4 * sizeof(void*)),
+          "visibility projection still accounts text keys");
+    Visible visible;
+    for (unsigned n = 0; n < count; ++n) { Uuid id{}; id.bytes[15] = static_cast<std::uint8_t>(n); visible.emplace(id, n); }
+    check(api::HeapReadVisibilityMapMemoryBytes(visible) ==
+          sizeof(visible) + visible.bucket_count() * sizeof(void*) + count * (sizeof(Visible::value_type) + 4 * sizeof(void*)),
+          "visibility map accounting differs from binary node oracle");
+  }
+  api::MgaRelationStorageDescriptor descriptor;
+  const auto fixed = api::HeapReadStorageDescriptorMemoryBytes(descriptor);
+  check(fixed.has_value() && *fixed >= sizeof(descriptor), "descriptor accounting omitted fixed fields");
+  descriptor.descriptor_uuid.bytes.fill(1); descriptor.database_uuid.bytes.fill(2);
+  descriptor.schema_uuid.bytes.fill(3); descriptor.relation_uuid.bytes.fill(4);
+  descriptor.primary_filespace_uuid.bytes.fill(5);
+  check(api::HeapReadStorageDescriptorMemoryBytes(descriptor) == fixed, "descriptor UUID contents changed memory charge");
+  descriptor.columns.resize(1);
+  const auto with_column = api::HeapReadStorageDescriptorMemoryBytes(descriptor);
+  auto& column = descriptor.columns.front();
+  column.column_uuid.bytes.fill(6); column.charset_uuid.bytes.fill(7); column.collation_uuid.bytes.fill(8);
+  column.value_descriptor.descriptor_uuid.bytes.fill(9); column.value_descriptor.type_uuid.bytes.fill(10);
+  column.value_descriptor.collation_uuid.bytes.fill(11);
+  check(with_column.has_value() && api::HeapReadStorageDescriptorMemoryBytes(descriptor) == with_column,
+        "column resource UUID contents changed memory charge");
+  const auto before = string_bytes(column.canonical_name_key);
+  column.canonical_name_key.assign(4096, 'c');
+  check(api::HeapReadStorageDescriptorMemoryBytes(descriptor) ==
+        *with_column - before + string_bytes(column.canonical_name_key), "descriptor name growth escaped memory accounting");
+  std::cout << "heap binary memory checks=" << checks << '\n';
 }
 
 void CurrentRowBinaryIdentityContract() {
@@ -825,6 +1120,10 @@ int main(int argc, char** argv) {
               "invalid system variant gained an owner path");
     }
     CurrentRowBinaryIdentityContract();
+    RelationMetadataBinaryIdentityContract();
+    HeapBinaryMemoryContract();
+    HeapBinaryIdentityCodecContract();
+    HeapBinaryFieldsContract();
     CanonicalSortBinaryIdentityContract();
     TypedDescriptorBinaryIdentityContract();
     AggregateRegistryBinaryIdentityContract();

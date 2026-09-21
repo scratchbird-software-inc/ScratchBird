@@ -31,6 +31,11 @@ enum class CanonicalOptimizerAdmissionStage : std::uint8_t {
   kCanonicalRoute,
 };
 
+struct CanonicalOptimizerCatalogObjectGeneration {
+  planner::CanonicalPlannerUuid object_uuid;
+  std::uint64_t generation{0};
+};
+
 struct CanonicalOptimizerCatalogSnapshot {
   planner::CanonicalPlannerUuid snapshot_uuid;
   planner::CanonicalPlannerUuid catalog_epoch_uuid;
@@ -38,6 +43,7 @@ struct CanonicalOptimizerCatalogSnapshot {
   std::vector<planner::CanonicalPlannerUuid> object_uuids;
   std::vector<std::uint32_t> descriptor_ids;
   bool engine_owned{false};
+  std::vector<CanonicalOptimizerCatalogObjectGeneration> object_generations;
 };
 
 struct CanonicalOptimizerSecuritySnapshot {

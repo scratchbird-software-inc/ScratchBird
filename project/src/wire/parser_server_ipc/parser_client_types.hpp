@@ -41,10 +41,10 @@ struct ParserClientConfig {
   }
   std::vector<std::string> default_search_path{"sys", "public"};
   std::uint32_t registry_version{1};
-  // Opt-in keeps the legacy hello byte-for-byte unchanged for every existing
-  // parser.  A parser that routes independent transactions must require the
-  // V2 capability during hello and fail closed if the server omits it.
-  bool require_transaction_routing_v2{false};
+  // Execution requires typed transaction outcomes, including default-session
+  // execution. Negotiate that capability before issuing any execution request;
+  // a text-result-only peer cannot establish transaction identity or finality.
+  bool require_transaction_routing_v2{true};
   // An opted-in parser may execute an engine-owned prepared object on a
   // different exact transaction selector from the selector used at prepare.
   // The transfer binding is opaque and server-owned: no metadata snapshot,
@@ -63,14 +63,15 @@ struct ParserTransactionSelector {
   std::uint64_t local_transaction_id{0};
   scratchbird::core::platform::Uuid transaction_uuid;
 
-  [[nodiscard]] bool present() const {
-    return local_transaction_id != 0 && !transaction_uuid.is_nil();
+  [[nodiscard]] bool present() const noexcept {
+    return local_transaction_id != 0 &&
+           scratchbird::core::uuid::IsEngineIdentityUuid(transaction_uuid);
   }
 };
 
 enum class ParserTransactionRoute : std::uint8_t {
-  // Source- and wire-compatible behavior for SBPS V1 callers.  The server
-  // selects the session's engine-owned default transaction.
+  // The server selects the session's engine-owned default transaction.
+  // The route value does not select the old text-result wire protocol.
   kLegacyDefault = 0,
   // Route the request through the exact engine-issued selector supplied by
   // the caller.  Both the id and UUID must match the owning session.
@@ -83,6 +84,18 @@ enum class ParserTransactionRoute : std::uint8_t {
 struct ParserTransactionRouting {
   ParserTransactionRoute route{ParserTransactionRoute::kLegacyDefault};
   ParserTransactionSelector selector;
+
+  [[nodiscard]] bool valid() const noexcept {
+    switch (route) {
+      case ParserTransactionRoute::kSelected:
+        return selector.present();
+      case ParserTransactionRoute::kLegacyDefault:
+      case ParserTransactionRoute::kBeginAdditional:
+        return selector.local_transaction_id == 0 &&
+               selector.transaction_uuid.is_nil();
+    }
+    return false;
+  }
 };
 
 // Bounded parser projection of one engine-issued statement context. The

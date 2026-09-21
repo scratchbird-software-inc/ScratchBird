@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "ast/ast.hpp"
+#include "../support/binary_uuid_fixture.hpp"
 #include "binder/binder.hpp"
 #include "cst/cst.hpp"
 #include "lowering/lowering.hpp"
@@ -68,10 +69,10 @@ sbsql::LanguageNormalizationOptions FrCaGrammarAliasProfile() {
 sbsql::SessionContext ParserSession() {
   sbsql::SessionContext session;
   session.authenticated = true;
-  session.session_uuid = "019f0000-0000-7000-8000-000000005101";
-  session.connection_uuid = "019f0000-0000-7000-8000-000000005102";
-  session.database_uuid = "019f0000-0000-7000-8000-000000005103";
-  session.dialect_profile_uuid = "sbsql_v3";
+  session.session_uuid = scratchbird::tests::FixtureUuid(1104, 1);
+  session.connection_uuid = scratchbird::tests::FixtureUuid(1104, 2);
+  session.database_uuid = scratchbird::tests::FixtureUuid(1104, 3);
+  session.dialect_profile_uuid = scratchbird::tests::FixtureUuid(1104, 5);
   session.default_language = "en";
   session.language_tag = "fr-CA";
   session.language_profile = "sbsql.lang.fr-ca.grammar-alias-test";

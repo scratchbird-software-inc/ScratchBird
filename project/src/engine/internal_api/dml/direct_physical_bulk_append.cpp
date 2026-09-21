@@ -267,7 +267,14 @@ bool DirectOptionEnabled(const DirectPhysicalBulkAppendRequest& request,
   return false;
 }
 
-TypedUuid ParseDirectTypedUuid(UuidKind kind, const std::string& text);
+TypedUuid BindDirectTypedUuid(UuidKind kind, const EngineUuid& identity) {
+  const auto bound = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(kind, identity);
+  return bound.ok() ? bound.value : TypedUuid{};
+}
+
+// Legacy option descriptor admission remains separate until this option has
+// its native binary carrier; binary request identities never pass through it.
+TypedUuid ParseDirectOptionIdentity(UuidKind kind, const std::string& text);
 
 std::string DirectOptionValue(const DirectPhysicalBulkAppendRequest& request,
                               const std::string& key) {
@@ -341,7 +348,7 @@ std::vector<std::string> SplitDirectText(const std::string& value, char delimite
 
 bool DirectRuntimeInsertPolicyApplies(
     const EngineMaterializedAuthorizationPolicy& policy,
-    const std::string& table_uuid) {
+    const EngineUuid& table_uuid) {
   if (!policy.requires_runtime_recheck) {
     return false;
   }
@@ -403,7 +410,7 @@ DirectRuntimeSecurityPolicyDecision EvaluateDirectRuntimeSecurityPolicyEnvelope(
 
 EngineEvaluateDeepSecurityResult EvaluateDirectRuntimeInsertSecurityRecheck(
     const DirectPhysicalBulkAppendRequest& request,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<std::pair<std::string, std::string>>& values,
     std::vector<EngineEvidenceReference>* evidence) {
   std::string rls_policy = "allow";
@@ -492,19 +499,19 @@ std::string DirectPageExtentPreallocationPrecheckFailure(
     return "page_extent_preallocation_disabled";
   }
   const TypedUuid database_uuid =
-      ParseDirectTypedUuid(UuidKind::database, request.context.database_uuid);
+      BindDirectTypedUuid(UuidKind::database, request.context.database_uuid);
   const TypedUuid transaction_uuid =
-      ParseDirectTypedUuid(UuidKind::transaction,
+      BindDirectTypedUuid(UuidKind::transaction,
                            request.context.transaction_uuid);
   const TypedUuid object_uuid =
-      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid);
+      BindDirectTypedUuid(UuidKind::object, request.target_table.uuid);
   if (!database_uuid.valid() || !transaction_uuid.valid() ||
       !object_uuid.valid() || request.context.local_transaction_id == 0) {
     return "page_extent_preallocation_authority_missing";
   }
   const std::string filespace = DirectOptionValue(request, "page_allocation.filespace_uuid");
   if (!filespace.empty() &&
-      !ParseDirectTypedUuid(UuidKind::filespace, filespace).valid()) {
+      !ParseDirectOptionIdentity(UuidKind::filespace, filespace).valid()) {
     return "page_extent_preallocation_invalid_filespace";
   }
   const std::string disabled = DirectOptionValue(request, "page_extent_preallocation");
@@ -514,7 +521,7 @@ std::string DirectPageExtentPreallocationPrecheckFailure(
   return {};
 }
 
-TypedUuid ParseDirectTypedUuid(UuidKind kind, const std::string& text) {
+TypedUuid ParseDirectOptionIdentity(UuidKind kind, const std::string& text) {
   const auto parsed = scratchbird::core::uuid::ParseTypedUuid(kind, text);
   return parsed.ok() ? parsed.value : TypedUuid{};
 }
@@ -698,17 +705,21 @@ void PopulateDirectForeignKeyViolationFields(
       result.refusal_reason != "bulk_fk_proof_parent_missing") {
     return;
   }
-  std::string constraint_uuid;
+  EngineUuid constraint_uuid;
   std::string missing_key;
   bool constraint_uuid_present = false;
   bool missing_key_present = false;
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == "bulk_fk_proof_conflict_constraint") {
-      constraint_uuid = evidence.evidence_id;
-      constraint_uuid_present = true;
+      if (const auto* identity = std::get_if<EngineUuid>(&evidence.evidence_id)) {
+        constraint_uuid = *identity;
+        constraint_uuid_present = true;
+      }
     } else if (evidence.evidence_kind == "bulk_fk_proof_missing_parent_key") {
-      missing_key = evidence.evidence_id;
-      missing_key_present = true;
+      if (const auto* text = std::get_if<std::string>(&evidence.evidence_id)) {
+        missing_key = *text;
+        missing_key_present = true;
+      }
     }
   }
   if (!constraint_uuid_present || !missing_key_present) return;
@@ -784,14 +795,15 @@ void PopulateDirectUniqueViolationDiagnostic(
     return;
   }
 
-  std::string conflict_constraint_uuid;
+  EngineUuid conflict_constraint_uuid;
   for (const auto& evidence : result.evidence) {
     if (evidence.evidence_kind == "bulk_unique_proof_conflict_constraint") {
-      conflict_constraint_uuid = evidence.evidence_id;
+      if (const auto* identity = std::get_if<EngineUuid>(&evidence.evidence_id))
+        conflict_constraint_uuid = *identity;
       break;
     }
   }
-  if (conflict_constraint_uuid.empty()) {
+  if (conflict_constraint_uuid.is_nil()) {
     return;
   }
 
@@ -1021,7 +1033,7 @@ bool DirectSimpleScalarIndexKeyColumn(const CrudIndexRecord& index,
 
 std::optional<CrudIndexRecord> DirectVisibleUniqueIndexForColumn(
     const MgaRelationReadView& state,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::string& column_name,
     std::uint64_t observer_tx) {
   for (const auto& index : VisibleMgaIndexesForTable(state, table_uuid, observer_tx)) {
@@ -1053,13 +1065,13 @@ struct DirectBulkConstraintProofSelection {
 struct DirectPrecomputedIndexEntry {
   std::string encoded_key;
   std::string payload_value;
-  std::string row_uuid;
-  std::string version_uuid;
+  EngineUuid row_uuid;
+  EngineUuid version_uuid;
   std::uint64_t source_ordinal = 0;
 };
 
 using DirectPrecomputedIndexEntryMap =
-    std::map<std::string, std::vector<DirectPrecomputedIndexEntry>>;
+    std::map<EngineUuid, std::vector<DirectPrecomputedIndexEntry>>;
 
 struct DirectPrecomputedIndexEntryOrderState {
   bool initialized = false;
@@ -1069,7 +1081,7 @@ struct DirectPrecomputedIndexEntryOrderState {
 };
 
 using DirectPrecomputedIndexEntryOrderStateMap =
-    std::map<std::string, DirectPrecomputedIndexEntryOrderState>;
+    std::map<EngineUuid, DirectPrecomputedIndexEntryOrderState>;
 
 struct DirectTypedIndexKeyStats {
   std::uint64_t typed_key_candidates = 0;
@@ -1080,7 +1092,7 @@ struct DirectTypedIndexKeyStats {
 
 struct DirectStageSimpleIndexPrecomputePlan {
   CrudIndexRecord index;
-  std::string index_uuid;
+  EngineUuid index_uuid;
   std::string column_name;
   std::size_t ordinal = 0;
   dt::CanonicalTypeId target_type = dt::CanonicalTypeId::unknown;
@@ -1281,12 +1293,12 @@ bool DirectPrecomputedIndexEntryLess(
     return key_compare < 0;
   }
   const int row_compare =
-      DirectCompareUnsignedText(left.row_uuid, right.row_uuid);
+      scratchbird::core::uuid::CompareUuid128(left.row_uuid, right.row_uuid);
   if (row_compare != 0) {
     return row_compare < 0;
   }
   const int version_compare =
-      DirectCompareUnsignedText(left.version_uuid, right.version_uuid);
+      scratchbird::core::uuid::CompareUuid128(left.version_uuid, right.version_uuid);
   if (version_compare != 0) {
     return version_compare < 0;
   }
@@ -1294,7 +1306,7 @@ bool DirectPrecomputedIndexEntryLess(
 }
 
 void DirectTrackPrecomputedIndexEntryOrder(
-    const std::string& index_uuid,
+    const EngineUuid& index_uuid,
     const DirectPrecomputedIndexEntry& entry,
     DirectPrecomputedIndexEntryOrderStateMap* states) {
   if (states == nullptr) {
@@ -1445,7 +1457,7 @@ void DirectSortPrecomputedIndexEntriesForExactAppend(
 
 const std::vector<DirectPrecomputedIndexEntry>* DirectPrecomputedEntriesForIndex(
     const DirectPrecomputedIndexEntryMap* precomputed_entries,
-    const std::string& index_uuid) {
+    const EngineUuid& index_uuid) {
   if (precomputed_entries == nullptr) {
     return nullptr;
   }
@@ -1499,8 +1511,8 @@ bool DirectGeneratedEmptyTargetConstraintProofEligible(
 
 scratchbird::core::bulk_load::BulkConstraintProofKeyRef DirectProofKey(
     std::string key,
-    std::string row_uuid,
-    std::string version_uuid,
+    EngineUuid row_uuid,
+    EngineUuid version_uuid,
     std::uint64_t source_ordinal) {
   scratchbird::core::bulk_load::BulkConstraintProofKeyRef ref;
   ref.encoded_key = std::move(key);
@@ -1544,7 +1556,7 @@ void AddVisibleRowKeysForProof(
   // that comparison discards real persisted conflicts after UPDATE/rollback.
   // Row identity alone is insufficient because predecessor keys can remain
   // physically present after their version becomes invisible.
-  std::set<std::pair<std::string, std::string>> visible_row_versions;
+  std::set<std::pair<EngineUuid, EngineUuid>> visible_row_versions;
   for (const auto& row :
        VisibleMgaRowsForContext(state, index.table_uuid, context)) {
     visible_row_versions.emplace(row.row_uuid, row.version_uuid);
@@ -1604,7 +1616,7 @@ void AddVisibleRowKeysForSortedBuild(
     }
     return;
   }
-  std::set<std::pair<std::string, std::string>> visible_row_versions;
+  std::set<std::pair<EngineUuid, EngineUuid>> visible_row_versions;
   for (const auto& row :
        VisibleMgaRowsForContext(state, index.table_uuid, context)) {
     visible_row_versions.emplace(row.row_uuid, row.version_uuid);
@@ -1646,7 +1658,7 @@ void AddVisibleRowKeysForSortedBuild(
 void AddCachedConflictingVisibleKeysForSortedBuild(
     const CrudIndexRecord& index,
     const std::vector<scratchbird::core::index::SortedBulkIndexRowInput>& incoming_rows,
-    const std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>* entry_cache,
+    const std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>* entry_cache,
     std::vector<scratchbird::core::index::SortedBulkIndexRowInput>* keys) {
   if (entry_cache == nullptr || keys == nullptr) {
     return;
@@ -1704,7 +1716,7 @@ void AddVisibleParentKeysForProof(
     }
     return;
   }
-  std::set<std::pair<std::string, std::string>> visible_parent_versions;
+  std::set<std::pair<EngineUuid, EngineUuid>> visible_parent_versions;
   for (const auto& row :
        VisibleMgaRowsForContext(state, parent_table_uuid, context)) {
     const std::string key = CrudFieldValue(row.values, parent_column);
@@ -1734,7 +1746,7 @@ void AddVisibleParentKeysForProof(
 void AddCachedConflictingVisibleKeysForProof(
     const CrudIndexRecord& index,
     const std::vector<scratchbird::core::bulk_load::BulkConstraintProofKeyRef>& incoming_keys,
-    const std::map<std::string, std::set<std::string>>* key_cache,
+    const std::map<EngineUuid, std::set<std::string>>* key_cache,
     std::vector<scratchbird::core::bulk_load::BulkConstraintProofKeyRef>* keys) {
   if (key_cache == nullptr || keys == nullptr) {
     return;
@@ -1765,22 +1777,22 @@ DirectBulkConstraintProofSelection BuildDirectBulkConstraintProof(
     const std::vector<CrudRowVersionRecord>& staged_rows,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch,
     bool index_entries_authoritative,
-    const std::map<std::string, std::set<std::string>>* append_index_key_cache,
+    const std::map<EngineUuid, std::set<std::string>>* append_index_key_cache,
     const DirectPrecomputedIndexEntryMap* precomputed_entries) {
   DirectBulkConstraintProofSelection selection;
   scratchbird::core::bulk_load::BulkConstraintProofRequest proof_request;
   proof_request.database_uuid =
-      ParseDirectTypedUuid(UuidKind::database, request.context.database_uuid);
+      BindDirectTypedUuid(UuidKind::database, request.context.database_uuid);
   proof_request.object_uuid =
-      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid);
+      BindDirectTypedUuid(UuidKind::object, request.target_table.uuid);
   proof_request.transaction_uuid =
-      ParseDirectTypedUuid(UuidKind::transaction,
+      BindDirectTypedUuid(UuidKind::transaction,
                            request.context.transaction_uuid);
   proof_request.local_transaction_id = request.context.local_transaction_id;
   proof_request.route = "direct_physical_bulk";
   proof_request.direct_physical_bulk = true;
   proof_request.strict_bulk_load = request.strict_bulk_load_requested;
-  std::set<std::string> proofed_unique_indexes;
+  std::set<EngineUuid> proofed_unique_indexes;
 
   auto fail_before_proof = [&](std::string reason) {
     selection.ok = false;
@@ -2115,7 +2127,7 @@ std::vector<MgaSecondaryIndexDeltaLedgerEntryInput> DirectDeltaEntries(
 
 std::vector<MgaIndexEntryAppendBatch> DirectIndexAppendBatches(
     const std::vector<CrudIndexRecord>& indexes,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const std::vector<MgaIndexEntryRowInput>& rows) {
   std::vector<MgaIndexEntryAppendBatch> batches;
   batches.reserve(indexes.size());
@@ -2387,7 +2399,7 @@ bool DirectBuildTypedSimpleIndexKey(
   }
   return DirectBuildTypedSimpleIndexKeyFromTyped(
       effective_target_type,
-      ParseDirectTypedUuid(UuidKind::object, index.index_uuid),
+      BindDirectTypedUuid(UuidKind::object, index.index_uuid),
       *typed,
       encoded_key,
       stats);
@@ -2508,7 +2520,7 @@ DirectBuildStageSimpleIndexPrecomputePlan(
           first_typed_row->fields[*ordinal].second.descriptor.canonical_type_name);
     }
     const TypedUuid type_descriptor_uuid =
-        ParseDirectTypedUuid(UuidKind::object, index.index_uuid);
+        BindDirectTypedUuid(UuidKind::object, index.index_uuid);
     if (target_type == dt::CanonicalTypeId::unknown ||
         !type_descriptor_uuid.valid()) {
       plans.clear();
@@ -3465,8 +3477,8 @@ DirectNativePacketIndexPrecomputeResult
 DirectPrecomputeNativePacketIndexEntries(
     const std::vector<DirectStageSimpleIndexPrecomputePlan>& plans,
     const EngineNativeRowPacketFrame& frame,
-    const std::vector<std::string>& row_uuids,
-    const std::vector<std::string>& version_uuids) {
+    const std::vector<EngineUuid>& row_uuids,
+    const std::vector<EngineUuid>& version_uuids) {
   DirectNativePacketIndexPrecomputeResult result;
   if (plans.empty() || !frame.present ||
       frame.row_count > row_uuids.size() ||
@@ -3496,7 +3508,7 @@ DirectPrecomputeNativePacketIndexEntries(
 
 std::vector<MgaExactIndexEntryAppendBatch> DirectExactIndexAppendBatches(
     const std::vector<CrudIndexRecord>& indexes,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     const DirectPrecomputedIndexEntryMap& precomputed_entries) {
   std::vector<MgaExactIndexEntryAppendBatch> batches;
   batches.reserve(indexes.size());
@@ -3547,7 +3559,7 @@ std::vector<MgaExactIndexEntryAppendBatch> DirectExactIndexAppendBatches(
 
 std::vector<MgaExactIndexEntryAppendBatch> DirectMoveExactIndexAppendBatches(
     const std::vector<CrudIndexRecord>& indexes,
-    const std::string& table_uuid,
+    const EngineUuid& table_uuid,
     DirectPrecomputedIndexEntryMap* precomputed_entries) {
   std::vector<MgaExactIndexEntryAppendBatch> batches;
   if (precomputed_entries == nullptr) {
@@ -3834,10 +3846,10 @@ bool ProveDirectSortedRootPublishRecovery(
       idx::IndexFamilyName(family);
   old_request.metadata.semantic_profile = semantic_profile;
   old_request.metadata.leaf_entry_capacity = 128;
-  const std::string old_row_uuid =
-      built.entries.empty() ? std::string{} : built.entries.front().row_uuid;
-  const std::string old_version_uuid =
-      built.entries.empty() ? std::string{} : built.entries.front().version_uuid;
+  const EngineUuid old_row_uuid =
+      built.entries.empty() ? EngineUuid{} : built.entries.front().row_uuid;
+  const EngineUuid old_version_uuid =
+      built.entries.empty() ? EngineUuid{} : built.entries.front().version_uuid;
   old_request.rows.push_back({"__orh211_old_root__",
                               old_row_uuid,
                               old_version_uuid,
@@ -3998,7 +4010,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
     const std::vector<CrudRowVersionRecord>& staged_rows,
     const std::vector<std::vector<std::pair<std::string, std::string>>>& logical_value_batch,
     bool index_entries_authoritative,
-    const std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>* append_index_entry_key_cache) {
+    const std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>* append_index_entry_key_cache) {
   DirectSortedBulkIndexBuildSelection selection;
   if (!DirectSortedBulkIndexBuildEnabled(request)) {
     if (DirectDeferredIndexBenchmarkCleanRequired(request)) {
@@ -4037,7 +4049,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
   }
 
   const TypedUuid table_uuid =
-      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid);
+      BindDirectTypedUuid(UuidKind::object, request.target_table.uuid);
   if (!table_uuid.valid()) {
     selection.ok = false;
     selection.failure_reason = "sorted_bulk_index_table_uuid_invalid";
@@ -4069,7 +4081,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
       continue;
     }
     const TypedUuid index_uuid =
-        ParseDirectTypedUuid(UuidKind::object, index.index_uuid);
+        BindDirectTypedUuid(UuidKind::object, index.index_uuid);
     if (!index_uuid.valid()) {
       selection.ok = false;
       selection.failure_reason = "sorted_bulk_index_uuid_invalid";
@@ -4125,7 +4137,7 @@ DirectSortedBulkIndexBuildSelection BuildDirectSortedBulkIndexArtifacts(
       build.validate_unique_reservation_batch = true;
       build.unique_constraint_uuid = index_uuid;
       build.transaction_uuid =
-          ParseDirectTypedUuid(UuidKind::transaction,
+          BindDirectTypedUuid(UuidKind::transaction,
                                request.context.transaction_uuid);
       build.local_transaction_id = request.context.local_transaction_id;
       build.unique_reservation_validation_evidence_token =
@@ -4486,9 +4498,9 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
   }
 
   const TypedUuid relation_uuid =
-      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid);
+      BindDirectTypedUuid(UuidKind::object, request.target_table.uuid);
   const TypedUuid transaction_uuid =
-      ParseDirectTypedUuid(UuidKind::transaction,
+      BindDirectTypedUuid(UuidKind::transaction,
                            request.context.transaction_uuid);
   if (!relation_uuid.valid() || !transaction_uuid.valid() ||
       request.context.local_transaction_id == 0) {
@@ -4540,7 +4552,7 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
     scratchbird::storage::database::PhysicalMgaCowMutationRequest cow;
     cow.database_path = request.context.database_path;
     cow.relation_uuid = relation_uuid;
-    cow.row_uuid = ParseDirectTypedUuid(UuidKind::row, row.row_uuid);
+    cow.row_uuid = BindDirectTypedUuid(UuidKind::row, row.row_uuid);
     cow.transaction_uuid = transaction_uuid;
     cow.existing_local_transaction_id =
         scratchbird::transaction::mga::MakeLocalTransactionId(
@@ -5298,11 +5310,11 @@ DirectStrictBulkLifecycleResult RunDirectStrictBulkLifecycle(
   };
 
   const TypedUuid database_uuid =
-      ParseDirectTypedUuid(UuidKind::database, request.context.database_uuid);
+      BindDirectTypedUuid(UuidKind::database, request.context.database_uuid);
   const TypedUuid object_uuid =
-      ParseDirectTypedUuid(UuidKind::object, request.target_table.uuid);
+      BindDirectTypedUuid(UuidKind::object, request.target_table.uuid);
   const TypedUuid transaction_uuid =
-      ParseDirectTypedUuid(UuidKind::transaction, request.context.transaction_uuid);
+      BindDirectTypedUuid(UuidKind::transaction, request.context.transaction_uuid);
   if (!database_uuid.valid() || !object_uuid.valid() || !transaction_uuid.valid()) {
     return fail_before_begin("strict_bulk_load_invalid_identity");
   }
@@ -5341,7 +5353,7 @@ DirectStrictBulkLifecycleResult RunDirectStrictBulkLifecycle(
   strict_rows.reserve(staged_rows.size());
   for (std::size_t index = 0; index < staged_rows.size(); ++index) {
     scratchbird::core::bulk_load::StrictBulkLoadRow row;
-    row.row_uuid = ParseDirectTypedUuid(UuidKind::row, staged_rows[index].row_uuid);
+    row.row_uuid = BindDirectTypedUuid(UuidKind::row, staged_rows[index].row_uuid);
     row.encoded_row = EncodedStrictBulkRow(logical_value_batch[index]);
     row.constraints_valid = true;
     row.indexes_valid = true;
@@ -5504,7 +5516,7 @@ DirectPhysicalBulkAppendResult PublishDirectStrictBulkAfterPhysicalSuccess(
   result.evidence.push_back({"strict_bulk_load_physical_publication_succeeded",
                              "row_index_append_flush"});
   const auto transaction_uuid =
-      ParseDirectTypedUuid(UuidKind::transaction, request.context.transaction_uuid);
+      BindDirectTypedUuid(UuidKind::transaction, request.context.transaction_uuid);
   const auto published = scratchbird::core::bulk_load::PublishStrictBulkLoadVisible(
       &lifecycle->ledger,
       scratchbird::core::bulk_load::StrictBulkLoadPublishRequest{
@@ -5982,8 +5994,29 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                  : "direct_physical_bulk_insert_target_scoped"});
   result.evidence.push_back({"relation_descriptor",
                              relation_descriptor.descriptor_uuid});
-  DirectBulkUuidBatch uuid_batch =
-      BuildDirectBulkUuidBatch(request, direct_row_count);
+  DirectBulkUuidBatch uuid_batch;
+  try {
+    uuid_batch = BuildDirectBulkUuidBatch(request, direct_row_count);
+  } catch (const CrudIdentityIssuanceError& failure) {
+    const auto& cause = failure.diagnostic();
+    return DirectBulkFailureWithEvidence(
+        request,
+        MakeEngineApiDiagnostic(cause.diagnostic_code, cause.message_key,
+                                cause.remediation_hint, true),
+        "row_identity_issuance_failed", result.evidence, result.dml_summary);
+  } catch (const std::bad_alloc&) {
+    return DirectBulkFailureWithEvidence(
+        request,
+        MakeEngineApiDiagnostic("RESOURCE.BUDGET_EXCEEDED",
+                                "dml.bulk_uuid.allocation_failed", {}, true),
+        "row_identity_allocation_failed", result.evidence, result.dml_summary);
+  } catch (const std::length_error&) {
+    return DirectBulkFailureWithEvidence(
+        request,
+        MakeEngineApiDiagnostic("RESOURCE.BUDGET_EXCEEDED",
+                                "dml.bulk_uuid.extent_invalid", {}, true),
+        "row_identity_extent_invalid", result.evidence, result.dml_summary);
+  }
   AddDirectBulkUuidBatchEvidence(uuid_batch, &result);
   mark_phase("uuid_batch");
   if (request.before_row_publication) {
@@ -7717,8 +7750,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     }
   }
 
-  std::map<std::string, std::set<std::string>> append_index_key_cache;
-  std::map<std::string, std::map<std::string, CrudIndexEntryRecord>>
+  std::map<EngineUuid, std::set<std::string>> append_index_key_cache;
+  std::map<EngineUuid, std::map<std::string, CrudIndexEntryRecord>>
       append_index_entry_key_cache;
 
   if (test_profile == TestOptimizationProfile::evicted && append_index_cache_hit) {

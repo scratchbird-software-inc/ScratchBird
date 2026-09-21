@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -32,11 +33,25 @@ struct CatalogPinnedDescriptorCacheKey {
   std::uint64_t stats_epoch = 0;
   bool stats_epoch_relevant = false;
   std::string descriptor_set_digest;
-  std::vector<std::string> object_uuids;
-  std::vector<std::string> index_uuids;
+  std::vector<EngineUuid> object_uuids;
+  std::vector<EngineUuid> index_uuids;
   std::string security_policy_identity;
   std::string redaction_policy_identity;
   std::string resource_policy_identity;
+
+  bool operator==(const CatalogPinnedDescriptorCacheKey&) const = default;
+  bool operator<(const CatalogPinnedDescriptorCacheKey& other) const {
+    return std::tie(descriptor_family, catalog_epoch, security_epoch,
+                    resource_policy_epoch, name_resolution_epoch, stats_epoch,
+                    stats_epoch_relevant, descriptor_set_digest, object_uuids,
+                    index_uuids, security_policy_identity,
+                    redaction_policy_identity, resource_policy_identity) <
+           std::tie(other.descriptor_family, other.catalog_epoch, other.security_epoch,
+                    other.resource_policy_epoch, other.name_resolution_epoch, other.stats_epoch,
+                    other.stats_epoch_relevant, other.descriptor_set_digest, other.object_uuids,
+                    other.index_uuids, other.security_policy_identity,
+                    other.redaction_policy_identity, other.resource_policy_identity);
+  }
 };
 
 struct CatalogPinnedDescriptorSnapshot {
@@ -64,8 +79,8 @@ struct CatalogPinnedDescriptorLookupResult {
 
 struct CatalogPinnedDescriptorInvalidationEvent {
   std::string event_kind;
-  std::string dependency_uuid;
-  std::string index_uuid;
+  EngineUuid dependency_uuid;
+  EngineUuid index_uuid;
   std::string security_policy_identity;
   std::string redaction_policy_identity;
   std::uint64_t event_epoch = 0;
@@ -76,8 +91,8 @@ struct CatalogPinnedDescriptorInvalidatedEntry {
   std::string cache_key;
   std::string descriptor_family;
   std::string reason;
-  std::vector<std::string> object_uuids;
-  std::vector<std::string> index_uuids;
+  std::vector<EngineUuid> object_uuids;
+  std::vector<EngineUuid> index_uuids;
 };
 
 struct CatalogPinnedDescriptorInvalidationResult {
@@ -103,7 +118,8 @@ class CatalogPinnedDescriptorCache {
 
  private:
   mutable std::mutex mutex_;
-  std::map<std::string, std::shared_ptr<const CatalogPinnedDescriptorSnapshot>> snapshots_;
+  std::map<CatalogPinnedDescriptorCacheKey,
+           std::shared_ptr<const CatalogPinnedDescriptorSnapshot>> snapshots_;
   CatalogPinnedDescriptorCacheStats stats_;
 };
 
@@ -115,7 +131,7 @@ CatalogPinnedDescriptorLookupResult ValidateCatalogPinnedDescriptorKey(
 bool CatalogPinnedDescriptorInvalidationEventKindRecognized(const std::string& event_kind);
 CatalogPinnedDescriptorInvalidationEvent CatalogPinnedDescriptorInvalidationEventForMutation(
     std::string mutation_source,
-    std::string dependency_uuid,
+    EngineUuid dependency_uuid,
     std::uint64_t event_epoch);
 CatalogPinnedDescriptorCache& GlobalCatalogPinnedDescriptorCache();
 
