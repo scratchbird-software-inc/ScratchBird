@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "node_uuid_issuer.hpp"
 #include "native_checkpoint_selection.hpp"
 #include "native_publication_watermark.hpp"
 #include <memory>
@@ -57,7 +58,8 @@ class NativePublicationLease {
     NativePublicationLease&,u64) noexcept;
   friend NativePublicationInspection PublishNativeInventoryOnLease(
     NativePublicationLease&,const NativeManagementOperation&,
-    const transaction::mga::LocalTransactionInventory&,u64) noexcept;
+    const transaction::mga::LocalTransactionInventory&,u64,
+    core::uuid::StandaloneUuidV7Issuer&) noexcept;
 };
 struct NativePublicationReservation {
   NativePublicationError error=NativePublicationError::invalid_request;
@@ -134,8 +136,10 @@ NativePublicationInspection PublishNativeManagementControlGraphOnLease(
 // reuse. The owning kernel must authorize the exact inventory delta and record;
 // this primitive grants neither execution permission nor a SQL completion.
 // Anchored/ambiguous attempts require existing exact-graph recovery, not rebuild.
+// Requires the owning node/policy-bound allocation instance, not raw time or a
+// context-free runtime generator. The kernel retains policy-selection authority.
 NativePublicationInspection PublishNativeInventoryOnLease(
   NativePublicationLease&,const NativeManagementOperation&,
   const transaction::mga::LocalTransactionInventory&,
-  u64 maximum_verification_image_bytes) noexcept;
+  u64 maximum_verification_image_bytes,core::uuid::StandaloneUuidV7Issuer&) noexcept;
 } // namespace scratchbird::storage::database

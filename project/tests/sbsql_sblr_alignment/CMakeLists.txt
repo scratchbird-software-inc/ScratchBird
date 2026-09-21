@@ -1413,6 +1413,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                      ${CMAKE_CURRENT_BINARY_DIR}/core_time)
   endif()
   add_executable(sbsql_sblr_alignment_uuid_generation_source uuid_generation_source_test.cpp)
+  add_executable(sbsql_sblr_alignment_node_uuid_issuer node_uuid_issuer_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_node_uuid_issuer PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_node_uuid_issuer PRIVATE sb_core_uuid sb_core_time sb_core_diagnostic_catalog Threads::Threads)
+  target_link_options(sbsql_sblr_alignment_node_uuid_issuer PRIVATE
+    "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv")
+  add_test(NAME sbsql_sblr_alignment_node_uuid_issuer COMMAND sbsql_sblr_alignment_node_uuid_issuer)
+  set_tests_properties(sbsql_sblr_alignment_node_uuid_issuer PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-01;binary_uuid;node_issuer;entropy_failure;fork;not_SQL_E2E" TIMEOUT 60)
   target_compile_features(sbsql_sblr_alignment_uuid_generation_source PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_uuid_generation_source PRIVATE
     sb_core_uuid sb_core_time sb_core_diagnostic_catalog Threads::Threads)
@@ -9180,6 +9188,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(sbsql_sblr_alignment_native_management_control_bundle PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
     -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=RAND_bytes
+    -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
     -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
     -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
   add_test(NAME sbsql_sblr_alignment_native_management_control_bundle COMMAND sbsql_sblr_alignment_native_management_control_bundle)

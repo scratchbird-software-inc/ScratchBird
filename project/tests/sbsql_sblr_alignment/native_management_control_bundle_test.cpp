@@ -14,6 +14,7 @@
 #include <openssl/sha.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <future>
 #include <chrono>
 #include <cstdlib>
@@ -28,6 +29,8 @@
 namespace {long allocation_budget=-1;bool counting=false;unsigned long allocations=0;unsigned hash_fault=0,hash_target=1,hash_seen=0;bool hash_active=false,hash_counting=false;
 unsigned entropy_fault=0,entropy_calls=0;
 bool repeated_entropy=false;
+std::atomic<bool> owned_clock_controlled{false};
+std::atomic<std::uint64_t> owned_clock_millis{1700000000123ULL},owned_clock_ticks{1};
 off_t corrupt_offset=0;bool corrupt_was_zero=false;
 bool io_counting=false;unsigned reads=0,writes=0,syncs=0,read_fault=0,write_fault=0,sync_fault=0,kill_write=0,kill_sync=0,corrupt_read=0;bool kill_after_sync=false;std::size_t torn_bytes=0;int allocation_shard=-1;
 int inventory_allocation_route=-1,inventory_allocation_shard=-1,inventory_install_stage=-1,inventory_install_route=-1,inventory_install_shard=-1;bool inventory_read_only=false;bool inventory_publication_mode=false,inventory_publication_cold=false;const unsigned char* replacement_bytes=nullptr;std::size_t replacement_length=0;off_t replacement_offset=0;unsigned replacement_at=0,replacement_seen=0;
@@ -36,7 +39,14 @@ void Trace(off_t value){if(trace_io){if(io_trace_count==io_trace.size())std::abo
 void* operator new(std::size_t n){if(counting)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return ::operator new(n);}
 extern "C" int __real_RAND_bytes(unsigned char*,int);
-extern "C" int __wrap_RAND_bytes(unsigned char* out,int count){++entropy_calls;if(entropy_fault&&!--entropy_fault)return 0;if(repeated_entropy){std::fill_n(out,count,0);return 1;}return __real_RAND_bytes(out,count);}
+extern "C" int __wrap_RAND_bytes(unsigned char* out,int count){++entropy_calls;if(entropy_fault&&!--entropy_fault)return 0;if(repeated_entropy){std::fill_n(out,count,0);if(count)out[count-1]=1;return 1;}return __real_RAND_bytes(out,count);}
+extern "C" scratchbird::core::time::ClockSnapshotResult __real__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv();
+extern "C" scratchbird::core::time::ClockSnapshotResult __wrap__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv(){
+ if(!owned_clock_controlled)return __real__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv();
+ scratchbird::core::time::ClockSnapshotResult result;
+ result.value={{owned_clock_ticks++},{static_cast<std::int64_t>(owned_clock_millis/1000),static_cast<std::uint32_t>((owned_clock_millis%1000)*1000000)}};
+ return result;
+}
 void operator delete(void* p) noexcept{std::free(p);}void operator delete[](void* p) noexcept{std::free(p);}
 void operator delete(void* p,std::size_t) noexcept{std::free(p);}void operator delete[](void* p,std::size_t) noexcept{std::free(p);}
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
@@ -107,6 +117,9 @@ void Failed(const db::NativePublicationPlanImage& r){Check(!r.ok()&&!r.plan&&r.b
 void Bad(const db::NativePublicationPlan& p){Failed(db::EncodeNativePublicationPlan(p));const auto raw=Oracle(p);Failed(db::DecodeNativePublicationPlan(raw));}
 struct Fixture {
  std::filesystem::path path;d::FileDevice device,secondary;Bytes secondary_before;std::vector<d::NativeFilespaceDevice> devices;u64 size,budget;
+ std::unique_ptr<scratchbird::core::uuid::StandaloneUuidV7Issuer> issuer;
+ void ResetIssuer(){issuer=std::make_unique<scratchbird::core::uuid::StandaloneUuidV7Issuer>(
+   scratchbird::core::uuid::StandaloneUuidV7Binding{Id(1),Id(10)},scratchbird::core::uuid::StandaloneUuidV7Policy{{},0,1000});}
  Fixture(unsigned profile){
   const auto* temporary=std::getenv("TMPDIR");
   auto name=((temporary&&*temporary?std::filesystem::path(temporary):std::filesystem::temp_directory_path())/"sb-management-bundle.XXXXXX").string();
@@ -116,6 +129,7 @@ struct Fixture {
   r.creator.transaction_uuid={UuidKind::transaction,Id(5)};r.creator.local_id=mga::MakeLocalTransactionId(1);r.creator.scope=mga::TransactionScope::local_node;r.creation_utc_millis=1789357072000ULL;r.total_pages=256;
   Check(device.Open(path.string(),d::FileOpenMode::create_new).ok(),"owned device");devices={{Id(2),page.uuid,&device}};
   Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,r,budget).ok(),"actual genesis");
+  ResetIssuer();
  }
  ~Fixture(){device.Close();secondary.Close();std::error_code ec;std::filesystem::remove_all(path.parent_path(),ec);}
  Bytes Read(u64 page,u64 count=1){Bytes b(size*count);const auto r=device.ReadAt(page*size,b.data(),b.size());Check(r.ok()&&r.bytes_transferred==b.size(),"owned read");return b;}
@@ -818,23 +832,30 @@ void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false)
   Check(held.ok(),"owned constructor actual generation reservation");
   const auto pending=f.Read(0,256);
   auto wrong=record;wrong.request_context_uuid=Id(20200);
-  const auto mismatch=db::PublishNativeInventoryOnLease(*held.lease,wrong,inventory,f.budget);
+  const auto mismatch=db::PublishNativeInventoryOnLease(*held.lease,wrong,inventory,f.budget,*f.issuer);
   if(mismatch.error!=db::NativePublicationError::request_mismatch)std::cerr<<"owned mismatch error="<<int(mismatch.error)<<'\n';
   Check(mismatch.error==db::NativePublicationError::request_mismatch&&!mismatch.snapshot&&f.Read(0,256)==pending,
     "owned constructor binds exact request before any graph write");
-  const auto short_budget=db::PublishNativeInventoryOnLease(*held.lease,record,inventory,0);
+  for(unsigned field=0;field<2;++field){
+   auto binding=f.issuer->binding();(field?binding.policy_snapshot_uuid:binding.database_uuid)=Id(20550);
+   scratchbird::core::uuid::StandaloneUuidV7Issuer wrong_issuer(binding,{{},0,1000});
+   const auto crossed=db::PublishNativeInventoryOnLease(*held.lease,record,inventory,f.budget,wrong_issuer);
+   Check(crossed.error==db::NativePublicationError::request_mismatch&&!crossed.snapshot&&f.Read(0,256)==pending,
+     "node and policy issuer bindings must match actual lease and owning record");
+  }
+  const auto short_budget=db::PublishNativeInventoryOnLease(*held.lease,record,inventory,0,*f.issuer);
   Check(short_budget.error==db::NativePublicationError::resource_exhausted&&!short_budget.snapshot&&f.Read(0,256)==pending,
     "owned constructor resource failure has no write or receipt");
-  entropy_fault=1;const auto no_identity=db::PublishNativeInventoryOnLease(*held.lease,record,inventory,f.budget);
+  entropy_fault=1;const auto no_identity=db::PublishNativeInventoryOnLease(*held.lease,record,inventory,f.budget,*f.issuer);
   Check(!entropy_fault&&no_identity.error==db::NativePublicationError::identity_failure&&!no_identity.snapshot&&f.Read(0,256)==pending,
     "owned constructor entropy failure never manufactures identity or publication");
   if(!phase) {
    auto skipped=inventory;skipped.entries[1].state=mga::TransactionState::active;
-   const auto refused=db::PublishNativeInventoryOnLease(*held.lease,record,skipped,f.budget);
+   const auto refused=db::PublishNativeInventoryOnLease(*held.lease,record,skipped,f.budget,*f.issuer);
    Check(!refused.ok()&&!refused.snapshot&&f.Read(0,256)==pending,"owned constructor cannot bypass durable starting");
   }
   auto unsorted=inventory;std::reverse(unsorted.entries.begin(),unsorted.entries.end());
-  const auto published=db::PublishNativeInventoryOnLease(*held.lease,record,unsorted,f.budget);
+  const auto published=db::PublishNativeInventoryOnLease(*held.lease,record,unsorted,f.budget,*f.issuer);
   if(!published.ok())std::cerr<<"owned publication profile="<<profile<<" phase="<<phase<<" error="<<int(published.error)<<'\n';
   Check(published.ok()&&published.snapshot->selection.selection_generation==before.snapshot->selection.selection_generation+1,
     "production constructor actually selects its generated graph");
@@ -850,7 +871,7 @@ void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false)
    Check(found!=records.end()&&*found==old,"owned constructor preserves original retained allocation bytes");
   }
   const auto after=f.Read(0,256);
-  const auto retry=db::PublishNativeInventoryOnLease(*held.lease,record,inventory,f.budget);
+  const auto retry=db::PublishNativeInventoryOnLease(*held.lease,record,inventory,f.budget,*f.issuer);
   Check(retry.error==db::NativePublicationError::operation_pending&&!retry.snapshot&&f.Read(0,256)==after,
     "anchored constructor never substitutes a freshly generated graph");
   held.lease.reset();
@@ -911,7 +932,7 @@ void OwnedInventoryPlacement(unsigned layout) {
  }
  Check(f.device.Sync().ok(),"dirty free fixture barrier");
  OwnedInventoryRequest request(f);const auto before=f.Read(0,256);
- const auto result=db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,f.budget);
+ const auto result=db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,f.budget,*f.issuer);
  if(layout==2) {
   Check(result.error==db::NativePublicationError::allocation_exhausted&&!result.snapshot&&f.Read(0,256)==before,
     "all dirty free slots exhaust allocation without overwrite or false receipt");return;
@@ -951,20 +972,20 @@ void OwnedInventoryBudgetAndStale() {
  const u64 probes=extent+bundle+2+maps+inventory;
  const u64 allowance=bound.retained_image_bytes+(20+10*maps+14*inventory+4*extent+4*bundle+probes)*f.size+4*record.bytes.size();
  entropy_fault=1;
- const auto short_work=db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,allowance-1);
+ const auto short_work=db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,allowance-1,*f.issuer);
  Check(entropy_fault==1&&short_work.error==db::NativePublicationError::resource_exhausted&&!short_work.snapshot&&f.Read(0,256)==before,
    "one byte short of independent construction charge refuses before issuing identity or writing");
- const auto exact=db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,allowance);
+ const auto exact=db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,allowance,*f.issuer);
  Check(!entropy_fault&&exact.error==db::NativePublicationError::identity_failure&&!exact.snapshot&&f.Read(0,256)==before,
    "exact independent construction allowance reaches real identity issuance without mutation");
- repeated_entropy=true;entropy_calls=0;
- const auto collision=db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,f.budget);
- repeated_entropy=false;
- Check(entropy_calls==2&&collision.error==db::NativePublicationError::identity_failure&&!collision.snapshot&&f.Read(0,256)==before,
-   "duplicate newly generated binary UUID refuses without substitute identity or graph write");
+ repeated_entropy=true;entropy_calls=0;owned_clock_controlled=true;owned_clock_millis=u64{1}<<40;f.ResetIssuer();
+ const auto collision=db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,f.budget,*f.issuer);
+ repeated_entropy=false;owned_clock_controlled=false;
+ Check(entropy_calls==1&&collision.error==db::NativePublicationError::identity_failure&&!collision.snapshot&&f.Read(0,256)==before,
+   "newly generated binary UUID colliding with retained database identity refuses without substitute or graph write");
  const auto abandoned=db::AbandonNativeInventoryPublicationOnOpenDevices(Id(1),f.devices,Id(2),request.pending,Id(20100),request.intent,Id(20500),f.budget);
  Check(abandoned.ok(),"owning explicit resolution changes actual pending snapshot");const auto resolved=f.Read(0,256);
- const auto stale=db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,f.budget);
+ const auto stale=db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,f.budget,*f.issuer);
  Check(stale.error==db::NativePublicationError::stale_base&&!stale.snapshot&&f.Read(0,256)==resolved,
    "constructor rereads actual state and refuses obsolete retained lease");
  std::cout<<"owned inventory exact construction allowance="<<allowance<<" stale-base PASS\n";
@@ -978,9 +999,11 @@ void OwnedInventoryFaults(unsigned route,unsigned shard) {
   Check(write.ok()&&write.bytes_transferred==before.size()&&f.device.Sync().ok(),"restore isolated pending fault fixture");
   request.held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),f.devices,Id(2),request.pending,Id(20100),request.intent,f.budget);
   Check(request.held.ok(),"resume exact isolated pending request");
+  f.ResetIssuer();
  };
- const auto call=[&](u64 budget){return db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,budget);};
+ const auto call=[&](u64 budget){return db::PublishNativeInventoryOnLease(*request.held.lease,request.record,request.inventory,budget,*f.issuer);};
  byte scratch=0;for(unsigned n=0;n<4097;++n)Check(f.device.ReadAt(0,&scratch,1).ok(),"stabilize optional observation allocations");
+ owned_clock_controlled=true;owned_clock_millis=1700000000123ULL;
  reads=writes=syncs=entropy_calls=hash_seen=0;allocations=0;
  counting=hash_counting=io_counting=true;const auto good=call(f.budget);counting=hash_counting=io_counting=false;
  const auto nr=reads,nw=writes,ns=syncs,nh=hash_seen,ne=entropy_calls;const auto na=allocations;
@@ -1047,9 +1070,9 @@ void OwnedInventoryFaults(unsigned route,unsigned shard) {
     d::FileDevice file;if(!file.Open(f.path.string(),d::FileOpenMode::open_existing).ok())_exit(80);
     std::vector<d::NativeFilespaceDevice> files{{Id(2),d::kCanonicalFilespacePageProfiles[0].uuid,&file}};
     auto held=db::ResumeNativePublicationGenerationOnOpenDevices(Id(1),files,Id(2),request.pending,Id(20100),request.intent,f.budget);
-    if(!held.ok())_exit(81);reads=writes=syncs=0;kill_write=kind<2?at:0;kill_sync=kind>=2?at:0;
+    if(!held.ok())_exit(81);f.ResetIssuer();reads=writes=syncs=0;kill_write=kind<2?at:0;kill_sync=kind>=2?at:0;
     kill_after_sync=kind==3;torn_bytes=kind==1?f.size/2:0;io_counting=true;
-    (void)db::PublishNativeInventoryOnLease(*held.lease,request.record,request.inventory,f.budget);_exit(87);
+    (void)db::PublishNativeInventoryOnLease(*held.lease,request.record,request.inventory,f.budget,*f.issuer);_exit(87);
    }
    int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,"owned writer dies at exact write or barrier");
    const auto recovery=fork();Check(recovery>=0,"fresh owned publication recovery process");
@@ -1091,6 +1114,7 @@ void OwnedInventoryFaults(unsigned route,unsigned shard) {
   Check(completed&&incomplete,"owned death sweep covers complete and incomplete graphs");
   std::cout<<"owned recovery completed="<<completed<<" incomplete="<<incomplete<<'\n';
  }
+ owned_clock_controlled=false;
  std::cout<<"owned inventory fault route="<<route<<" shard="<<shard<<" PASS\n";
 }
 void InventoryPlan(Graph& g,const Bundle& b){

@@ -375,7 +375,7 @@ std::optional<TypedUuid> GenerateAuditTransactionUuid(
   for (std::uint64_t attempt = 0; attempt < attempts; ++attempt) {
     const auto generated = GenerateDurableEngineIdentityV7(
         UuidKind::transaction,
-        unix_epoch_millis + inventory.next_local_transaction_id + attempt);
+        unix_epoch_millis);
     if (!generated.ok()) {
       *diagnostic = generated.diagnostic;
       return std::nullopt;

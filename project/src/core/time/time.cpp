@@ -69,6 +69,7 @@ const char* LocalClockObservationDecisionName(LocalClockObservationDecision deci
     case LocalClockObservationDecision::monotonic_regression_detected: return "monotonic_regression_detected";
     case LocalClockObservationDecision::wall_clock_rollback_detected: return "wall_clock_rollback_detected";
     case LocalClockObservationDecision::wall_clock_forward_jump_detected: return "wall_clock_forward_jump_detected";
+    case LocalClockObservationDecision::counter_exhausted: return "counter_exhausted";
   }
   return "unknown";
 }
@@ -210,6 +211,14 @@ LocalTimeAuthorityObservation ObserveLocalNodeClock(LocalTimeAuthorityState stat
     return observation;
   }
 
+  if (state.accepted_observations == (std::numeric_limits<u64>::max)()) {
+    observation.status = TimeErrorStatus();
+    observation.decision = LocalClockObservationDecision::counter_exhausted;
+    observation.diagnostic = MakeClockObservationDiagnostic(observation.status,
+        "TIME.SOURCE_FAILED", "time.local.observation_counter_exhausted", observation.decision);
+    return observation;
+  }
+
   if (snapshot.monotonic.ticks < state.last_monotonic.ticks) {
     observation.decision = LocalClockObservationDecision::monotonic_regression_detected;
     observation.status = policy.fail_closed_on_monotonic_regression ? TimeErrorStatus() : TimeWarningStatus();
@@ -235,7 +244,8 @@ LocalTimeAuthorityObservation ObserveLocalNodeClock(LocalTimeAuthorityState stat
   } else if (wall_compare > 0 && policy.max_wall_clock_forward_jump_nanoseconds != 0) {
     const u64 forward_jump = WallClockDeltaNanos(state.last_wall_clock, snapshot.wall_clock);
     const u64 monotonic_elapsed = SaturatingDurationNanos(state.last_monotonic, snapshot.monotonic);
-    if (forward_jump > monotonic_elapsed + policy.max_wall_clock_forward_jump_nanoseconds) {
+    if (forward_jump > monotonic_elapsed &&
+        forward_jump - monotonic_elapsed > policy.max_wall_clock_forward_jump_nanoseconds) {
       observation.decision = LocalClockObservationDecision::wall_clock_forward_jump_detected;
       observation.status = policy.fail_closed_on_wall_clock_forward_jump ? TimeErrorStatus() : TimeWarningStatus();
       observation.diagnostic = MakeClockObservationDiagnostic(observation.status,

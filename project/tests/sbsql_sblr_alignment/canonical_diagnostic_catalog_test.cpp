@@ -36,9 +36,9 @@ void Sample(std::string_view code,d::CanonicalSeverity severity,bool failure,
 int main() {
   using S=d::CanonicalSeverity;
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
-  // Includes narrow-query and typed metric-update diagnostic registrations. Check the exact
+  // Includes narrow-query, typed metric-update and clock-source registrations. Check the exact
   // admitted Core import, not a minimum row count.
-  Check(catalog.size==1411 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1412 && catalog.data!=nullptr,"complete Core code inventory missing");
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -94,6 +94,11 @@ int main() {
   Sample("SBSQL.METADATA.CATALOG_SQL_FORBIDDEN",S::internal,true,
          "false","block_implementation_path","SBSQL");
   Sample("DIAG.CODE_UNKNOWN",S::error,true,"false","reject_operation","DIAG");
+  Sample("TIME.SOURCE_FAILED",S::error,true,"only_after_clock_authority_revalidation",
+         "reject_without_clock_or_identity_state_publication","TIME");
+  const auto* clock_failure=d::FindCanonicalDiagnosticCode("TIME.SOURCE_FAILED");
+  Check(clock_failure&&clock_failure->sqlstate=="55000"&&clock_failure->numeric_binding=="not_applicable",
+        "clock-source failure metadata differs from admitted authority");
   Sample("SBLR.QUERY_BINDING.STALE",S::error,true,
          "only_after_corrected_input_and_fresh_authority_validation",
          "reject_without_binding_or_result_publication_preserve_transaction_state","SBLR");
@@ -175,8 +180,8 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x9a,0x0d,0xc4,0x33,0xb7,0x94,0xe2,0xc8,0x69,0xb5,0x52,0xe6,0x0f,0x32,0x48,0x90,
-    0x6e,0xcc,0x86,0xef,0x74,0x12,0x1d,0x0d,0x3f,0xd0,0xb0,0xb2,0x96,0xb1,0x77,0x18};
+    0xa3,0x2a,0x06,0xf5,0x20,0x0b,0xc3,0x3c,0x48,0x3c,0xf3,0x4a,0xd8,0xe4,0x51,0x04,
+    0x37,0x6d,0x96,0xca,0x12,0xbb,0x15,0x6c,0x5c,0xc7,0x85,0x7f,0x5f,0x7f,0xaa,0x54};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';

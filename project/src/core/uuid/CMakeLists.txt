@@ -16,6 +16,7 @@ endif()
 add_library(sb_core_uuid
   uuid.cpp
   runtime_uuid.cpp
+  node_uuid_issuer.cpp
 )
 
 target_compile_features(sb_core_uuid PUBLIC cxx_std_17)

@@ -7,7 +7,6 @@
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
 #include "transaction_inventory_validation.hpp"
-#include "time.hpp"
 #include "uuid.hpp"
 #include <algorithm>
 #include <iterator>
@@ -570,7 +569,8 @@ struct OwnedInventoryGraph {
 
 OwnedInventoryGraph AssembleInventory(Context& context,
     const NativeManagementOperation& supplied_record,
-    const mga::LocalTransactionInventory& supplied_inventory, u64 budget) {
+    const mga::LocalTransactionInventory& supplied_inventory, u64 budget,
+    core::uuid::StandaloneUuidV7Issuer& issuer) {
   const auto& snapshot=context.snapshot;
   const auto& watermark=snapshot.watermark;
   const auto& zero=context.zero;
@@ -589,6 +589,8 @@ OwnedInventoryGraph AssembleInventory(Context& context,
     record.initiator_uuid==intent.initiator_uuid&&record.initiator_kind==intent.initiator_kind&&
     record.request_context_uuid==intent.request_context_uuid&&record.policy_snapshot_uuid==intent.policy_snapshot_uuid&&
     record.normalized_request_sha256==intent.normalized_request_sha256,E::request_mismatch);
+  Require(issuer.binding().database_uuid==zero.bootstrap.database_uuid&&
+    issuer.binding().policy_snapshot_uuid==record.policy_snapshot_uuid,E::request_mismatch);
   const u64 size=zero.bootstrap.page_size_bytes, payload=size-384, per_inventory=payload/72;
   const auto ceil=[](u64 n,u64 d){return n/d+(n%d!=0);};
   const u64 inventory_count=std::max<u64>(1,ceil(supplied_inventory.entries.size(),per_inventory));
@@ -668,12 +670,10 @@ OwnedInventoryGraph AssembleInventory(Context& context,
   for(const auto& entry:context.bound.checkpoint_inventory.inventory.entries)retain(entry.identity.transaction_uuid.value);
   for(const auto& step:record.steps)for(const auto& id:{step.uuid,step.operation_uuid,step.family_uuid,step.target_uuid,
     step.started_at,step.completed_at,step.evidence_uuid,step.metric_evidence_uuid,step.diagnostic_uuid,step.boundary_uuid})retain(id);
-  const auto clock=core::time::ReadWallClockTime();Require(clock.ok(),E::identity_failure);
-  const auto timestamp=core::time::WallClockToUuidV7Millis(clock.value);
-  Require(timestamp.ok()&&timestamp.unix_epoch_millis,E::identity_failure);
   const auto issue=[&](core::platform::UuidKind kind) {
-    const auto id=core::uuid::GenerateDurableEngineIdentityV7(kind,timestamp.unix_epoch_millis);
-    Require(id.ok()&&identities.insert(id.value.value).second,E::identity_failure);return id.value.value;
+    const auto id=issuer.Issue(kind);
+    Require(id.error!=core::uuid::StandaloneUuidV7Error::resource_exhausted,E::resource_exhausted);
+    Require(id.ok()&&identities.insert(id.value->value).second,E::identity_failure);return id.value->value;
   };
   using core::platform::UuidKind;
   const auto plan_object=old_plan==base.roots.end()?issue(UuidKind::object):old_plan->object_uuid;
@@ -771,13 +771,14 @@ OwnedInventoryGraph AssembleInventory(Context& context,
 } // namespace
 
 NativePublicationInspection PublishNativeInventoryOnLease(NativePublicationLease& lease,
-    const NativeManagementOperation& record,const mga::LocalTransactionInventory& inventory,u64 budget) noexcept {
+    const NativeManagementOperation& record,const mga::LocalTransactionInventory& inventory,u64 budget,
+    core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
   try {
     Require(!lease.impl_->installation_ambiguous,E::stale_base);
     const auto& old=*lease.impl_->context;
     auto current=Prepare(old.zero.bootstrap.database_uuid,old.devices,old.zero.bootstrap.filespace_uuid,budget,true,false);
     Require(SameBase(lease.impl_->snapshot,current->snapshot),E::stale_base);
-    auto graph=AssembleInventory(*current,record,inventory,budget);
+    auto graph=AssembleInventory(*current,record,inventory,budget,issuer);
     auto installed=InstallNativeManagementControlGraphOnLease(lease,graph.plan,graph.checkpoint,graph.extent,graph.bundle,budget);
     if(!installed.ok())return installed;
     return PublishNativeManagementControlGraphOnLease(lease,budget);

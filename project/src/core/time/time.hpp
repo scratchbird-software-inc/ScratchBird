@@ -98,7 +98,8 @@ enum class LocalClockObservationDecision : u8 {
   invalid_wall_clock,
   monotonic_regression_detected,
   wall_clock_rollback_detected,
-  wall_clock_forward_jump_detected
+  wall_clock_forward_jump_detected,
+  counter_exhausted
 };
 
 struct LocalTimeAuthorityPolicy {

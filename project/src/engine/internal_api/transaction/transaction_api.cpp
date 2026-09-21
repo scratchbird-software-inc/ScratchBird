@@ -1231,7 +1231,7 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
   for (std::uint64_t attempt = 0; attempt < generation_attempts; ++attempt) {
     const auto generated = GenerateDurableEngineIdentityV7(
         UuidKind::transaction,
-        begin_unix_epoch_millis + loaded.inventory.next_local_transaction_id + attempt);
+        begin_unix_epoch_millis);
     if (!generated.ok()) {
       generation_diagnostic = generated.diagnostic;
       break;
@@ -2084,7 +2084,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   for (std::uint64_t attempt = 0; attempt < generation_attempts; ++attempt) {
     const auto generated = GenerateDurableEngineIdentityV7(
         UuidKind::transaction,
-        begin_unix_epoch_millis + finalized_inventory.next_local_transaction_id + attempt);
+        begin_unix_epoch_millis);
     if (!generated.ok()) {
       generation_diagnostic = generated.diagnostic;
       break;
