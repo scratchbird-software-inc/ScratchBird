@@ -9179,10 +9179,36 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(sbsql_sblr_alignment_native_management_control_bundle PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_management_control_bundle PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
-    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync
+    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=RAND_bytes
     -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
     -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
   add_test(NAME sbsql_sblr_alignment_native_management_control_bundle COMMAND sbsql_sblr_alignment_native_management_control_bundle)
+  add_test(NAME sbsql_sblr_alignment_owned_native_inventory_publication
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-inventory-publication)
+  set_tests_properties(sbsql_sblr_alignment_owned_native_inventory_publication PROPERTIES
+    LABELS "sbsql_sblr_alignment;owned_native_inventory;binary_UUID;actual_write;not_SQL_E2E" TIMEOUT 600)
+  add_test(NAME sbsql_sblr_alignment_owned_native_inventory_mixed
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-inventory-mixed)
+  set_tests_properties(sbsql_sblr_alignment_owned_native_inventory_mixed PROPERTIES
+    LABELS "sbsql_sblr_alignment;owned_native_inventory;mixed_filespaces;actual_write;not_SQL_E2E" TIMEOUT 600)
+  add_test(NAME sbsql_sblr_alignment_owned_native_inventory_placement
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-inventory-placement)
+  set_tests_properties(sbsql_sblr_alignment_owned_native_inventory_placement PROPERTIES
+    LABELS "sbsql_sblr_alignment;owned_native_inventory;binary_UUID;actual_write;not_SQL_E2E" TIMEOUT 300)
+  foreach(route RANGE 0 3)
+    set(owned_inventory_last_shard 0)
+    if(route EQUAL 1)
+      set(owned_inventory_last_shard 4)
+    elseif(route EQUAL 2)
+      set(owned_inventory_last_shard 31)
+    endif()
+    foreach(shard RANGE 0 ${owned_inventory_last_shard})
+      add_test(NAME sbsql_sblr_alignment_owned_native_inventory_faults_${route}_${shard}
+        COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-inventory-faults ${route} ${shard})
+      set_tests_properties(sbsql_sblr_alignment_owned_native_inventory_faults_${route}_${shard} PROPERTIES
+        LABELS "sbsql_sblr_alignment;owned_native_inventory_faults;actual_write;not_SQL_E2E" TIMEOUT 600)
+    endforeach()
+  endforeach()
   add_test(NAME sbsql_sblr_alignment_native_directory_control_bundle
     COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-bundle)
   set_tests_properties(sbsql_sblr_alignment_native_directory_control_bundle PROPERTIES

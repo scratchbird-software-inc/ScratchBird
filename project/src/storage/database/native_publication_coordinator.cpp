@@ -6,9 +6,13 @@
 #include "native_management_control_authority.hpp"
 #include "disk_device.hpp"
 #include "hash_digest_parts.hpp"
+#include "transaction_inventory_validation.hpp"
+#include "time.hpp"
 #include "uuid.hpp"
 #include <algorithm>
+#include <iterator>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <new>
 #include <set>
@@ -556,5 +560,228 @@ NativePublicationInspection PublishNativeManagementControlGraphOnLease(NativePub
     const auto snapshot=final->snapshot;lease.impl_->snapshot=snapshot;lease.impl_->context=std::move(final);lease.impl_->installation_ambiguous=false;
     return {E::none,snapshot};
   }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
+}
+namespace {
+struct OwnedInventoryGraph {
+  NativePublicationPlan plan;
+  Bytes checkpoint;
+  Pages extent, bundle;
+};
+
+OwnedInventoryGraph AssembleInventory(Context& context,
+    const NativeManagementOperation& supplied_record,
+    const mga::LocalTransactionInventory& supplied_inventory, u64 budget) {
+  const auto& snapshot=context.snapshot;
+  const auto& watermark=snapshot.watermark;
+  const auto& zero=context.zero;
+  const auto& base=*context.bound.checkpoint_inventory.checkpoint;
+  Require(watermark.intent&&watermark.intent->recovery_profile==2&&
+    !watermark.abandonment&&!watermark.publication_plan&&
+    watermark.watermark>snapshot.selection.checkpoint_generation,E::operation_pending);
+  const auto encoded_record=EncodeNativeManagementOperation(supplied_record,budget);
+  if(!encoded_record.ok()) throw encoded_record.error==NativeManagementOperationError::resource_exhausted?
+    E::resource_exhausted:encoded_record.error==NativeManagementOperationError::hash_failure?E::hash_failure:E::invalid_request;
+  const auto& record=*encoded_record.record;
+  Require(record.scope!=NativeManagementScope::cluster&&record.cluster_uuid.is_nil()&&
+    !record.generation_guards[3],E::cluster_requires_authority);
+  const auto& intent=*watermark.intent;
+  Require(record.database_uuid==zero.bootstrap.database_uuid&&record.bootstrap_uuid==zero.page_uuid&&
+    record.initiator_uuid==intent.initiator_uuid&&record.initiator_kind==intent.initiator_kind&&
+    record.request_context_uuid==intent.request_context_uuid&&record.policy_snapshot_uuid==intent.policy_snapshot_uuid&&
+    record.normalized_request_sha256==intent.normalized_request_sha256,E::request_mismatch);
+  const u64 size=zero.bootstrap.page_size_bytes, payload=size-384, per_inventory=payload/72;
+  const auto ceil=[](u64 n,u64 d){return n/d+(n%d!=0);};
+  const u64 inventory_count=std::max<u64>(1,ceil(supplied_inventory.entries.size(),per_inventory));
+  const u64 map_count=context.bound.allocation.pages.size();
+  const u64 extent_count=ceil(encoded_record.bytes.size(),payload);
+  u64 charged=context.bound.retained_image_bytes;
+  Require(charged<=budget,E::resource_exhausted);
+  const auto charge=[&](u64 count,u64 unit){Require(unit&&count<=(budget-charged)/unit,E::resource_exhausted);charged+=count*unit;};
+  charge(20,size);charge(map_count,10*size);charge(inventory_count,14*size);
+  charge(extent_count,4*size);charge(encoded_record.bytes.size(),4);
+  // The preceding charges bound both addition and multiplication below.
+  const u64 bundle_count=ceil((map_count+inventory_count)*size,payload);
+  charge(bundle_count,4*size);
+  Require(inventory_count<=std::numeric_limits<std::size_t>::max()&&
+    bundle_count<=std::numeric_limits<std::size_t>::max(),E::resource_exhausted);
+  auto inventory=supplied_inventory;
+  Require(!*mga::ValidateLocalTransactionInventoryEvolution(context.bound.checkpoint_inventory.inventory,inventory),E::invalid_request);
+  std::sort(inventory.entries.begin(),inventory.entries.end(),[](const auto& a,const auto& b){
+    return a.identity.local_id.value<b.identity.local_id.value;});
+  const auto root=[&](u16 role)->const NativeCheckpointRootReference& {
+    const auto at=std::find_if(base.roots.begin(),base.roots.end(),[&](const auto& r){return r.role==role;});
+    Require(at!=base.roots.end(),E::binding_mismatch);return *at;
+  };
+  const auto& inventory_root=root(1);
+  const auto old_plan=std::find_if(base.roots.begin(),base.roots.end(),[](const auto& r){return r.role==16;});
+
+  // Only primary free/recordless, physically zero slots may be consumed. A
+  // dirty free slot is an orphan to be resolved by its owner, not free bytes.
+  std::set<u64> selected;
+  std::map<u64,bool> probes;
+  Bytes probe(size);
+  const auto allocate=[&](u64 count) {
+    Require(count&&count<=zero.total_pages,E::allocation_exhausted);
+    std::vector<u64> run;run.reserve(static_cast<std::size_t>(count));
+    for(const auto& image:context.bound.allocation.pages) {
+      const auto& map=*image.map;
+      for(std::size_t i=0;i<map.states.size();++i) {
+        const u64 number=map.first_page+i;
+        if(!number||map.states[i]!=page::NativeAllocationState::free||selected.contains(number)) {run.clear();continue;}
+        auto known=probes.find(number);
+        if(known==probes.end()) {
+          charge(1,size);
+          Require(number<std::numeric_limits<u64>::max()/size,E::allocation_mismatch);
+          const auto io=context.primary->ReadAt(number*size,probe.data(),probe.size());
+          Require(io.ok()&&io.bytes_transferred==probe.size(),E::io_failure);
+          const bool empty=std::all_of(probe.begin(),probe.end(),[](byte value){return !value;});
+          known=probes.emplace(number,empty).first;
+        }
+        if(!known->second) {run.clear();continue;}
+        if(!run.empty()&&number-run.back()!=1)run.clear();
+        run.push_back(number);
+        if(run.size()==count) {selected.insert(run.begin(),run.end());return run;}
+      }
+    }
+    throw E::allocation_exhausted;
+  };
+  const auto extent_slots=allocate(extent_count),bundle_slots=allocate(bundle_count);
+  const auto plan_slot=allocate(1).front(),checkpoint_slot=allocate(1).front();
+  std::vector<u64> map_slots,inventory_slots;
+  for(u64 i=0;i<map_count;++i)map_slots.push_back(allocate(1).front());
+  for(u64 i=0;i<inventory_count;++i)inventory_slots.push_back(allocate(1).front());
+
+  std::set<Uuid> identities;
+  const auto retain=[&](const Uuid& id){if(!id.is_nil())identities.insert(id);};
+  for(const auto& id:{zero.bootstrap.database_uuid,zero.bootstrap.filespace_uuid,zero.page_uuid,
+    zero.bootstrap.page_size_profile_uuid,zero.creation_operation_uuid,zero.writer_identity_uuid,
+    watermark.operation_uuid,base.object_uuid,base.timeline_uuid,record.uuid,record.descriptor_uuid,
+    record.family_uuid,record.target_type_uuid,record.target_uuid,record.initiator_uuid,record.request_context_uuid,
+    record.policy_snapshot_uuid,record.security_snapshot_uuid,record.phase_uuid,record.boundary_uuid,
+    record.created_at,record.updated_at,record.terminal_at,record.resource_plan_uuid,record.lock_plan_uuid,
+    record.result_uuid,record.diagnostic_uuid,record.evidence_uuid,record.metric_evidence_uuid})retain(id);
+  for(const auto& r:base.roots){retain(r.object_uuid);retain(r.page.filespace_uuid);retain(r.page.page_size_profile_uuid);}
+  for(const auto& image:context.bound.allocation.pages)for(const auto& r:image.map->records)
+    for(const auto& id:{r.allocation_uuid,r.page_uuid,r.owner_uuid,r.creator_transaction_uuid,r.creator_operation_uuid})retain(id);
+  for(const auto& page:context.bound.checkpoint_inventory.inventory_pages){retain(page.header.page_uuid);retain(page.object_uuid);}
+  for(const auto& entry:inventory.entries)retain(entry.identity.transaction_uuid.value);
+  for(const auto& entry:context.bound.checkpoint_inventory.inventory.entries)retain(entry.identity.transaction_uuid.value);
+  for(const auto& step:record.steps)for(const auto& id:{step.uuid,step.operation_uuid,step.family_uuid,step.target_uuid,
+    step.started_at,step.completed_at,step.evidence_uuid,step.metric_evidence_uuid,step.diagnostic_uuid,step.boundary_uuid})retain(id);
+  const auto clock=core::time::ReadWallClockTime();Require(clock.ok(),E::identity_failure);
+  const auto timestamp=core::time::WallClockToUuidV7Millis(clock.value);
+  Require(timestamp.ok()&&timestamp.unix_epoch_millis,E::identity_failure);
+  const auto issue=[&](core::platform::UuidKind kind) {
+    const auto id=core::uuid::GenerateDurableEngineIdentityV7(kind,timestamp.unix_epoch_millis);
+    Require(id.ok()&&identities.insert(id.value.value).second,E::identity_failure);return id.value.value;
+  };
+  using core::platform::UuidKind;
+  const auto plan_object=old_plan==base.roots.end()?issue(UuidKind::object):old_plan->object_uuid;
+  const auto extent_object=issue(UuidKind::object),bundle_object=issue(UuidKind::object);
+  std::vector<page::NativeAllocationMap> maps;
+  maps.reserve(map_count);
+  for(const auto& image:context.bound.allocation.pages)maps.push_back(*image.map);
+  const auto control=[&](u64 number,u32 type,const Uuid& owner) {
+    disk::NativeCommonPageHeader h{u32(size),type,zero.bootstrap.database_uuid,zero.bootstrap.filespace_uuid,
+      issue(UuidKind::page),number,watermark.watermark,0,zero.bootstrap.page_size_profile_uuid};
+    const auto found=std::upper_bound(maps.begin(),maps.end(),number,[](u64 n,const auto& m){return n<m.first_page;});
+    Require(found!=maps.begin(),E::allocation_mismatch);auto& map=*std::prev(found);
+    Require(number-map.first_page<map.states.size()&&map.states[number-map.first_page]==page::NativeAllocationState::free,E::allocation_mismatch);
+    const auto at=std::lower_bound(map.records.begin(),map.records.end(),number,[](const auto& r,u64 n){return r.page_number<n;});
+    Require(at==map.records.end()||at->page_number!=number,E::allocation_mismatch);
+    page::NativeAllocationRecord r;r.page_number=number;r.allocation_uuid=issue(UuidKind::object);
+    r.page_uuid=h.page_uuid;r.owner_uuid=owner;r.page_generation=h.page_generation;r.page_type=type;
+    r.creator_operation_uuid=watermark.operation_uuid;map.records.insert(at,r);
+    map.states[number-map.first_page]=page::NativeAllocationState::allocated;return h;
+  };
+  OwnedInventoryGraph graph;
+  auto& plan=graph.plan;
+  plan.header=control(plan_slot,0x500,plan_object);
+  auto target=base;target.header=control(checkpoint_slot,0x300,base.object_uuid);
+  std::vector<disk::NativeCommonPageHeader> extent_headers,bundle_headers,inventory_headers;
+  for(const auto slot:extent_slots)extent_headers.push_back(control(slot,0x500,extent_object));
+  for(const auto slot:bundle_slots)bundle_headers.push_back(control(slot,0x500,bundle_object));
+  for(std::size_t i=0;i<maps.size();++i)maps[i].header=control(map_slots[i],3,maps[i].object_uuid);
+  for(const auto slot:inventory_slots)inventory_headers.push_back(control(slot,0x301,inventory_root.object_uuid));
+  Pages map_images(maps.size()),inventory_images(inventory_count);
+  for(std::size_t i=maps.size();i--;) {
+    auto& map=maps[i];map.map_generation=watermark.watermark;
+    map.creator_transaction_uuid={};map.creator_local_transaction_id=0;map.creator_operation_uuid=watermark.operation_uuid;
+    map.next=i+1<maps.size()?std::optional{ControlRef(maps[i+1].header)}:std::nullopt;
+    map.next_sha256=i+1<maps.size()?ControlHash(map_images[i+1]):std::array<byte,32>{};
+    const u64 records_at=(384+(map.states.size()+1)/2+7)&~u64{7};
+    Require(records_at<=size&&map.records.size()<=(size-records_at)/128,E::resource_exhausted);
+    auto encoded=page::EncodeNativeAllocationMap(map);
+    if(!encoded.ok())throw encoded.error==page::NativeAllocationError::resource_exhausted?E::resource_exhausted:
+      encoded.error==page::NativeAllocationError::hash_failure?E::hash_failure:E::image_failure;
+    map_images[i]=std::move(encoded.bytes);
+  }
+  for(std::size_t i=0;i<inventory_images.size();++i) {
+    page::NativeTransactionInventoryPage image;image.header=inventory_headers[i];image.object_uuid=inventory_root.object_uuid;
+    image.inventory_generation=watermark.watermark;
+    image.previous=i?std::optional{ControlRef(inventory_headers[i-1])}:std::nullopt;
+    image.next=i+1<inventory_headers.size()?std::optional{ControlRef(inventory_headers[i+1])}:std::nullopt;
+    image.inventory.next_local_transaction_id=inventory.next_local_transaction_id;
+    image.inventory.next_commit_sequence=inventory.next_commit_sequence;
+    const auto first=std::min<u64>(i*per_inventory,inventory.entries.size());
+    const auto count=std::min<u64>(per_inventory,inventory.entries.size()-first);
+    image.inventory.entries.assign(inventory.entries.begin()+first,inventory.entries.begin()+first+count);
+    auto encoded=page::EncodeNativeTransactionInventoryPage(image);
+    if(!encoded.ok())throw encoded.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:
+      encoded.error==page::NativeInventoryError::hash_failure?E::hash_failure:E::image_failure;
+    inventory_images[i]=std::move(encoded.bytes);
+  }
+  auto extent=EncodeNativeManagementExtent(record,extent_object,extent_headers,budget);ControlExtentError(extent.error);
+  auto bundle=EncodeNativeManagementControlBundle(map_images,zero.bootstrap.database_uuid,zero.page_uuid,
+    bundle_object,watermark.operation_uuid,bundle_headers,budget,inventory_images);ControlBundleError(bundle.error);
+  plan.object_uuid=plan_object;plan.bootstrap_uuid=zero.page_uuid;plan.timeline_uuid=base.timeline_uuid;
+  plan.operation_uuid=watermark.operation_uuid;plan.security_snapshot_uuid=record.security_snapshot_uuid;
+  plan.intent=intent;plan.reservation_state_sha256=snapshot.state_sha256;
+  plan.base_checkpoint=ControlRef(base.header);plan.base_checkpoint_object_uuid=base.object_uuid;
+  plan.base_checkpoint_sha256=context.bound.checkpoint_inventory.checkpoint_sha256;
+  plan.base_checkpoint_generation=base.checkpoint_generation;plan.base_root_set_generation=base.root_set_generation;
+  plan.base_selection_generation=snapshot.selection.selection_generation;
+  plan.target_checkpoint=ControlRef(target.header);plan.target_checkpoint_object_uuid=base.object_uuid;
+  plan.reserved_generation=plan.target_root_set_generation=watermark.watermark;
+  if(old_plan!=base.roots.end()){plan.previous_plan=old_plan->page;plan.previous_plan_object_uuid=old_plan->object_uuid;plan.previous_plan_sha256=old_plan->sha256;}
+  plan.generation_guard_flags=0;for(unsigned i=0;i<3;++i)if(record.generation_guards[i])plan.generation_guard_flags|=1u<<i;
+  plan.catalog_generation=record.generation_guards[0].value_or(0);plan.configuration_generation=record.generation_guards[1].value_or(0);
+  plan.security_generation=record.generation_guards[2].value_or(0);plan.management_extent=extent.root;plan.control_bundle=bundle.root;
+  target.creator_transaction_uuid={};target.creator_local_transaction_id=0;target.creator_operation_uuid=watermark.operation_uuid;
+  target.checkpoint_generation=target.root_set_generation=watermark.watermark;
+  target.predecessor=plan.base_checkpoint;target.predecessor_sha256=plan.base_checkpoint_sha256;
+  target.selected_local_transaction_id=inventory.next_local_transaction_id-1;
+  for(auto& r:target.roots) {
+    if(r.role==1)r={1,0x301,ControlRef(inventory_headers.front()),inventory_root.object_uuid,ControlHash(inventory_images.front())};
+    if(r.role==4)r={4,3,ControlRef(maps.front().header),maps.front().object_uuid,ControlHash(map_images.front())};
+  }
+  NativeCheckpointRootReference plan_root{16,0x500,ControlRef(plan.header),plan.object_uuid,{}};
+  plan_root.sha256.fill(1); // Projection excludes this digest; never persisted.
+  const auto target_plan=std::find_if(target.roots.begin(),target.roots.end(),[](const auto& r){return r.role==16;});
+  if(target_plan==target.roots.end())target.roots.push_back(plan_root);else *target_plan=plan_root;
+  auto checkpoint=EncodeNativeCheckpointRoot(target);ControlCheckpointError(checkpoint.error);
+  const auto projection=ComputeNativePublicationTargetGraphDigest(checkpoint.bytes);ControlPlanError(projection.error);
+  plan.target_graph_sha256=projection.sha256;
+  const auto plan_image=EncodeNativePublicationPlan(plan);ControlPlanError(plan_image.error);
+  std::find_if(target.roots.begin(),target.roots.end(),[](const auto& r){return r.role==16;})->sha256=plan_image.sha256;
+  checkpoint=EncodeNativeCheckpointRoot(target);ControlCheckpointError(checkpoint.error);
+  graph.checkpoint=std::move(checkpoint.bytes);graph.extent=std::move(extent.pages);graph.bundle=std::move(bundle.pages);
+  return graph;
+}
+} // namespace
+
+NativePublicationInspection PublishNativeInventoryOnLease(NativePublicationLease& lease,
+    const NativeManagementOperation& record,const mga::LocalTransactionInventory& inventory,u64 budget) noexcept {
+  try {
+    Require(!lease.impl_->installation_ambiguous,E::stale_base);
+    const auto& old=*lease.impl_->context;
+    auto current=Prepare(old.zero.bootstrap.database_uuid,old.devices,old.zero.bootstrap.filespace_uuid,budget,true,false);
+    Require(SameBase(lease.impl_->snapshot,current->snapshot),E::stale_base);
+    auto graph=AssembleInventory(*current,record,inventory,budget);
+    auto installed=InstallNativeManagementControlGraphOnLease(lease,graph.plan,graph.checkpoint,graph.extent,graph.bundle,budget);
+    if(!installed.ok())return installed;
+    return PublishNativeManagementControlGraphOnLease(lease,budget);
+  }catch(E e){return {e,{}};}catch(const std::bad_alloc&){return {E::resource_exhausted,{}};}
+   catch(const std::length_error&){return {E::resource_exhausted,{}};}catch(...){return {E::io_failure,{}};}
 }
 } // namespace scratchbird::storage::database

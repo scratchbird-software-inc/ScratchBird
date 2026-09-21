@@ -11,7 +11,8 @@ enum class NativePublicationError {
   allocation_mismatch, image_failure, binding_mismatch, repair_required,
   stale_base, generation_exhausted, hash_failure, resource_exhausted,
   io_failure, preimage_changed, readback_mismatch, cluster_requires_authority,
-  encrypted_requires_authority, operation_pending, request_mismatch
+  encrypted_requires_authority, operation_pending, request_mismatch,
+  identity_failure, allocation_exhausted
 };
 struct NativePublicationSnapshot {
   NativeCheckpointSelection selection;
@@ -25,6 +26,7 @@ struct NativePublicationInspection {
 };
 struct NativePublicationReservation;
 struct NativePublicationPlan;
+struct NativeManagementOperation;
 class NativePublicationLease {
  public:
   ~NativePublicationLease();
@@ -53,6 +55,9 @@ class NativePublicationLease {
     NativePublicationLease&,u64) noexcept;
   friend NativePublicationInspection PublishNativeManagementControlGraphOnLease(
     NativePublicationLease&,u64) noexcept;
+  friend NativePublicationInspection PublishNativeInventoryOnLease(
+    NativePublicationLease&,const NativeManagementOperation&,
+    const transaction::mga::LocalTransactionInventory&,u64) noexcept;
 };
 struct NativePublicationReservation {
   NativePublicationError error=NativePublicationError::invalid_request;
@@ -124,4 +129,13 @@ NativePublicationInspection ResumeNativeManagementControlGraphOnLease(
 // poisons the lease and requires explicit owning recovery.
 NativePublicationInspection PublishNativeManagementControlGraphOnLease(
   NativePublicationLease&,u64 maximum_verification_image_bytes) noexcept;
+// Constructs actual profile2 pages/allocations from the lease, installs and
+// selects them. No caller-created slots/images/identities, implicit growth or
+// reuse. The owning kernel must authorize the exact inventory delta and record;
+// this primitive grants neither execution permission nor a SQL completion.
+// Anchored/ambiguous attempts require existing exact-graph recovery, not rebuild.
+NativePublicationInspection PublishNativeInventoryOnLease(
+  NativePublicationLease&,const NativeManagementOperation&,
+  const transaction::mga::LocalTransactionInventory&,
+  u64 maximum_verification_image_bytes) noexcept;
 } // namespace scratchbird::storage::database
