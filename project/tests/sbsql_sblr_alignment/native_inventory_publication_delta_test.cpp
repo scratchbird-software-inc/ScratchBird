@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_inventory_publication_delta.hpp"
+#include "isolation.hpp"
 #include <openssl/evp.h>
 #include <openssl/sha.h>
 #include <algorithm>
@@ -107,8 +108,142 @@ void Boundaries(){
  {Fixture f;f.before=f.after;for(auto& p:f.before)p.inventory_generation=4;f.before[1].inventory.entries[0]=MakeEntry(2,State::committed);f.before[1].inventory.entries[0].begin_visible_through_commit_sequence=0;f.Relink();f.Refresh();for(const auto& bytes:f.old_images)Check(page::DecodeNativeTransactionInventoryPage(bytes).ok(),"duplicate commit sequence lies across individually canonical pages");Failed(f.CheckDelta());}
  {Fixture f;f.new_images.pop_back();Failed(f.CheckDelta());f.Refresh();f.new_images.push_back(f.new_images.back());Failed(f.CheckDelta());f.Refresh();f.new_images[1].resize(127);Failed(f.CheckDelta());f.Refresh();Failed(db::ValidateNativeInventoryPublicationDelta(Id(1),f.old_root,f.new_root,0,f.old_images,f.new_images,f.budget));Failed(db::ValidateNativeInventoryPublicationDelta(Id(1),f.old_root,f.new_root,9,f.old_images,f.new_images,0));}
 }
+// Exercise real BEGIN candidates, not just fixture entries that already carry
+// the expected boundary. This remains image admission, not durable BEGIN.
+void BeginCandidates() {
+ for (unsigned profile=0; profile<5; ++profile)
+  for (bool read_only : {false,true})
+   for (unsigned predecessor=0; predecessor<17; ++predecessor) {
+    Fixture f(profile,4-profile);
+    auto& old=f.before.front().inventory;
+    old.next_local_transaction_id=8;
+    old.next_commit_sequence=4;
+    old.entries.clear();
+    if (predecessor<15) {
+      auto entry=MakeEntry(7);
+      entry.state=predecessor<12 ? static_cast<State>(predecessor+1) : State::archived;
+      if (predecessor==12) entry.state=State::read_only_active;
+      if (entry.state==State::archived)
+        entry.archived_from_state=predecessor==11 ? State::committed :
+          predecessor==13 ? State::rolled_back : State::failed_terminal;
+      const auto outcome=entry.state==State::archived ? entry.archived_from_state : entry.state;
+      if (outcome==State::committed || outcome==State::rolled_back || outcome==State::failed_terminal) {
+        entry.final_unix_epoch_millis=2000;
+        entry.evidence_record_written=true;
+      }
+      if (outcome==State::committed) entry.commit_sequence=3;
+      old.entries.push_back(entry);
+    }
+    // Also cover a pristine inventory and a pruned predecessor with a retained
+    // committed entry far below the non-reusable allocation high watermark.
+    if (predecessor==15) {
+      old.next_local_transaction_id=1;
+      old.next_commit_sequence=1;
+    } else if (predecessor==16) old.entries.push_back(MakeEntry(1,State::committed));
+    const auto begun=read_only ? mga::BeginLocalReadOnlyTransaction(old,{UuidKind::transaction,Id(900)},3000) :
+      mga::BeginLocalTransaction(old,{UuidKind::transaction,Id(900)},3000);
+    Check(begun.ok(),"actual pure BEGIN accepts valid retained predecessor");
+    Check(begun.entry.begin_visible_through_local_transaction_id==old.next_local_transaction_id-1,
+      "BEGIN records allocated-number boundary independent of retained committed entries");
+    Check(begun.entry.begin_visible_through_commit_sequence==old.next_commit_sequence-1,
+      "BEGIN preserves independent commit-order boundary");
+    Check(begun.entry.state==(read_only ? State::read_only_active : State::active) &&
+      begun.inventory.next_local_transaction_id==old.next_local_transaction_id+1,
+      "pure BEGIN candidate state and non-reused allocation");
+    for(auto& p:f.after) {
+      p.inventory.next_local_transaction_id=begun.inventory.next_local_transaction_id;
+      p.inventory.next_commit_sequence=begun.inventory.next_commit_sequence;
+    }
+    f.after[0].inventory.entries=old.entries;
+    f.after[1].inventory.entries={begun.entry};
+    f.Refresh();
+    Check(f.CheckDelta().error==E::starting_allocation_required,
+      "actual active BEGIN candidate cannot skip durable starting publication");
+    f.after[1].inventory.entries.front().state=State::created;
+    f.Refresh();
+    const auto starting=f.CheckDelta();
+    Check(starting.ok() && starting.delta->differences.size()==1 &&
+      starting.delta->differences.front().after->identity.transaction_uuid.value==Id(900),
+      "actual BEGIN immutable fields pass complete native starting-image admission");
+    f.before=f.after;
+    for(auto& p:f.before) p.inventory_generation=8;
+    for(auto& p:f.after) {p.header.page_number+=20;p.header.page_uuid=Id(1000+p.header.page_number);}
+    f.after[1].inventory.entries.front()=begun.entry;
+    f.Relink();f.Refresh();
+    Check(f.CheckDelta().ok(),"actual BEGIN activation preserves its starting predecessor");
+   }
+}
+void BeginCounterEdges() {
+ for (bool read_only : {false,true}) {
+  const auto begin=[&](const mga::LocalTransactionInventory& inventory,TypedUuid id) {
+    return read_only ? mga::BeginLocalReadOnlyTransaction(inventory,id,3000) :
+      mga::BeginLocalTransaction(inventory,id,3000);
+  };
+  auto inventory=mga::MakeEmptyLocalTransactionInventory();
+  inventory.next_local_transaction_id=std::numeric_limits<u64>::max()-1;
+  inventory.next_commit_sequence=std::numeric_limits<u64>::max();
+  auto begun=begin(inventory,{UuidKind::transaction,Id(901)});
+  Check(begun.ok() && begun.entry.begin_visible_through_local_transaction_id==std::numeric_limits<u64>::max()-2 &&
+    begun.entry.begin_visible_through_commit_sequence==std::numeric_limits<u64>::max()-1 &&
+    begun.inventory.next_local_transaction_id==std::numeric_limits<u64>::max(),
+    "last representable BEGIN allocation retains both high watermarks without wrap");
+  Check(!begin(begun.inventory,{UuidKind::transaction,Id(902)}).ok(),"exhausted BEGIN refuses counter reuse");
+  Check(!begin(inventory,{UuidKind::object,Id(902)}).ok(),"BEGIN refuses wrong typed UUID kind");
+  auto old_version=Id(902);old_version.bytes[6]=0x40;
+  Check(!begin(inventory,{UuidKind::transaction,old_version}).ok(),"BEGIN refuses non-v7 system identity");
+  inventory.next_local_transaction_id=0;
+  Check(!begin(inventory,{UuidKind::transaction,Id(902)}).ok(),"zero allocation counter refuses");
+  inventory.next_local_transaction_id=1;inventory.next_commit_sequence=0;
+  Check(!begin(inventory,{UuidKind::transaction,Id(902)}).ok(),"zero commit counter refuses before subtraction");
+ }
+}
+void BeginIsolation() {
+ for (bool read_only : {false,true}) for (bool prior_commit : {false,true}) {
+  const auto writer=mga::BeginLocalTransaction(mga::MakeEmptyLocalTransactionInventory(),{UuidKind::transaction,Id(910)},1000);
+  Check(writer.ok(),"begin concurrent earlier-number writer");
+  auto inventory=writer.inventory;
+  std::optional<Entry> prior;
+  if (prior_commit) {
+    const auto begun=mga::BeginLocalTransaction(inventory,{UuidKind::transaction,Id(911)},1001);
+    Check(begun.ok(),"begin preexisting committed writer");
+    const auto committed=mga::CommitLocalTransaction(begun.inventory,begun.entry.identity.local_id,1002);
+    Check(committed.ok(),"commit preexisting writer");
+    inventory=committed.inventory;prior=committed.entry;
+  }
+  const auto reader=read_only ? mga::BeginLocalReadOnlyTransaction(inventory,{UuidKind::transaction,Id(912)},1003) :
+    mga::BeginLocalTransaction(inventory,{UuidKind::transaction,Id(912)},1003);
+  Check(reader.ok(),"begin reader while lower-number writer remains active");
+  const auto committed=mga::CommitLocalTransaction(reader.inventory,writer.entry.identity.local_id,1004);
+  Check(committed.ok(),"earlier-number writer commits after reader BEGIN");
+  const auto snapshot=mga::CreateLocalTransactionSnapshot(committed.inventory,reader.entry.identity.local_id);
+  Check(snapshot.ok() && snapshot.snapshot.transaction_start_visible_through_local_transaction.value==reader.entry.identity.local_id.value-1 &&
+    snapshot.snapshot.transaction_start_visible_through_commit_sequence==(prior_commit ? 1u : 0u),
+    "snapshot retains exact BEGIN allocation and commit boundaries after concurrent commit");
+  const auto row=[](const Entry& entry) {
+    mga::RowVersionMetadata value;
+    value.identity.row.row_uuid={UuidKind::row,Id(920)};
+    value.identity.creator_transaction=entry.identity;
+    value.identity.version_uuid=Id(921);value.identity.version_sequence=1;
+    value.state=mga::RowVersionState::committed;value.creator_transaction_state=State::committed;
+    value.creator_commit_sequence=entry.commit_sequence;value.payload_present=true;
+    return value;
+  };
+  for (const auto level : {mga::IsolationLevel::read_committed,mga::IsolationLevel::repeatable_read,mga::IsolationLevel::serializable}) {
+    const auto policy=mga::SnapshotPolicyForIsolation(level,snapshot.snapshot);
+    const auto visible=mga::EvaluateVisibility(row(committed.entry),policy);
+    Check(visible.ok() && visible.decision==(level==mga::IsolationLevel::read_committed ?
+      mga::VisibilityDecision::visible : mga::VisibilityDecision::invisible),
+      "commit sequence keeps late lower-number commits out of repeatable-read and serializable snapshots");
+    if (prior) {
+      const auto existing=mga::EvaluateVisibility(row(*prior),policy);
+      Check(existing.ok() && existing.decision==mga::VisibilityDecision::visible,
+        "all supported isolation levels retain pre-BEGIN committed visibility");
+    }
+  }
+ }
+}
 void Faults(){Fixture f(0,4);allocations=0;counting=true;const auto base=f.CheckDelta();counting=false;const auto sites=allocations;Check(base.ok()&&sites,"allocation baseline");for(unsigned long at=0;at<=sites;++at){allocation_budget=at;const auto result=f.CheckDelta();const auto left=allocation_budget;allocation_budget=-1;if(at==sites)Check(result.ok()&&left==0,"exact allocation success boundary");else{Check(result.error==E::resource_exhausted&&left==-1,"all required allocations consumed and classified");Failed(result);}}
  hash_seen=0;hash_counting=true;const auto hashed=f.CheckDelta();hash_counting=false;const auto hashes=hash_seen;Check(hashed.ok()&&hashes,"hash baseline");for(unsigned mode=1;mode<=5;++mode)for(unsigned at=1;at<=hashes;++at){hash_target=at;hash_fault=mode;hash_seen=0;const auto result=f.CheckDelta();const bool consumed=!hash_fault;hash_fault=0;hash_active=false;Check(consumed&&result.error==E::hash_failure,"every digest failure consumed and classified");Failed(result);}std::cout<<"allocation sites="<<sites<<" hashes="<<hashes<<"\n";
 }
 }
-int main(){try{ColdFaults();Profiles();Negatives();Differences();Boundaries();Faults();std::cout<<"native inventory publication delta checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}
+int main(){try{ColdFaults();Profiles();Negatives();Differences();Boundaries();BeginCandidates();BeginCounterEdges();BeginIsolation();Faults();std::cout<<"native inventory publication delta checks="<<checks<<"\n";return 0;}catch(const std::exception& e){allocation_budget=-1;counting=false;hash_fault=0;std::cerr<<e.what()<<"\n";return 1;}}

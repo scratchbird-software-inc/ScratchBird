@@ -9193,6 +9193,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-publication)
   set_tests_properties(sbsql_sblr_alignment_native_inventory_publication PROPERTIES
     LABELS "sbsql_sblr_alignment;native_inventory_publication;binary_UUID;actual_write;not_SQL_E2E" TIMEOUT 300)
+  add_test(NAME sbsql_sblr_alignment_native_inventory_publication_read_only
+    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-publication-read-only)
+  set_tests_properties(sbsql_sblr_alignment_native_inventory_publication_read_only PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_inventory_publication;read_only_transaction;binary_UUID;actual_write;not_SQL_E2E" TIMEOUT 300)
   add_test(NAME sbsql_sblr_alignment_native_inventory_publication_mixed
     COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-publication-mixed)
   set_tests_properties(sbsql_sblr_alignment_native_inventory_publication_mixed PROPERTIES

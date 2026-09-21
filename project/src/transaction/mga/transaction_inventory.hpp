@@ -111,6 +111,9 @@ struct TransactionInventoryCompactionResult {
 };
 
 LocalTransactionInventory MakeEmptyLocalTransactionInventory();
+// Pure candidate transforms, not durable BEGIN or concurrency admission.
+// The owning publisher must persist created/starting before activation while
+// retaining these exact identities, allocation and commit-order boundaries.
 TransactionInventoryResult BeginLocalTransaction(LocalTransactionInventory inventory,
                                                  TypedUuid transaction_uuid,
                                                  u64 begin_unix_epoch_millis);

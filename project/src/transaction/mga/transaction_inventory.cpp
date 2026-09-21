@@ -84,18 +84,6 @@ bool ContainsTransactionUuid(const LocalTransactionInventory& inventory, const T
   return false;
 }
 
-u64 LatestCommittedLocalTransactionId(const LocalTransactionInventory& inventory) {
-  u64 latest = kInvalidLocalTransactionId;
-  for (const TransactionInventoryEntry& entry : inventory.entries) {
-    if (HasCommittedInventoryOutcome(entry) &&
-        entry.identity.local_id.valid() &&
-        entry.identity.local_id.value > latest) {
-      latest = entry.identity.local_id.value;
-    }
-  }
-  return latest;
-}
-
 bool TransitionOrFail(TransactionInventoryEntry* entry, TransactionState next, DiagnosticRecord* diagnostic) {
   const auto transition = CheckTransactionStateTransition(entry->state, next, false);
   if (!transition.ok()) {
@@ -145,8 +133,11 @@ TransactionInventoryResult BeginLocalTransactionWithState(LocalTransactionInvent
   entry.identity = identity.identity;
   entry.state = TransactionState::none;
   entry.begin_unix_epoch_millis = begin_unix_epoch_millis;
-  entry.begin_visible_through_local_transaction_id =
-      LatestCommittedLocalTransactionId(inventory);
+  // The immutable allocation boundary includes unresolved and pruned numbers.
+  // Commit order below independently excludes transactions committing later.
+  // Scanning retained committed entries loses this boundary and prevents the
+  // candidate from passing native starting-allocation publication admission.
+  entry.begin_visible_through_local_transaction_id = local_id.value - 1;
   entry.begin_visible_through_commit_sequence = inventory.next_commit_sequence - 1;
 
   DiagnosticRecord diagnostic;
