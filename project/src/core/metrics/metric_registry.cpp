@@ -11,9 +11,12 @@
 #include "metric_value_update.hpp"
 
 #include "metric_history.hpp"
+#include "metric_observation_queue.hpp"
+#include "time.hpp"
 
 #include <algorithm>
 #include <cstddef>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <type_traits>
@@ -489,12 +492,22 @@ const char* MetricReadinessName(MetricReadiness readiness) {
   return "unknown";
 }
 
-MetricRegistry::MetricRegistry() {
+struct MetricRegistry::ObservationState {
+  std::shared_ptr<MetricObservationQueue> queue;
+  core::time::LocalTimeAuthorityState clock;
+  u64 next_sequence=1;
+};
+
+MetricRegistry::MetricRegistry():MetricRegistry(std::shared_ptr<MetricObservationQueue>{}) {}
+MetricRegistry::MetricRegistry(std::shared_ptr<MetricObservationQueue> queue)
+    :observation_(std::make_unique<ObservationState>()) {
+  observation_->queue=std::move(queue);
   LoadBuiltinDescriptors();
   LoadInsertOptimizationDescriptors(this);
   LoadUpdateDeleteOptimizationDescriptors(this);
   LoadRelationStateMaterializationDescriptors(this);
 }
+MetricRegistry::~MetricRegistry()=default;
 
 MetricValidationResult MetricRegistry::ValidateDescriptor(const MetricDescriptor& descriptor) const {
   if (!ValidateMetricValueDescriptor(descriptor) || !MetricDescriptorReferencesValid(descriptor, descriptor) ||
@@ -556,6 +569,35 @@ MetricValidationResult MetricRegistry::RegisterDescriptor(MetricDescriptor descr
   descriptors_.merge(pending_descriptors);
   families_.merge(pending_families);
   aliases_.merge(pending_aliases);
+  return success;
+}
+
+MetricValidationResult MetricRegistry::RegisterSeries(const MetricSeriesIdentity& series,
+                                                      const MetricRetentionPolicy& policy) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if(!observation_->queue)
+    return MetricError("METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "node queue not bound");
+  const auto found=descriptors_.find(series.metric_uuid);
+  if(found==descriptors_.end())return MetricError("METRIC.VALUE_INVALID", "descriptor not registered");
+  const auto& descriptor=found->second;
+  const auto& binding=observation_->queue->binding();
+  if(descriptor.cluster_only||descriptor.readiness!=MetricReadiness::implemented||
+      series.database_uuid!=binding.database_uuid||series.node_uuid!=binding.node_uuid||!series.cluster_uuid.is_nil())
+    return MetricError("METRIC.VALUE_INVALID", "local observation binding mismatch");
+  const auto canonical=MakeMetricSeriesIdentity(descriptor,series.labels,policy,series,series.series_uuid);
+  if(!canonical.ok()||canonical.record->series_key!=series.series_key||
+      canonical.record->metric_family!=series.metric_family||canonical.record->namespace_path!=series.namespace_path||
+      canonical.record->producer_owner!=series.producer_owner||canonical.record->scope_class!=series.scope_class||
+      canonical.record->redaction_class!=series.redaction_class)
+    return MetricError("METRIC.VALUE_INVALID", "invalid retained series");
+  const auto key=NormalizeKey(descriptor.metric_uuid,series.labels);
+  if(series_.contains(key)||std::any_of(series_.begin(),series_.end(),[&](const auto& entry){
+      return entry.second->series_uuid==series.series_uuid;}))
+    return MetricError("METRIC.VALUE_INVALID", "series already registered");
+  decltype(series_) pending;
+  pending.emplace(key,std::make_shared<const MetricSeriesIdentity>(series));
+  auto success=MetricOk();
+  series_.merge(pending);
   return success;
 }
 
@@ -669,6 +711,9 @@ MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descr
   }
   std::lock_guard<std::mutex> lock(mutex_);
   const auto key = NormalizeKey(descriptor.metric_uuid, labels);
+  const auto retained_series=series_.find(key);
+  if(!observation_->queue||retained_series==series_.end()||!observation_->next_sequence)
+    return MetricError("METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "local series/source not bound or exhausted");
   const auto existing = current_values_.find(key);
   auto staged = StageMetricValueUpdate(descriptor, labels,
       existing == current_values_.end() ? nullptr : &existing->second, value, state_text);
@@ -684,17 +729,39 @@ MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descr
     return MetricError(code, descriptor.family);
   }
   MetricValue current = std::move(*staged.value);
-  // Stage all allocating work before persistence or visible publication.
+  // Stage all allocating work before queue admission or visible publication.
   // In particular, operator[] must not install an empty series on failure.
-  MetricValue history = current;
+  HistoryEntry history{descriptor.metric_uuid,current};
   history_values_.reserve(history_values_.size() + 1);
   decltype(current_values_) pending;
   if (existing == current_values_.end()) pending.emplace(key, current);
-  const auto persisted = PersistMetricValueForHistory(descriptor, current);
-  if (!persisted.ok) return persisted;
+  const auto clock=core::time::ReadLocalNodeClockSnapshot();
+  if(!clock.ok()||observation_->clock.accepted_observations==std::numeric_limits<u64>::max())
+    return MetricError("METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "local clock unavailable");
+  const auto admitted=core::time::ObserveLocalNodeClock(observation_->clock,clock.value,{});
+  const auto wall=clock.value.wall_clock;
+  constexpr u64 nanos_per_second=1000000000;
+  if(!admitted.ok()||wall.unix_seconds<0||
+      static_cast<u64>(wall.unix_seconds)>(std::numeric_limits<u64>::max()-wall.nanoseconds)/nanos_per_second)
+    return MetricError("METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "local clock refused");
+  const u64 observed=static_cast<u64>(wall.unix_seconds)*nanos_per_second+wall.nanoseconds;
+  if(!observed)return MetricError("METRIC.OBSERVATION_SOURCE_UNAVAILABLE", "zero observation time");
+  observation_->clock=admitted.state;
+  const u64 sequence=observation_->next_sequence;
+  observation_->next_sequence=sequence==std::numeric_limits<u64>::max()?0:sequence+1;
+  const auto sample=MakeMetricRawSampleRecord(descriptor,*retained_series->second,current,observed,observed,sequence);
+  if(!sample.ok())return MetricError(sample.error==MetricHistoryRecordError::identity_issuance_failed?
+      "METRIC.OBSERVATION_SOURCE_UNAVAILABLE":"METRIC.VALUE_INVALID", "sample construction refused");
+  auto success=MetricOk();
+  const auto queued=observation_->queue->TryEnqueue(descriptor,*retained_series->second,*sample.record);
+  if(queued!=MetricQueueError::none)return MetricError(
+      queued==MetricQueueError::full||queued==MetricQueueError::busy||queued==MetricQueueError::resource_exhausted?
+      "METRIC.OBSERVATION_RESOURCE_EXHAUSTED":"METRIC.VALUE_INVALID", "observation queue refused");
   static_assert(std::is_nothrow_move_constructible_v<MetricValue>);
   static_assert(std::is_nothrow_move_assignable_v<MetricValue>);
   static_assert(std::is_nothrow_swappable_v<MetricValue>);
+  static_assert(std::is_nothrow_move_constructible_v<HistoryEntry>);
+  static_assert(std::is_nothrow_move_assignable_v<HistoryEntry>);
   if (existing == current_values_.end()) {
     current_values_.insert(pending.extract(pending.begin()));
   } else {
@@ -705,7 +772,7 @@ MetricValidationResult MetricRegistry::UpdateValue(const MetricDescriptor& descr
   if (history_values_.size() > 4096) {
     history_values_.erase(history_values_.begin(), history_values_.begin() + static_cast<std::ptrdiff_t>(history_values_.size() - 4096));
   }
-  return MetricOk();
+  return success;
 }
 
 std::vector<MetricValue> MetricRegistry::SnapshotCurrent(bool include_cluster) const {
@@ -726,9 +793,9 @@ std::vector<MetricValue> MetricRegistry::SnapshotHistory(bool include_cluster, u
   std::vector<MetricValue> out;
   const u64 start = history_values_.size() > max_rows ? static_cast<u64>(history_values_.size()) - max_rows : 0;
   for (u64 i = start; i < history_values_.size(); ++i) {
-    const auto& value = history_values_[static_cast<std::size_t>(i)];
-    const auto mapping = families_.find(value.family);
-    const auto descriptor = mapping == families_.end() ? descriptors_.end() : descriptors_.find(mapping->second);
+    const auto& retained = history_values_[static_cast<std::size_t>(i)];
+    const auto& value = retained.value;
+    const auto descriptor = descriptors_.find(retained.identity);
     if (descriptor != descriptors_.end() && !include_cluster && descriptor->second.cluster_only) {
       continue;
     }

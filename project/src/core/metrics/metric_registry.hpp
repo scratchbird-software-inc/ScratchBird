@@ -18,6 +18,7 @@
 #include "metric_scalar.hpp"
 
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -171,11 +172,20 @@ struct MetricValidationResult {
   std::string detail;
 };
 
+class MetricObservationQueue;
+struct MetricSeriesIdentity;
+struct MetricRetentionPolicy;
+
 class MetricRegistry {
  public:
   MetricRegistry();
+  explicit MetricRegistry(std::shared_ptr<MetricObservationQueue>);
+  ~MetricRegistry();
 
   MetricValidationResult RegisterDescriptor(MetricDescriptor descriptor);
+  // Retain an already owned local catalog binding; no activation/permission
+  // or durable-recording authority is inferred from structural registration.
+  MetricValidationResult RegisterSeries(const MetricSeriesIdentity&, const MetricRetentionPolicy&);
   // Entries remain immutable and pointers valid until registry destruction.
   // Annotation lookup below is not native catalog name resolution/activation.
   const MetricDescriptor* FindDescriptor(const MetricUuid& metric_uuid) const;
@@ -221,8 +231,12 @@ class MetricRegistry {
   std::map<MetricUuid, MetricDescriptor> descriptors_;
   std::map<std::string, MetricUuid> families_;
   std::map<std::string, MetricUuid> aliases_;
+  std::map<CurrentKey, std::shared_ptr<const MetricSeriesIdentity>> series_;
   std::map<CurrentKey, MetricValue> current_values_;
-  std::vector<MetricValue> history_values_;
+  struct HistoryEntry { MetricUuid identity; MetricValue value; };
+  std::vector<HistoryEntry> history_values_;
+  struct ObservationState;
+  std::unique_ptr<ObservationState> observation_;
 };
 
 MetricRegistry& DefaultMetricRegistry();

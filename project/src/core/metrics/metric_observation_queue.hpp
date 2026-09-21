@@ -41,6 +41,7 @@ class MetricObservationQueue {
   static MetricQueueCreateResult Create(MetricQueueBinding,MetricQueueLimits) noexcept;
   MetricObservationQueue(const MetricObservationQueue&)=delete;
   MetricObservationQueue& operator=(const MetricObservationQueue&)=delete;
+  const MetricQueueBinding& binding() const noexcept { return binding_; }
   MetricQueueError TryEnqueue(const MetricDescriptor&,const MetricSeriesIdentity&,
       const MetricRawSampleRecord&) noexcept;
   MetricQueueLeaseResult TryAcquire() noexcept;

@@ -38,7 +38,7 @@ int main() {
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
   // Includes narrow-query and typed metric-update diagnostic registrations. Check the exact
   // admitted Core import, not a minimum row count.
-  Check(catalog.size==1410 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1411 && catalog.data!=nullptr,"complete Core code inventory missing");
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -123,6 +123,7 @@ int main() {
       {"METRIC.CURRENT_VALUE_INVALID","only_after_current_state_revalidation_or_repair"},
       {"METRIC.AGGREGATE_OVERFLOW","only_after_corrected_observation_or_authorized_reset"},
       {"METRIC.OBSERVATION_RESOURCE_EXHAUSTED","only_after_fresh_resource_admission"},
+      {"METRIC.OBSERVATION_SOURCE_UNAVAILABLE","only_after_observation_source_revalidation"},
       {"METRIC.ARITHMETIC_FAILED","only_after_numeric_backend_revalidation"}})
     Sample(pair.first,S::error,true,pair.second,"reject_without_current_history_or_counter_mutation","METRIC");
   Sample("DATATYPE.DESCRIPTOR.INVALID",S::error,true,"false","refuse","DATATYPE");
@@ -174,8 +175,8 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0x34,0xf1,0x24,0x92,0xd9,0x37,0xd1,0x58,0x0c,0x83,0xe2,0x16,0x39,0xa2,0x43,0x6b,
-    0xce,0x15,0x5b,0x23,0x26,0xd8,0x60,0x37,0x80,0x8c,0x35,0xc6,0x1e,0xc1,0x32,0x60};
+    0x9a,0x0d,0xc4,0x33,0xb7,0x94,0xe2,0xc8,0x69,0xb5,0x52,0xe6,0x0f,0x32,0x48,0x90,
+    0x6e,0xcc,0x86,0xef,0x74,0x12,0x1d,0x0d,0x3f,0xd0,0xb0,0xb2,0x96,0xb1,0x77,0x18};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';
