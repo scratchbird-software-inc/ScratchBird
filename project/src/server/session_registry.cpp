@@ -380,6 +380,7 @@
 #include "sblr_bulk_import_stream_registry.hpp"
 
 #include <algorithm>
+#include "statement_coordination_uuid.hpp"
 #include <chrono>
 #include <cctype>
 #include <cstring>
@@ -721,7 +722,7 @@ std::string FirstOpenDatabasePath(const HostedEngineState& engine_state) {
   return {};
 }
 
-std::string FirstOpenDatabaseUuid(const HostedEngineState& engine_state) {
+engine_api::EngineUuid FirstOpenDatabaseUuid(const HostedEngineState& engine_state) {
   for (const auto& database : engine_state.databases) {
     if (database.database_open) return database.database_uuid;
   }
@@ -748,7 +749,7 @@ std::uint64_t DatabasePageSizeBytesForSession(const ServerSessionRecord& session
     if (!database.database_open) continue;
     const bool path_matches = !session.database_path.empty() &&
                               database.database_path == session.database_path;
-    const bool uuid_matches = !session.database_uuid.empty() &&
+    const bool uuid_matches = !scratchbird::core::uuid::IsNilUuid(session.database_uuid) &&
                               database.database_uuid == session.database_uuid;
     if (path_matches || uuid_matches) return database.page_size_bytes;
   }
@@ -831,7 +832,7 @@ bool RequestedDatabaseMatches(const HostedDatabaseSnapshot& database,
 bool AuthContextMatchesHostedDatabase(const ServerSessionRecord& session,
                                       const HostedDatabaseSnapshot& database) {
   if (!session.database_path.empty() && session.database_path != database.database_path) return false;
-  if (!session.database_uuid.empty() && session.database_uuid != database.database_uuid) return false;
+  if (!scratchbird::core::uuid::IsNilUuid(session.database_uuid) && session.database_uuid != database.database_uuid) return false;
   return true;
 }
 
@@ -911,10 +912,10 @@ std::string EngineDiagnosticDetail(const std::vector<engine_api::EngineApiDiagno
   return fallback;
 }
 
-std::string EngineEvidenceValue(const engine_api::EngineApiResult& result,
+std::string EngineTextEvidenceValue(const engine_api::EngineApiResult& result,
                                 std::string_view evidence_kind) {
   for (const auto& evidence : result.evidence) {
-    if (evidence.evidence_kind == evidence_kind) return evidence.evidence_id;
+    if (evidence.evidence_kind == evidence_kind && std::holds_alternative<std::string>(evidence.evidence_id)) return std::get<std::string>(evidence.evidence_id);
   }
   return {};
 }
@@ -928,7 +929,7 @@ engine_api::EngineRequestContext EngineContextBase(const HostedEngineState& engi
   context.database_path = FirstOpenDatabasePath(engine_state);
   context.database_uuid = FirstOpenDatabaseUuid(engine_state);
   context.database_page_size_bytes = FirstOpenDatabasePageSizeBytes(engine_state);
-  context.statement_uuid = context.request_id;
+  context.statement_uuid = engine_api::EngineUuid{request.header.request_uuid};
   context.statement_timestamp = CurrentUtcTimestampText();
   context.current_timestamp = context.statement_timestamp;
   context.current_monotonic_ns = CurrentMonotonicNsText();
@@ -1164,8 +1165,8 @@ engine_api::EngineRequestContext DurableProjectionContextForSession(
   context.trust_mode = TrustModeForSession(session);
   context.database_path = session.database_path;
   context.database_uuid = session.database_uuid;
-  context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
-  context.session_uuid = UuidBytesToText(session.session_uuid);
+  context.principal_uuid = engine_api::EngineUuid{session.effective_user_uuid};
+  context.session_uuid = engine_api::EngineUuid{session.session_uuid};
   context.security_context_present = true;
   context.catalog_generation_id = session.catalog_generation == 0 ? 1 : session.catalog_generation;
   context.security_epoch = session.security_epoch == 0 ? 1 : session.security_epoch;
@@ -1265,9 +1266,9 @@ bool ApplyDurableAuthorizationProjectionToSession(ServerSessionRecord* session,
   std::vector<std::array<std::uint8_t, 16>> groups;
   for (const auto& subject : materialized.context.effective_subjects) {
     if (subject.subject_kind == "role") {
-      AddUniqueUuidBytes(&roles, TextToUuid(subject.subject_uuid));
+      AddUniqueUuidBytes(&roles, subject.subject_uuid.bytes);
     } else if (subject.subject_kind == "group") {
-      AddUniqueUuidBytes(&groups, TextToUuid(subject.subject_uuid));
+      AddUniqueUuidBytes(&groups, subject.subject_uuid.bytes);
     }
   }
   session->effective_role_uuids = roles;
@@ -1388,17 +1389,17 @@ engine_api::EngineRequestContext EngineContextForSessionProjection(
   context.trust_mode = TrustModeForSession(session);
   context.database_path = session.database_path.empty() ? context.database_path : session.database_path;
   context.database_uuid =
-      session.database_uuid.empty() ? context.database_uuid : session.database_uuid;
+      scratchbird::core::uuid::IsNilUuid(session.database_uuid) ? context.database_uuid : session.database_uuid;
   context.database_page_size_bytes = DatabasePageSizeBytesForSession(session, engine_state);
-  context.principal_uuid = UuidBytesToText(session.effective_user_uuid);
-  context.session_uuid = UuidBytesToText(session.session_uuid);
+  context.principal_uuid = engine_api::EngineUuid{session.effective_user_uuid};
+  context.session_uuid = engine_api::EngineUuid{session.session_uuid};
   // The parser package was authenticated during HELLO and admitted onto this
   // exact session.  Project that server-owned identity into the engine
   // statement receipt so private binders can bind nested canonical SBLR to
   // the same package without accepting a parser-supplied authority value.
   if (!IsZeroUuidBytes(session.admitted_parser_package_uuid)) {
     context.current_package_uuid =
-        UuidBytesToText(session.admitted_parser_package_uuid);
+        engine_api::EngineUuid{session.admitted_parser_package_uuid};
   }
   context.transaction_uuid = session.transaction_uuid;
   context.local_transaction_id = session.local_transaction_id;
@@ -1412,7 +1413,7 @@ engine_api::EngineRequestContext EngineContextForSessionProjection(
   context.resource_epoch = session.resource_epoch;
   context.name_resolution_epoch = session.name_resolution_epoch;
   if (!IsZeroUuidBytes(session.active_role_uuid)) {
-    context.current_role_uuid = UuidBytesToText(session.active_role_uuid);
+    context.current_role_uuid = engine_api::EngineUuid{session.active_role_uuid};
   }
   PopulateEngineLanguageContextFromSession(session, &context.language_context);
   context.trace_tags = session.engine_authorization_trace_tags;
@@ -1465,7 +1466,7 @@ bool ApplyBeginTransactionResultToSession(
       result.snapshot_visible_through_local_transaction_id;
   transaction.transaction_uuid = result.transaction_uuid;
   transaction.transaction_timestamp =
-      EngineEvidenceValue(result, "transaction_timestamp");
+      EngineTextEvidenceValue(result, "transaction_timestamp");
   transaction.isolation_level = session->default_transaction_isolation_level;
   transaction.read_only =
       session->attach_mode == "read_only" || session->default_transaction_read_only;
@@ -3509,7 +3510,7 @@ SessionOperationResult HandleAcquireStatementContext(
     std::lock_guard<std::mutex> guard(*session.transaction_mutex);
     const auto transaction_it =
         session.transactions_by_local_id.find(local_transaction_id);
-    const auto transaction_uuid = UuidBytesToText(transaction_uuid_bytes);
+    const auto transaction_uuid = engine_api::EngineUuid{transaction_uuid_bytes};
     if (transaction_it == session.transactions_by_local_id.end() ||
         transaction_it->second.lifecycle_state !=
             ServerTransactionLifecycleState::kActive ||
@@ -3606,14 +3607,14 @@ SessionOperationResult HandleAcquireStatementContext(
                     "parameter_execution_selector_invalid");
     }
     const auto coordination_uuid =
-        UuidBytesToText(GetUuid(request.payload, kSuffix + 4));
+        engine_api::EngineUuid{GetUuid(request.payload, kSuffix + 4)};
     const auto operation_uuid =
-        UuidBytesToText(GetUuid(request.payload, kSuffix + 20));
+        engine_api::EngineUuid{GetUuid(request.payload, kSuffix + 20)};
     std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
     const auto found =
         registry->parameter_coordinations_by_uuid.find(coordination_uuid);
     if (found == registry->parameter_coordinations_by_uuid.end() ||
-        found->second.session_uuid != UuidBytesToText(session.session_uuid) ||
+        found->second.session_uuid != engine_api::EngineUuid{session.session_uuid} ||
         found->second.operation_uuid != operation_uuid) {
       return refuse("SECURITY.ACCESS_DENIED",
                     "parameter_execution_coordination_hidden");
@@ -3660,15 +3661,15 @@ SessionOperationResult HandleAcquireStatementContext(
     (void)sb_engine_result_release(engine_result);
   }
   if (status != SB_ENGINE_STATUS_OK || !receipt ||
-      view.statement_uuid.empty()) {
+      scratchbird::core::uuid::IsNilUuid(view.statement_uuid)) {
     return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_ENGINE_REFUSED",
                   std::string("engine_status=") +
                       sb_engine_status_name(status));
   }
   if (parameter_prepared_acquire &&
-      (view.parameter_prepared_statement_uuid.empty() ||
+      (scratchbird::core::uuid::IsNilUuid(view.parameter_prepared_statement_uuid) ||
        sbps::IsZeroUuid(
-           TextToUuid(view.parameter_prepared_statement_uuid)) ||
+           (view.parameter_prepared_statement_uuid.bytes)) ||
        view.parameter_prepared_generation == 0)) {
     (void)engine_bridge::ReleaseStatementContextReceipt(receipt);
     return refuse("PARSER_SERVER_IPC.STATEMENT_CONTEXT_ENGINE_REFUSED",
@@ -3744,31 +3745,31 @@ SessionOperationResult HandleAcquireStatementContext(
 
   PutU16(&result.payload, projection_version);
   result.payload.push_back(1);
-  PutUuid(&result.payload, TextToUuid(view.statement_uuid));
+  PutUuid(&result.payload, (view.statement_uuid.bytes));
   PutU64(&result.payload, view.owning_local_transaction_id);
-  PutUuid(&result.payload, TextToUuid(view.owning_transaction_uuid));
-  PutUuid(&result.payload, TextToUuid(view.statement_snapshot_uuid));
+  PutUuid(&result.payload, (view.owning_transaction_uuid.bytes));
+  PutUuid(&result.payload, (view.statement_snapshot_uuid.bytes));
   PutUuid(&result.payload,
-          TextToUuid(view.statement_metadata_snapshot_uuid));
-  PutUuid(&result.payload, TextToUuid(view.catalog_epoch_uuid));
-  PutUuid(&result.payload, TextToUuid(view.security_context_uuid));
+          (view.statement_metadata_snapshot_uuid.bytes));
+  PutUuid(&result.payload, (view.catalog_epoch_uuid.bytes));
+  PutUuid(&result.payload, (view.security_context_uuid.bytes));
   PutU64(&result.payload, view.visible_committed_high_watermark);
   if (native_projection_v7 || native_projection_v8 || native_projection_v9 ||
       native_projection_v10 || native_projection_v11) {
     PutString(&result.payload, view.statement_timestamp);
   }
   if (native_projection) {
-    PutUuid(&result.payload, TextToUuid(view.bound_ast_uuid));
-    PutUuid(&result.payload, TextToUuid(view.count_function_uuid));
-    PutUuid(&result.payload, TextToUuid(view.sum_function_uuid));
+    PutUuid(&result.payload, (view.bound_ast_uuid.bytes));
+    PutUuid(&result.payload, (view.count_function_uuid.bytes));
+    PutUuid(&result.payload, (view.sum_function_uuid.bytes));
     if (native_projection_v3 || native_projection_v4 ||
         native_projection_v5 || native_projection_v6 ||
         native_projection_v7 || native_projection_v8 ||
         native_projection_v9 || native_projection_v10 ||
         native_projection_v11) {
-      PutUuid(&result.payload, TextToUuid(view.avg_function_uuid));
-      PutUuid(&result.payload, TextToUuid(view.min_function_uuid));
-      PutUuid(&result.payload, TextToUuid(view.max_function_uuid));
+      PutUuid(&result.payload, (view.avg_function_uuid.bytes));
+      PutUuid(&result.payload, (view.min_function_uuid.bytes));
+      PutUuid(&result.payload, (view.max_function_uuid.bytes));
     }
     if (native_projection_v4 || native_projection_v5 ||
         native_projection_v6 || native_projection_v7 ||
@@ -3779,7 +3780,7 @@ SessionOperationResult HandleAcquireStatementContext(
       for (const auto& function : view.aggregate_function_profiles) {
         PutU16(&result.payload, function.abi_version);
         PutString(&result.payload, function.builtin_id);
-        PutUuid(&result.payload, TextToUuid(function.function_uuid));
+        PutUuid(&result.payload, (function.function_uuid.bytes));
         result.payload.push_back(function.executable ? 1 : 0);
       }
     }
@@ -3791,7 +3792,7 @@ SessionOperationResult HandleAcquireStatementContext(
       for (const auto& function : view.window_function_profiles) {
         PutU16(&result.payload, function.abi_version);
         PutString(&result.payload, function.builtin_id);
-        PutUuid(&result.payload, TextToUuid(function.function_uuid));
+        PutUuid(&result.payload, (function.function_uuid.bytes));
         result.payload.push_back(function.executable ? 1 : 0);
       }
     }
@@ -3823,9 +3824,9 @@ SessionOperationResult HandleAcquireStatementContext(
       result.payload.push_back(
           static_cast<std::uint8_t>(profile.profile_kind));
       PutU16(&result.payload, profile.slot);
-      PutUuid(&result.payload, TextToUuid(profile.descriptor_uuid));
-      PutUuid(&result.payload, TextToUuid(profile.type_uuid));
-      PutUuid(&result.payload, TextToUuid(profile.collation_uuid));
+      PutUuid(&result.payload, (profile.descriptor_uuid.bytes));
+      PutUuid(&result.payload, (profile.type_uuid.bytes));
+      PutUuid(&result.payload, (profile.collation_uuid.bytes));
       result.payload.push_back(profile.nullable ? 1 : 0);
       PutU32(&result.payload, profile.width);
       PutU32(&result.payload, profile.precision);
@@ -3838,29 +3839,29 @@ SessionOperationResult HandleAcquireStatementContext(
     // engine receipt view.
     PutU16(&result.payload, 73);
     PutU16(&result.payload, 0);
-    PutUuid(&result.payload, TextToUuid(view.receipt_uuid));
+    PutUuid(&result.payload, (view.receipt_uuid.bytes));
     PutUuid(&result.payload,
-            TextToUuid(view.literal_catalog_snapshot_uuid));
+            (view.literal_catalog_snapshot_uuid.bytes));
     PutU64(&result.payload, view.literal_catalog_generation);
     PutU64(&result.payload, view.security_epoch);
     PutU64(&result.payload, view.resource_epoch);
-    PutUuid(&result.payload, TextToUuid(view.statement_snapshot_uuid));
+    PutUuid(&result.payload, (view.statement_snapshot_uuid.bytes));
     PutUuid(&result.payload,
-            TextToUuid(view.parameter_prepared_statement_uuid));
+            (view.parameter_prepared_statement_uuid.bytes));
     PutU64(&result.payload, view.parameter_prepared_generation);
-    PutUuid(&result.payload, TextToUuid(view.parameter_batch_uuid));
+    PutUuid(&result.payload, (view.parameter_batch_uuid.bytes));
     PutU64(&result.payload, view.parameter_batch_generation);
     PutUuid(&result.payload,
-            TextToUuid(view.parameter_dynamic_package_uuid));
+            (view.parameter_dynamic_package_uuid.bytes));
     PutU64(&result.payload, view.parameter_dynamic_generation);
     PutU64(&result.payload,
            view.parameter_executor_availability_generation);
-    PutUuid(&result.payload, TextToUuid(view.variable_scope_uuid));
+    PutUuid(&result.payload, (view.variable_scope_uuid.bytes));
     PutU64(&result.payload, view.variable_scope_generation);
-    PutUuid(&result.payload, TextToUuid(view.variable_frame_uuid));
+    PutUuid(&result.payload, (view.variable_frame_uuid.bytes));
     PutU64(&result.payload, view.variable_frame_generation);
     PutUuid(&result.payload,
-            TextToUuid(view.variable_registry_snapshot_uuid));
+            (view.variable_registry_snapshot_uuid.bytes));
     PutU64(&result.payload,
            view.variable_executor_availability_generation);
     PutUuid(&result.payload, view.diagnostic_registry_snapshot_uuid);
@@ -3872,10 +3873,10 @@ SessionOperationResult HandleAcquireStatementContext(
       result.payload.insert(result.payload.end(), row.begin(), row.end());
     }
     PutUuid(&result.payload,
-            TextToUuid(view.txn_begin_isolation_profile_uuid));
+            (view.txn_begin_isolation_profile_uuid.bytes));
     PutU64(&result.payload, view.txn_begin_isolation_profile_generation);
     PutUuid(&result.payload,
-            TextToUuid(view.txn_begin_policy_snapshot_uuid));
+            (view.txn_begin_policy_snapshot_uuid.bytes));
     PutU64(&result.payload, view.txn_begin_policy_generation);
     PutU64(&result.payload,
            view.txn_begin_executor_availability_generation);
@@ -4147,7 +4148,7 @@ SessionOperationResult HandleQueryNarrowBindingIssue(
     return structural_refusal(demand_error);
   }
 
-  const auto receipt_uuid = UuidBytesToText(candidate_receipt);
+  const auto receipt_uuid = engine_api::EngineUuid{candidate_receipt};
   std::lock_guard<std::mutex> receipt_guard(
       *registry->statement_context_mutex);
   const auto receipt = std::find_if(
@@ -4202,10 +4203,10 @@ SessionOperationResult HandleQueryNarrowBindingIssue(
     return refuse("SBLR.QUERY_BINDING.STALE",
                   "query_narrow_binding_receipt_context_stale");
   }
-  const auto principal_uuid = UuidBytesToText(live_session.effective_user_uuid);
+  const auto principal_uuid = engine_api::EngineUuid{live_session.effective_user_uuid};
   if (context.database_uuid != live_session.database_uuid ||
       context.principal_uuid != principal_uuid ||
-      context.session_uuid != session_key ||
+      context.session_uuid.bytes != request.header.session_uuid ||
       context.transaction_uuid != view.owning_transaction_uuid ||
       context.local_transaction_id != view.owning_local_transaction_id ||
       context.statement_uuid != view.statement_uuid ||
@@ -4237,7 +4238,7 @@ SessionOperationResult HandleQueryNarrowBindingIssue(
           view.maximum_mga_relation_decoded_bytes_per_pass ||
       context.maximum_typed_result_transport_bytes_per_packet !=
           view.maximum_typed_result_transport_bytes_per_packet ||
-      view.txn_begin_policy_snapshot_uuid.empty() ||
+      scratchbird::core::uuid::IsNilUuid(view.txn_begin_policy_snapshot_uuid) ||
       view.txn_begin_policy_generation == 0 ||
       view.optimizer_memory_budget_bytes == 0) {
     return refuse("SBLR.QUERY_BINDING.STALE",
@@ -4429,7 +4430,7 @@ SessionOperationResult HandleIssueContextualTextLiteralProfiles(
                   "contextual_text_issue_request_replayed");
   }
 
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   std::lock_guard<std::mutex> receipt_guard(
       *registry->statement_context_mutex);
   const auto receipt = std::find_if(
@@ -4455,14 +4456,14 @@ SessionOperationResult HandleIssueContextualTextLiteralProfiles(
       live_session.catalog_generation != view.catalog_generation_id ||
       live_session.security_epoch != view.security_epoch ||
       live_session.resource_epoch != view.resource_epoch ||
-      UuidBytesToText(decoded.catalog_snapshot_uuid) !=
+      engine_api::EngineUuid{decoded.catalog_snapshot_uuid} !=
           view.literal_catalog_snapshot_uuid ||
       decoded.catalog_generation != view.literal_catalog_generation ||
       decoded.datatype_registry_generation !=
           view.literal_registry_generation ||
       decoded.security_generation != view.security_epoch ||
       decoded.resource_epoch != view.resource_epoch ||
-      UuidBytesToText(decoded.mga_snapshot_uuid) !=
+      engine_api::EngineUuid{decoded.mga_snapshot_uuid} !=
           view.statement_snapshot_uuid) {
     return refuse("MGA.TRANSACTION.STALE",
                   "contextual_text_issue_live_receipt_drift");
@@ -4580,7 +4581,7 @@ SessionOperationResult HandleNegotiateLiteralDescriptors(
      request.payload.size()<128||request.payload[0]!='S'||request.payload[1]!='B'||
      request.payload[2]!='L'||request.payload[3]!='N')
     return refuse("SBLR.OPERAND_INVALID","literal_prebind_frame_invalid");
-  const auto preliminary_uuid=UuidBytesToText(GetUuid(request.payload,16));
+  const auto preliminary_uuid=engine_api::EngineUuid{GetUuid(request.payload,16)};
   engine_bridge::StatementContextReceiptHandle receipt;
   {
     std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
@@ -4609,7 +4610,7 @@ SessionOperationResult HandleFinalizeLiteralBinding(
   SessionOperationResult result;result.response_message_type=41;result.response_schema_id=sbps::kSchemaFinalizeLiteralBindingResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;
   const auto refuse=[&](std::string code,std::string detail){result.accepted=false;result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(code),"parser_server_ipc.literal_finalize_refused","Literal binding finalization was refused.",{{"detail",std::move(detail)}}));return result;};
   if(registry==nullptr||request.header.payload_schema_id!=sbps::kSchemaFinalizeLiteralBindingRequestV1||request.payload.size()<208||request.payload.size()>1036600||request.payload[0]!='S'||request.payload[1]!='B'||request.payload[2]!='L'||request.payload[3]!='F')return refuse("SBLR.OPERAND_INVALID","literal_finalize_frame_invalid");
-  const auto preliminary_uuid=UuidBytesToText(GetUuid(request.payload,16));engine_bridge::StatementContextReceiptHandle receipt;
+  const auto preliminary_uuid=engine_api::EngineUuid{GetUuid(request.payload,16)};engine_bridge::StatementContextReceiptHandle receipt;
   {std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);const auto found=std::find_if(registry->statement_contexts_by_statement_uuid.begin(),registry->statement_contexts_by_statement_uuid.end(),[&](const auto& entry){return entry.second.view.receipt_uuid==preliminary_uuid&&entry.second.session_uuid==request.header.session_uuid;});if(found==registry->statement_contexts_by_statement_uuid.end())return refuse("DATATYPE.DESCRIPTOR.INVALID","preliminary_receipt_not_live");receipt=found->second.receipt;}
   sb_engine_result_t engine_result = nullptr;
   const auto status = engine_bridge::FinalizeStatementLiteralBindingV1(
@@ -4665,7 +4666,7 @@ SessionOperationResult HandleNegotiateParameterDescriptors(
                   "SBPR")) {
     return refuse("SBLR.OPERAND_INVALID", "parameter_prebind_frame_invalid");
   }
-  const auto preliminary_uuid = UuidBytesToText(GetUuid(request.payload, 16));
+  const auto preliminary_uuid = engine_api::EngineUuid{GetUuid(request.payload, 16)};
   engine_bridge::StatementContextReceiptHandle receipt;
   {
     std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
@@ -4734,10 +4735,10 @@ SessionOperationResult HandleBeginParameterExecutionCoordination(
   begin.engine_session = public_context->engine_session;
   begin.engine_context = &engine_context;
   begin.mode = engine_bridge::StatementParameterExecutionMode::kPrepared;
-  begin.operation_uuid = UuidBytesToText(GetUuid(request.payload, 20));
+  begin.operation_uuid = engine_api::EngineUuid{GetUuid(request.payload, 20)};
   if (!sbps::IsZeroUuid(GetUuid(request.payload, 36))) {
     begin.public_prepared_uuid =
-        UuidBytesToText(GetUuid(request.payload, 36));
+        engine_api::EngineUuid{GetUuid(request.payload, 36)};
   }
   engine_bridge::StatementParameterCoordinationViewV1 view;
   sb_engine_result_t engine_result = nullptr;
@@ -4750,7 +4751,7 @@ SessionOperationResult HandleBeginParameterExecutionCoordination(
                       : "SBLR.PARAMETER.STALE",
                   std::string("engine_status=") + sb_engine_status_name(status));
   ServerParameterExecutionCoordinationRecord record;
-  record.session_uuid = UuidBytesToText(request.header.session_uuid);
+  record.session_uuid = engine_api::EngineUuid{request.header.session_uuid};
   record.operation_uuid = view.operation_uuid;
   record.mode = engine_bridge::StatementParameterExecutionMode::kPrepared;
   record.private_handle = view.private_handle;
@@ -4764,8 +4765,8 @@ SessionOperationResult HandleBeginParameterExecutionCoordination(
   PutU16(&result.payload, 1);
   result.payload.push_back(1);
   result.payload.push_back(0);
-  PutUuid(&result.payload, TextToUuid(view.public_coordination_uuid));
-  PutUuid(&result.payload, TextToUuid(view.operation_uuid));
+  PutUuid(&result.payload, (view.public_coordination_uuid.bytes));
+  PutUuid(&result.payload, (view.operation_uuid.bytes));
   PutU64(&result.payload, view.coordinator_generation);
   PutU32(&result.payload, 0);
   result.accepted = true;
@@ -5463,15 +5464,15 @@ SessionOperationResult HandleFinalizePreparedSblrParameter(
                                             request.payload.size());
   if (!decoded.ok) return refuse(decoded.diagnostic_id, decoded.detail);
   const auto coordination_uuid =
-      UuidBytesToText(decoded.value.public_coordination_uuid);
-  const auto operation_uuid = UuidBytesToText(decoded.value.operation_uuid);
+      engine_api::EngineUuid{decoded.value.public_coordination_uuid};
+  const auto operation_uuid = engine_api::EngineUuid{decoded.value.operation_uuid};
   std::uint64_t private_handle = 0;
   {
     std::lock_guard<std::mutex> guard(*registry->statement_context_mutex);
     const auto found =
         registry->parameter_coordinations_by_uuid.find(coordination_uuid);
     if (found == registry->parameter_coordinations_by_uuid.end() ||
-        found->second.session_uuid != UuidBytesToText(request.header.session_uuid) ||
+        found->second.session_uuid != engine_api::EngineUuid{request.header.session_uuid} ||
         found->second.operation_uuid != operation_uuid) {
       return refuse("SECURITY.ACCESS_DENIED", "coordination hidden");
     }
@@ -5520,9 +5521,9 @@ SessionOperationResult HandleFinalizePreparedSblrParameter(
     found->second.generation = view.coordinator_generation;
   }
   PutU16(&result.payload, 1); PutU16(&result.payload, 0);
-  PutUuid(&result.payload, TextToUuid(view.prepared_statement_uuid));
+  PutUuid(&result.payload, (view.prepared_statement_uuid.bytes));
   PutU64(&result.payload, view.prepared_generation);
-  PutUuid(&result.payload, TextToUuid(view.operation_uuid));
+  PutUuid(&result.payload, (view.operation_uuid.bytes));
   PutU64(&result.payload, view.coordinator_generation); PutU32(&result.payload, 0);
   result.accepted = true;
   return result;
@@ -8120,7 +8121,7 @@ SessionOperationResult HandleCoordinateDmlUpdateRowsBind(
                       ? bound.diagnostic.detail
                       : bound.diagnostic.message_key);
   }
-  const auto descriptor_uuid = TextToUuid(bound.descriptor_ref.descriptor_uuid);
+  const auto descriptor_uuid = (bound.descriptor_ref.descriptor_uuid.bytes);
   if (IsZeroUuidBytes(descriptor_uuid) ||
       bound.descriptor_ref.descriptor_generation == 0) {
     return refuse("SBLR.OPERAND_INVALID", "UDRQ_descriptor_result_invalid");
@@ -8347,7 +8348,7 @@ struct StatementManagementReceipt {
 bool FindStatementManagementReceipt(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& session_uuid,
-    const std::string& receipt_uuid, StatementManagementReceipt* output) {
+    const engine_api::EngineUuid& receipt_uuid, StatementManagementReceipt* output) {
   if (registry == nullptr || registry->statement_context_mutex == nullptr ||
       output == nullptr) {
     return false;
@@ -8427,7 +8428,7 @@ SessionOperationResult HandleBindStmtPrepare(
     return refuse("SECURITY.ACCESS_DENIED", {}, "session_hidden");
   }
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.authenticated_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -8473,9 +8474,9 @@ SessionOperationResult HandleBindStmtPrepare(
       ack.authenticated_receipt_uuid != decoded.authenticated_receipt_uuid ||
       ack.occurrence != decoded.occurrence ||
       ack.request_evidence_sha256 != decoded.request_evidence_sha256 ||
-      UuidBytesToText(ack.binding_uuid) != bridge_ack.binding_uuid ||
+      engine_api::EngineUuid{ack.binding_uuid} != bridge_ack.binding_uuid ||
       ack.binding_generation != bridge_ack.binding_generation ||
-      UuidBytesToText(ack.statement_name_uuid) !=
+      engine_api::EngineUuid{ack.statement_name_uuid} !=
           bridge_ack.statement_name_uuid ||
       ack.descriptor_sha256 != bridge_ack.descriptor_sha256) {
     return refuse("SBLR.OPERAND.INVALID", {},
@@ -8520,7 +8521,7 @@ SessionOperationResult HandleCoordinateStmtPrepare(
     return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
   }
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", "stmt_prepare_receipt_hidden");
@@ -8549,9 +8550,9 @@ SessionOperationResult HandleCoordinateStmtPrepare(
       decoded.resource_epoch != receipt.view.resource_epoch ||
       descriptor.statement_receipt_uuid != decoded.statement_receipt_uuid ||
       descriptor.statement_uuid !=
-          TextToUuid(authority.acknowledgement.binding_uuid) ||
+          (authority.acknowledgement.binding_uuid.bytes) ||
       descriptor.statement_name_uuid !=
-          TextToUuid(authority.acknowledgement.statement_name_uuid) ||
+          (authority.acknowledgement.statement_name_uuid.bytes) ||
       descriptor.descriptor_sha256 !=
           authority.acknowledgement.descriptor_sha256 ||
       descriptor.executor_availability_generation !=
@@ -8602,7 +8603,7 @@ SessionOperationResult HandleCoordinateStmtExecute(
     return refuse("SECURITY.ACCESS_DENIED", {}, "session_hidden");
   }
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -8717,7 +8718,7 @@ SessionOperationResult HandleBindStmtExecuteDirect(
     return refuse("SECURITY.ACCESS_DENIED", {}, "session_hidden");
   }
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.authenticated_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -8760,11 +8761,11 @@ SessionOperationResult HandleBindStmtExecuteDirect(
       ack.authenticated_receipt_uuid != decoded.authenticated_receipt_uuid ||
       ack.occurrence != decoded.occurrence ||
       ack.request_evidence_sha256 != decoded.request_evidence_sha256 ||
-      UuidBytesToText(ack.binding_uuid) != bridge_ack.binding_uuid ||
+      engine_api::EngineUuid{ack.binding_uuid} != bridge_ack.binding_uuid ||
       ack.binding_generation != bridge_ack.binding_generation ||
       (!IsZeroUuidBytes(ack.result_descriptor_uuid)
-           ? UuidBytesToText(ack.result_descriptor_uuid)
-           : std::string{}) != bridge_ack.result_descriptor_uuid ||
+           ? engine_api::EngineUuid{ack.result_descriptor_uuid}
+           : engine_api::EngineUuid{}) != bridge_ack.result_descriptor_uuid ||
       ack.descriptor_sha256 != bridge_ack.descriptor_sha256) {
     return refuse(
         "SBLR.OPERAND.INVALID", {},
@@ -8812,7 +8813,7 @@ SessionOperationResult HandleCoordinateStmtExecuteDirect(
     return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
   }
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED",
@@ -8843,17 +8844,17 @@ SessionOperationResult HandleCoordinateStmtExecuteDirect(
   const auto descriptor_digest =
       scratchbird::core::hash::ComputeSha256Digest(
           authority.canonical_descriptor_bytes);
-  const std::string expected_result_descriptor =
+  const engine_api::EngineUuid expected_result_descriptor =
       !IsZeroUuidBytes(descriptor.result_descriptor_uuid)
-          ? UuidBytesToText(descriptor.result_descriptor_uuid)
-          : std::string{};
+          ? engine_api::EngineUuid{descriptor.result_descriptor_uuid}
+          : engine_api::EngineUuid{};
   if (!descriptor_digest.ok() ||
       decoded.catalog_generation != receipt.view.catalog_generation_id ||
       decoded.security_epoch != receipt.view.security_epoch ||
       decoded.resource_epoch != receipt.view.resource_epoch ||
       descriptor.statement_receipt_uuid != decoded.statement_receipt_uuid ||
       descriptor.execution_uuid !=
-          TextToUuid(authority.acknowledgement.binding_uuid) ||
+          (authority.acknowledgement.binding_uuid.bytes) ||
       expected_result_descriptor !=
           authority.acknowledgement.result_descriptor_uuid ||
       descriptor_digest.digest !=
@@ -8908,7 +8909,7 @@ SessionOperationResult HandleBindStmtFree(
     return refuse("SECURITY.ACCESS_DENIED", {}, "session_hidden");
   }
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.authenticated_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -8948,10 +8949,10 @@ SessionOperationResult HandleBindStmtFree(
       ack.authenticated_receipt_uuid != decoded.authenticated_receipt_uuid ||
       ack.occurrence != decoded.occurrence ||
       ack.request_evidence_sha256 != decoded.request_evidence_sha256 ||
-      UuidBytesToText(ack.binding_uuid) != bridge_ack.binding_uuid ||
+      engine_api::EngineUuid{ack.binding_uuid} != bridge_ack.binding_uuid ||
       ack.binding_generation != bridge_ack.binding_generation ||
-      UuidBytesToText(ack.statement_uuid) != bridge_ack.statement_uuid ||
-      UuidBytesToText(ack.statement_name_uuid) !=
+      engine_api::EngineUuid{ack.statement_uuid} != bridge_ack.statement_uuid ||
+      engine_api::EngineUuid{ack.statement_name_uuid} !=
           bridge_ack.statement_name_uuid ||
       ack.prepared_generation != bridge_ack.prepared_generation ||
       ack.descriptor_sha256 != bridge_ack.descriptor_sha256) {
@@ -8997,7 +8998,7 @@ SessionOperationResult HandleCoordinateStmtFree(
     return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
   }
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", "stmt_free_receipt_hidden");
@@ -9026,9 +9027,9 @@ SessionOperationResult HandleCoordinateStmtFree(
       decoded.resource_epoch != receipt.view.resource_epoch ||
       descriptor.statement_receipt_uuid != decoded.statement_receipt_uuid ||
       descriptor.statement_uuid !=
-          TextToUuid(authority.acknowledgement.statement_uuid) ||
+          (authority.acknowledgement.statement_uuid.bytes) ||
       descriptor.statement_name_uuid !=
-          TextToUuid(authority.acknowledgement.statement_name_uuid) ||
+          (authority.acknowledgement.statement_name_uuid.bytes) ||
       descriptor.prepared_generation !=
           authority.acknowledgement.prepared_generation ||
       descriptor.descriptor_sha256 !=
@@ -9084,7 +9085,7 @@ SessionOperationResult HandleBindStmtCancel(
     return refuse("SECURITY.ACCESS_DENIED", {}, "session_hidden");
   }
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.authenticated_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -9129,22 +9130,22 @@ SessionOperationResult HandleBindStmtCancel(
       ack.mode != decoded.mode ||
       ack.deadline_monotonic_ns != decoded.deadline_monotonic_ns ||
       ack.request_evidence_sha256 != decoded.request_evidence_sha256 ||
-      UuidBytesToText(ack.binding_uuid) != bridge_ack.binding_uuid ||
+      engine_api::EngineUuid{ack.binding_uuid} != bridge_ack.binding_uuid ||
       ack.binding_generation != bridge_ack.binding_generation ||
-      UuidBytesToText(ack.target_execution_uuid) !=
+      engine_api::EngineUuid{ack.target_execution_uuid} !=
           bridge_ack.target_execution_uuid ||
-      UuidBytesToText(ack.target_statement_uuid) !=
+      engine_api::EngineUuid{ack.target_statement_uuid} !=
           bridge_ack.target_statement_uuid ||
-      UuidBytesToText(ack.target_statement_receipt_uuid) !=
+      engine_api::EngineUuid{ack.target_statement_receipt_uuid} !=
           bridge_ack.target_statement_receipt_uuid ||
-      UuidBytesToText(ack.cancel_operation_uuid) !=
+      engine_api::EngineUuid{ack.cancel_operation_uuid} !=
           bridge_ack.cancel_operation_uuid ||
-      ((!bridge_ack.target_transaction_uuid.empty()) !=
+      ((!scratchbird::core::uuid::IsNilUuid(bridge_ack.target_transaction_uuid)) !=
        std::any_of(ack.target_transaction_uuid.begin(),
                    ack.target_transaction_uuid.end(),
                    [](std::uint8_t value) { return value != 0; })) ||
-      (!bridge_ack.target_transaction_uuid.empty() &&
-       UuidBytesToText(ack.target_transaction_uuid) !=
+      (!scratchbird::core::uuid::IsNilUuid(bridge_ack.target_transaction_uuid) &&
+       engine_api::EngineUuid{ack.target_transaction_uuid} !=
            bridge_ack.target_transaction_uuid) ||
       ack.target_execution_generation !=
           bridge_ack.target_execution_generation ||
@@ -9193,7 +9194,7 @@ SessionOperationResult HandleCoordinateStmtCancel(
     return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
   }
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", "stmt_cancel_receipt_hidden");
@@ -9218,21 +9219,21 @@ SessionOperationResult HandleCoordinateStmtCancel(
                   detail.empty() ? "stmt_cancel_authority_hidden" : detail);
   }
   const auto expected_transaction =
-      authority.acknowledgement.target_transaction_uuid.empty()
+      scratchbird::core::uuid::IsNilUuid(authority.acknowledgement.target_transaction_uuid)
           ? std::array<std::uint8_t, 16>{}
-          : TextToUuid(authority.acknowledgement.target_transaction_uuid);
+          : (authority.acknowledgement.target_transaction_uuid.bytes);
   if (decoded.catalog_generation != receipt.view.catalog_generation_id ||
       decoded.security_epoch != receipt.view.security_epoch ||
       decoded.resource_epoch != receipt.view.resource_epoch ||
       descriptor.target_execution_uuid !=
-          TextToUuid(authority.acknowledgement.target_execution_uuid) ||
+          (authority.acknowledgement.target_execution_uuid.bytes) ||
       descriptor.target_statement_uuid !=
-          TextToUuid(authority.acknowledgement.target_statement_uuid) ||
+          (authority.acknowledgement.target_statement_uuid.bytes) ||
       descriptor.target_statement_receipt_uuid !=
-          TextToUuid(
-              authority.acknowledgement.target_statement_receipt_uuid) ||
+          (
+              authority.acknowledgement.target_statement_receipt_uuid.bytes) ||
       descriptor.cancel_operation_uuid !=
-          TextToUuid(authority.acknowledgement.cancel_operation_uuid) ||
+          (authority.acknowledgement.cancel_operation_uuid.bytes) ||
       descriptor.target_transaction_uuid != expected_transaction ||
       descriptor.target_execution_generation !=
           authority.acknowledgement.target_execution_generation ||
@@ -9293,7 +9294,7 @@ SessionOperationResult HandleBindParameterBind(
   }
   StatementManagementReceipt receipt;
   const auto receipt_uuid =
-      UuidBytesToText(decoded.authenticated_receipt_uuid);
+      engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED",
@@ -9303,8 +9304,8 @@ SessionOperationResult HandleBindParameterBind(
     return refuse("MGA.TRANSACTION.STALE",
                   "parameter_bind_receipt_ended");
   }
-  const auto optional_uuid_text = [](const auto& value) {
-    return IsZeroUuidBytes(value) ? std::string{} : UuidBytesToText(value);
+  const auto optional_uuid = [](const auto& value) {
+    return engine_api::EngineUuid{value};
   };
   engine_bridge::StatementParameterBindRequestV1 bridge_request;
   bridge_request.authenticated_receipt_uuid = receipt_uuid;
@@ -9312,18 +9313,18 @@ SessionOperationResult HandleBindParameterBind(
   bridge_request.statement_name = decoded.statement_name;
   bridge_request.quoted = decoded.quoted;
   bridge_request.prepared_statement_uuid =
-      UuidBytesToText(decoded.prepared_statement_uuid);
+      engine_api::EngineUuid{decoded.prepared_statement_uuid};
   bridge_request.prepared_generation = decoded.prepared_generation;
   bridge_request.parameter_set_uuid =
-      UuidBytesToText(decoded.parameter_set_uuid);
+      engine_api::EngineUuid{decoded.parameter_set_uuid};
   bridge_request.parameter_set_generation =
       decoded.parameter_set_generation;
   bridge_request.ordered_slot_table_sha256 =
       decoded.ordered_slot_table_sha256;
-  bridge_request.batch_uuid = optional_uuid_text(decoded.batch_uuid);
+  bridge_request.batch_uuid = optional_uuid(decoded.batch_uuid);
   bridge_request.batch_generation = decoded.batch_generation;
   bridge_request.dynamic_package_uuid =
-      optional_uuid_text(decoded.dynamic_package_uuid);
+      optional_uuid(decoded.dynamic_package_uuid);
   bridge_request.dynamic_generation = decoded.dynamic_generation;
   bridge_request.value_count = decoded.value_count;
   bridge_request.canonical_value_vector = decoded.canonical_value_vector;
@@ -9402,7 +9403,7 @@ SessionOperationResult HandleCoordinateParameterBind(
   }
   StatementManagementReceipt receipt;
   const auto receipt_uuid =
-      UuidBytesToText(decoded.statement_receipt_uuid);
+      engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED",
@@ -9434,14 +9435,14 @@ SessionOperationResult HandleCoordinateParameterBind(
       decoded.security_epoch != receipt.view.security_epoch ||
       decoded.resource_epoch != receipt.view.resource_epoch ||
       descriptor.statement_receipt_uuid != decoded.statement_receipt_uuid ||
-      descriptor.execution_uuid != TextToUuid(receipt.view.statement_uuid) ||
+      descriptor.execution_uuid != (receipt.view.statement_uuid.bytes) ||
       descriptor.catalog_snapshot_uuid !=
-          TextToUuid(receipt.view.literal_catalog_snapshot_uuid) ||
+          (receipt.view.literal_catalog_snapshot_uuid.bytes) ||
       descriptor.catalog_generation != decoded.catalog_generation ||
       descriptor.security_epoch != decoded.security_epoch ||
       descriptor.resource_epoch != decoded.resource_epoch ||
       descriptor.mga_snapshot_uuid !=
-          TextToUuid(receipt.view.statement_snapshot_uuid) ||
+          (receipt.view.statement_snapshot_uuid.bytes) ||
       descriptor.executor_availability_generation !=
           receipt.view.parameter_bind_executor_availability_generation ||
       scratchbird::engine::sblr::EncodeSblrParameterBindDescriptorV1(
@@ -9494,7 +9495,7 @@ SessionOperationResult HandleCoordinateResultPage(
   }
 
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", "result_page_receipt_hidden");
@@ -9537,7 +9538,7 @@ SessionOperationResult HandleCoordinateResultPage(
                   "result_page_cursor_not_live");
   }
   if (selected->owning_local_transaction_id == 0 ||
-      selected->owning_transaction_uuid.empty()) {
+      scratchbird::core::uuid::IsNilUuid(selected->owning_transaction_uuid)) {
     return refuse("MGA.TRANSACTION.STALE",
                   "result_page_transaction_missing");
   }
@@ -9590,14 +9591,14 @@ SessionOperationResult HandleCoordinateResultPage(
   descriptor.continuation_generation =
       selected->result_page_continuation_generation;
   descriptor.redaction_profile_uuid =
-      TextToUuid(receipt.view.result_page_redaction_profile_uuid);
+      (receipt.view.result_page_redaction_profile_uuid.bytes);
   descriptor.redaction_generation =
       receipt.view.result_page_redaction_generation;
   descriptor.policy_snapshot_uuid =
-      TextToUuid(receipt.view.result_page_policy_snapshot_uuid);
+      (receipt.view.result_page_policy_snapshot_uuid.bytes);
   descriptor.policy_generation = receipt.view.result_page_policy_generation;
   descriptor.resource_budget_uuid =
-      TextToUuid(receipt.view.result_page_resource_budget_uuid);
+      (receipt.view.result_page_resource_budget_uuid.bytes);
   descriptor.resource_budget_generation =
       receipt.view.result_page_resource_budget_generation;
   descriptor.executor_availability_generation =
@@ -9669,7 +9670,7 @@ SessionOperationResult HandleBindQueryExplain(
   std::unique_lock<std::mutex> transaction_guard(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.authenticated_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -9705,12 +9706,12 @@ SessionOperationResult HandleBindQueryExplain(
                       : bridge_ack.failure_detail);
   }
   scratchbird::wire::sbps_statement_management::QueryExplainBindAckV1 ack;
-  ack.authenticated_receipt_uuid = TextToUuid(
-      bridge_ack.authenticated_receipt_uuid);
+  ack.authenticated_receipt_uuid = (
+      bridge_ack.authenticated_receipt_uuid.bytes);
   ack.occurrence = bridge_ack.occurrence;
-  ack.binding_uuid = TextToUuid(bridge_ack.binding_uuid);
+  ack.binding_uuid = (bridge_ack.binding_uuid.bytes);
   ack.binding_generation = bridge_ack.binding_generation;
-  ack.explain_uuid = TextToUuid(bridge_ack.explain_uuid);
+  ack.explain_uuid = (bridge_ack.explain_uuid.bytes);
   ack.canonical_query_sblr_sha256 =
       bridge_ack.canonical_query_sblr_sha256;
   ack.request_evidence_sha256 = bridge_ack.request_evidence_sha256;
@@ -9780,7 +9781,7 @@ SessionOperationResult HandleCoordinateQueryExplain(
         std::unique_lock<std::mutex>(*session->second.transaction_mutex);
   }
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", "query_explain_receipt_hidden");
@@ -9824,22 +9825,22 @@ SessionOperationResult HandleCoordinateQueryExplain(
       descriptor.statement_receipt_uuid != decoded.statement_receipt_uuid ||
       descriptor.catalog_generation != decoded.catalog_generation ||
       descriptor.security_context_uuid !=
-          TextToUuid(receipt.view.security_context_uuid) ||
+          (receipt.view.security_context_uuid.bytes) ||
       descriptor.policy_snapshot_uuid !=
-          TextToUuid(receipt.view.query_explain_policy_snapshot_uuid) ||
+          (receipt.view.query_explain_policy_snapshot_uuid.bytes) ||
       descriptor.policy_generation !=
           receipt.view.query_explain_policy_generation ||
       descriptor.resource_budget_uuid !=
-          TextToUuid(receipt.view.query_explain_resource_budget_uuid) ||
+          (receipt.view.query_explain_resource_budget_uuid.bytes) ||
       descriptor.resource_budget_generation != decoded.resource_epoch ||
       descriptor.redaction_profile_uuid !=
-          TextToUuid(receipt.view.query_explain_redaction_profile_uuid) ||
+          (receipt.view.query_explain_redaction_profile_uuid.bytes) ||
       descriptor.language_profile_uuid !=
-          TextToUuid(receipt.view.query_explain_language_profile_uuid) ||
+          (receipt.view.query_explain_language_profile_uuid.bytes) ||
       descriptor.executor_availability_generation !=
           receipt.view.query_explain_executor_availability_generation ||
       descriptor.explain_uuid !=
-          TextToUuid(authority.acknowledgement.explain_uuid) ||
+          (authority.acknowledgement.explain_uuid.bytes) ||
       descriptor.canonical_query_sblr_sha256 !=
           authority.acknowledgement.canonical_query_sblr_sha256 ||
       scratchbird::engine::sblr::EncodeSblrQueryExplainDescriptorV1(
@@ -9896,7 +9897,7 @@ SessionOperationResult HandleBindNameResolve(
   std::unique_lock<std::mutex> transaction_guard(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.authenticated_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -9958,7 +9959,7 @@ SessionOperationResult HandleBindNameResolve(
                                      &ack, &detail) ||
       ack.authenticated_receipt_uuid != decoded.authenticated_receipt_uuid ||
       ack.occurrence != decoded.occurrence ||
-      ack.resolution_uuid != TextToUuid(bridge_ack.resolution_uuid) ||
+      ack.resolution_uuid != (bridge_ack.resolution_uuid.bytes) ||
       ack.descriptor_sha256 != bridge_ack.descriptor_sha256 ||
       ack.request_evidence_sha256 != decoded.request_evidence_sha256) {
     return refuse("SBLR.OPERAND.INVALID", {},
@@ -10007,7 +10008,7 @@ SessionOperationResult HandleCoordinateNameResolve(
   std::unique_lock<std::mutex> transaction_guard(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -10064,7 +10065,7 @@ SessionOperationResult HandleCoordinateNameResolve(
       descriptor.executor_availability_generation !=
           receipt.view.name_resolve_executor_availability_generation ||
       descriptor.resolution_uuid !=
-          TextToUuid(authority.acknowledgement.resolution_uuid) ||
+          (authority.acknowledgement.resolution_uuid.bytes) ||
       descriptor.descriptor_sha256 !=
           authority.acknowledgement.descriptor_sha256) {
     return refuse("MGA.TRANSACTION.STALE", {},
@@ -10120,7 +10121,7 @@ SessionOperationResult HandleBindParseText(
   std::unique_lock<std::mutex> transaction_guard(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.authenticated_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -10184,9 +10185,9 @@ SessionOperationResult HandleBindParseText(
                                    &ack, &detail) ||
       ack.authenticated_receipt_uuid != decoded.authenticated_receipt_uuid ||
       ack.occurrence != decoded.occurrence ||
-      ack.binding_uuid != TextToUuid(bridge_ack.binding_uuid) ||
+      ack.binding_uuid != (bridge_ack.binding_uuid.bytes) ||
       ack.binding_generation != bridge_ack.binding_generation ||
-      ack.parse_uuid != TextToUuid(bridge_ack.parse_uuid) ||
+      ack.parse_uuid != (bridge_ack.parse_uuid.bytes) ||
       ack.descriptor_sha256 != bridge_ack.descriptor_sha256 ||
       ack.canonical_input_sha256 != decoded.canonical_input_sha256 ||
       ack.request_evidence_sha256 != decoded.request_evidence_sha256) {
@@ -10237,7 +10238,7 @@ SessionOperationResult HandleCoordinateParseText(
   std::unique_lock<std::mutex> transaction_guard(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -10292,16 +10293,16 @@ SessionOperationResult HandleCoordinateParseText(
           &detail) ||
       descriptor.statement_receipt_uuid != decoded.statement_receipt_uuid ||
       descriptor.parse_uuid !=
-          TextToUuid(authority.acknowledgement.parse_uuid) ||
+          (authority.acknowledgement.parse_uuid.bytes) ||
       descriptor.language_profile_uuid !=
-          TextToUuid(receipt.view.parse_text_language_profile_uuid) ||
+          (receipt.view.parse_text_language_profile_uuid.bytes) ||
       descriptor.language_profile_generation !=
           receipt.view.parse_text_language_profile_generation ||
       descriptor.catalog_snapshot_uuid !=
-          TextToUuid(receipt.view.statement_metadata_snapshot_uuid) ||
+          (receipt.view.statement_metadata_snapshot_uuid.bytes) ||
       descriptor.catalog_generation != decoded.catalog_generation ||
       descriptor.security_context_uuid !=
-          TextToUuid(receipt.view.security_context_uuid) ||
+          (receipt.view.security_context_uuid.bytes) ||
       descriptor.security_epoch != decoded.security_epoch ||
       descriptor.resource_epoch != decoded.resource_epoch ||
       descriptor.executor_availability_generation !=
@@ -10370,7 +10371,7 @@ SessionOperationResult HandleBindCatalogEpochCheck(
   std::unique_lock<std::mutex> transaction_guard(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.authenticated_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -10427,12 +10428,12 @@ SessionOperationResult HandleBindCatalogEpochCheck(
               bridge_ack.exact_bind_ack_bytes.size(), &ack, &detail) ||
       ack.authenticated_receipt_uuid != decoded.authenticated_receipt_uuid ||
       ack.occurrence != decoded.occurrence ||
-      ack.binding_uuid != TextToUuid(bridge_ack.binding_uuid) ||
+      ack.binding_uuid != (bridge_ack.binding_uuid.bytes) ||
       ack.binding_generation != bridge_ack.binding_generation ||
-      ack.check_uuid != TextToUuid(bridge_ack.check_uuid) ||
-      ack.object_uuid != TextToUuid(bridge_ack.object_uuid) ||
+      ack.check_uuid != (bridge_ack.check_uuid.bytes) ||
+      ack.object_uuid != (bridge_ack.object_uuid.bytes) ||
       ack.object_generation != bridge_ack.object_generation ||
-      ack.schema_tree_uuid != TextToUuid(bridge_ack.schema_tree_uuid) ||
+      ack.schema_tree_uuid != (bridge_ack.schema_tree_uuid.bytes) ||
       ack.schema_tree_generation != bridge_ack.schema_tree_generation ||
       ack.visibility_scope_sha256 !=
           bridge_ack.visibility_scope_sha256 ||
@@ -10488,7 +10489,7 @@ SessionOperationResult HandleCoordinateCatalogEpochCheck(
   std::unique_lock<std::mutex> transaction_guard(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -10543,26 +10544,26 @@ SessionOperationResult HandleCoordinateCatalogEpochCheck(
       descriptor.object_scoped != decoded.object_scoped ||
       descriptor.statement_receipt_uuid != decoded.statement_receipt_uuid ||
       descriptor.check_uuid !=
-          TextToUuid(authority.acknowledgement.check_uuid) ||
+          (authority.acknowledgement.check_uuid.bytes) ||
       descriptor.requested_catalog_epoch_uuid !=
-          TextToUuid(receipt.view.catalog_epoch_uuid) ||
+          (receipt.view.catalog_epoch_uuid.bytes) ||
       descriptor.requested_catalog_generation !=
           decoded.catalog_generation ||
       descriptor.security_context_uuid !=
-          TextToUuid(receipt.view.security_context_uuid) ||
+          (receipt.view.security_context_uuid.bytes) ||
       descriptor.policy_snapshot_uuid !=
-          TextToUuid(
-              receipt.view.catalog_epoch_check_policy_snapshot_uuid) ||
+          (
+              receipt.view.catalog_epoch_check_policy_snapshot_uuid.bytes) ||
       descriptor.policy_generation !=
           receipt.view.catalog_epoch_check_policy_generation ||
       descriptor.catalog_snapshot_uuid !=
-          TextToUuid(receipt.view.statement_metadata_snapshot_uuid) ||
+          (receipt.view.statement_metadata_snapshot_uuid.bytes) ||
       descriptor.security_epoch != decoded.security_epoch ||
       descriptor.resource_epoch != decoded.resource_epoch ||
       descriptor.executor_availability_generation !=
           receipt.view.catalog_epoch_check_executor_availability_generation ||
       descriptor.schema_tree_uuid !=
-          TextToUuid(authority.schema_tree_uuid) ||
+          (authority.schema_tree_uuid.bytes) ||
       descriptor.schema_tree_generation !=
           authority.schema_tree_generation ||
       descriptor.visibility_scope_sha256 !=
@@ -10628,7 +10629,7 @@ SessionOperationResult HandleBindDatabaseAttach(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
   const auto receipt_uuid =
-      UuidBytesToText(decoded.authenticated_receipt_uuid);
+      engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -10683,14 +10684,14 @@ SessionOperationResult HandleBindDatabaseAttach(
               bridge_ack.exact_bind_ack_bytes.size(), &ack, &detail) ||
       ack.authenticated_receipt_uuid != decoded.authenticated_receipt_uuid ||
       ack.occurrence != decoded.occurrence ||
-      ack.binding_uuid != TextToUuid(bridge_ack.binding_uuid) ||
+      ack.binding_uuid != (bridge_ack.binding_uuid.bytes) ||
       ack.binding_generation != bridge_ack.binding_generation ||
-      ack.attach_uuid != TextToUuid(bridge_ack.attach_uuid) ||
-      ack.storage_uuid != TextToUuid(bridge_ack.storage_uuid) ||
-      ack.alias_uuid != TextToUuid(bridge_ack.alias_uuid) ||
-      ack.database_uuid != TextToUuid(bridge_ack.database_uuid) ||
+      ack.attach_uuid != (bridge_ack.attach_uuid.bytes) ||
+      ack.storage_uuid != (bridge_ack.storage_uuid.bytes) ||
+      ack.alias_uuid != (bridge_ack.alias_uuid.bytes) ||
+      ack.database_uuid != (bridge_ack.database_uuid.bytes) ||
       ack.catalog_snapshot_uuid !=
-          TextToUuid(bridge_ack.catalog_snapshot_uuid) ||
+          (bridge_ack.catalog_snapshot_uuid.bytes) ||
       ack.catalog_generation != bridge_ack.catalog_generation ||
       ack.descriptor_sha256 != bridge_ack.descriptor_sha256 ||
       ack.request_evidence_sha256 != decoded.request_evidence_sha256) {
@@ -10748,7 +10749,7 @@ SessionOperationResult HandleRetainSourceArtifact(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
   const auto receipt_uuid =
-      UuidBytesToText(decoded.authenticated_receipt_uuid);
+      engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -10865,7 +10866,7 @@ SessionOperationResult HandleCoordinateDatabaseAttach(
   std::unique_lock<std::mutex> transaction_guard(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -10917,20 +10918,20 @@ SessionOperationResult HandleCoordinateDatabaseAttach(
           &detail) ||
       descriptor.statement_receipt_uuid != decoded.statement_receipt_uuid ||
       descriptor.attach_uuid !=
-          TextToUuid(authority.acknowledgement.attach_uuid) ||
+          (authority.acknowledgement.attach_uuid.bytes) ||
       descriptor.storage_uuid !=
-          TextToUuid(authority.acknowledgement.storage_uuid) ||
+          (authority.acknowledgement.storage_uuid.bytes) ||
       descriptor.alias_uuid !=
-          TextToUuid(authority.acknowledgement.alias_uuid) ||
+          (authority.acknowledgement.alias_uuid.bytes) ||
       descriptor.database_uuid !=
-          TextToUuid(authority.acknowledgement.database_uuid) ||
+          (authority.acknowledgement.database_uuid.bytes) ||
       descriptor.catalog_snapshot_uuid !=
-          TextToUuid(receipt.view.statement_metadata_snapshot_uuid) ||
+          (receipt.view.statement_metadata_snapshot_uuid.bytes) ||
       descriptor.catalog_generation != decoded.catalog_generation ||
       descriptor.security_context_uuid !=
-          TextToUuid(receipt.view.security_context_uuid) ||
+          (receipt.view.security_context_uuid.bytes) ||
       descriptor.transaction_uuid !=
-          TextToUuid(receipt.view.owning_transaction_uuid) ||
+          (receipt.view.owning_transaction_uuid.bytes) ||
       descriptor.transaction_generation !=
           receipt.view.owning_local_transaction_id ||
       descriptor.mode != authority.mode ||
@@ -10990,7 +10991,7 @@ SessionOperationResult HandleCoordinateOptimizerStatsRead(
   std::unique_lock<std::mutex> transaction_guard(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -11047,7 +11048,7 @@ SessionOperationResult HandleCoordinateOptimizerStatsRead(
       descriptor.security_epoch != decoded.security_epoch ||
       descriptor.resource_epoch != decoded.resource_epoch ||
       descriptor.statistics_snapshot_uuid !=
-          TextToUuid(authority.statistics_snapshot_uuid) ||
+          (authority.statistics_snapshot_uuid.bytes) ||
       descriptor.executor_availability_generation !=
           receipt.view.optimizer_stats_read_executor_availability_generation) {
     return refuse("MGA.AUTHORITY_MISMATCH", {},
@@ -11099,7 +11100,7 @@ SessionOperationResult HandleCoordinateOptimizerStatsDrop(
   std::unique_lock<std::mutex> transaction_guard(
       *session->second.transaction_mutex);
   StatementManagementReceipt receipt;
-  const auto receipt_uuid = UuidBytesToText(decoded.statement_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.statement_receipt_uuid};
   if (!FindStatementManagementReceipt(registry, request.header.session_uuid,
                                       receipt_uuid, &receipt)) {
     return refuse("SECURITY.ACCESS_DENIED", {},
@@ -11177,9 +11178,9 @@ SessionOperationResult HandleCoordinateOptimizerStatsDrop(
       descriptor.catalog_generation != decoded.catalog_generation ||
       descriptor.security_epoch != decoded.security_epoch ||
       descriptor.resource_epoch != decoded.resource_epoch ||
-      descriptor.effect_uuid != TextToUuid(authority.effect_uuid) ||
+      descriptor.effect_uuid != (authority.effect_uuid.bytes) ||
       descriptor.owning_transaction_uuid !=
-          TextToUuid(receipt.view.owning_transaction_uuid) ||
+          (receipt.view.owning_transaction_uuid.bytes) ||
       descriptor.owning_local_transaction_id !=
           receipt.view.owning_local_transaction_id ||
       descriptor.executor_availability_generation !=
@@ -11238,7 +11239,7 @@ SessionOperationResult HandleBindBulkImportStream(
   if (session == registry->sessions_by_uuid.end()) {
     return refuse("SECURITY.ACCESS_DENIED", {}, "session_hidden");
   }
-  const auto receipt_uuid = UuidBytesToText(decoded.authenticated_receipt_uuid);
+  const auto receipt_uuid = engine_api::EngineUuid{decoded.authenticated_receipt_uuid};
   engine_bridge::StatementContextReceiptHandle receipt_handle;
   bool receipt_released = false;
   {
@@ -11348,7 +11349,7 @@ SessionOperationResult HandleBindBulkImportStream(
       decoded_ack.structural_occurrence != decoded.structural_occurrence ||
       decoded_ack.import_occurrence != decoded.import_occurrence ||
       decoded_ack.syntax_demand_sha256 != decoded.syntax_demand_sha256 ||
-      UuidBytesToText(decoded_ack.binding_uuid) != bridge_ack.binding_uuid ||
+      engine_api::EngineUuid{decoded_ack.binding_uuid} != bridge_ack.binding_uuid ||
       decoded_ack.binding_generation != bridge_ack.binding_generation ||
       decoded_ack.binding_evidence_sha256 !=
           bridge_ack.binding_evidence_sha256) {
@@ -11422,46 +11423,46 @@ bool BulkImportAllocationMatchesAuthority(
     const engine_api::BulkImportStreamAllocation& allocation,
     const engine_bridge::StatementBulkImportAuthorityV1& authority) {
   return allocation.authenticated_receipt_uuid ==
-             TextToUuid(authority.acknowledgement.authenticated_receipt_uuid) &&
+             (authority.acknowledgement.authenticated_receipt_uuid.bytes) &&
          allocation.structural_occurrence ==
              authority.acknowledgement.structural_occurrence &&
          allocation.import_occurrence ==
              authority.acknowledgement.import_occurrence &&
          allocation.target_relation_uuid ==
-             TextToUuid(authority.target_relation_uuid) &&
+             (authority.target_relation_uuid.bytes) &&
          allocation.target_relation_generation ==
              authority.target_relation_generation &&
          allocation.owning_transaction_uuid ==
-             TextToUuid(authority.owning_transaction_uuid) &&
+             (authority.owning_transaction_uuid.bytes) &&
          allocation.owning_local_transaction_id ==
              authority.owning_local_transaction_id &&
          allocation.statement_snapshot_uuid ==
-             TextToUuid(authority.statement_snapshot_uuid) &&
-         allocation.catalog_epoch_uuid == TextToUuid(authority.catalog_epoch_uuid) &&
+             (authority.statement_snapshot_uuid.bytes) &&
+         allocation.catalog_epoch_uuid == (authority.catalog_epoch_uuid.bytes) &&
          allocation.catalog_generation == authority.catalog_generation &&
          allocation.security_context_uuid ==
-             TextToUuid(authority.security_context_uuid) &&
+             (authority.security_context_uuid.bytes) &&
          allocation.security_epoch == authority.security_epoch &&
          allocation.policy_snapshot_uuid ==
-             TextToUuid(authority.import_policy_snapshot_uuid) &&
+             (authority.import_policy_snapshot_uuid.bytes) &&
          allocation.policy_generation == authority.import_policy_generation &&
          allocation.route_snapshot_uuid ==
-             TextToUuid(authority.import_route_snapshot_uuid) &&
+             (authority.import_route_snapshot_uuid.bytes) &&
          allocation.route_generation == authority.import_route_generation &&
-         allocation.row_shape_uuid == TextToUuid(authority.row_shape_uuid) &&
+         allocation.row_shape_uuid == (authority.row_shape_uuid.bytes) &&
          allocation.row_shape_generation == authority.row_shape_generation &&
          allocation.column_descriptor_set_sha256 ==
              authority.column_descriptor_set_sha256 &&
          allocation.import_policy_bundle_sha256 ==
              authority.import_policy_bundle_sha256 &&
          allocation.resource_grant_uuid ==
-             TextToUuid(authority.resource_grant_uuid) &&
+             (authority.resource_grant_uuid.bytes) &&
          allocation.resource_grant_generation ==
              authority.resource_grant_generation &&
          allocation.cluster_bound == authority.cluster_bound &&
          allocation.cluster_epoch == authority.cluster_epoch &&
          allocation.cluster_fence_uuid ==
-             TextToUuid(authority.cluster_fence_uuid) &&
+             (authority.cluster_fence_uuid.bytes) &&
          allocation.executor_availability_generation ==
              authority.executor_availability_generation &&
          allocation.effective_maximum_stream_bytes ==
@@ -11476,23 +11477,6 @@ bool BulkImportAllocationMatchesAuthority(
              authority.maximum_target_columns;
 }
 
-bool ParseCanonicalBulkImportUuid(
-    std::string_view text,
-    scratchbird::engine::sblr::BulkImportUuid* output,
-    bool allow_nil = false) {
-  if (output == nullptr) return false;
-  const auto parsed = TextToUuid(text);
-  if (sbps::IsZeroUuid(parsed)) {
-    if (allow_nil && text.empty()) {
-      *output = {};
-      return true;
-    }
-    return false;
-  }
-  if (UuidBytesToText(parsed) != text) return false;
-  *output = parsed;
-  return true;
-}
 
 bool CopyBulkImportAuthorityInput(
     const engine_bridge::StatementBulkImportAuthorityV1& source,
@@ -11528,30 +11512,30 @@ bool CopyBulkImportAuthorityInput(
   value.effective_maximum_rows =
       source.maximum_affected_plus_rejected_rows;
   value.effective_maximum_target_columns = source.maximum_target_columns;
-  if (!ParseCanonicalBulkImportUuid(
+  if (!CopyCoordinationSystemUuid(
           source.acknowledgement.authenticated_receipt_uuid,
           &value.authenticated_receipt_uuid) ||
-      !ParseCanonicalBulkImportUuid(source.acknowledgement.binding_uuid,
+      !CopyCoordinationSystemUuid(source.acknowledgement.binding_uuid,
                                     &value.binding_uuid) ||
-      !ParseCanonicalBulkImportUuid(source.target_relation_uuid,
+      !CopyCoordinationSystemUuid(source.target_relation_uuid,
                                     &value.target_relation_uuid) ||
-      !ParseCanonicalBulkImportUuid(source.owning_transaction_uuid,
+      !CopyCoordinationSystemUuid(source.owning_transaction_uuid,
                                     &value.owning_transaction_uuid) ||
-      !ParseCanonicalBulkImportUuid(source.statement_snapshot_uuid,
+      !CopyCoordinationSystemUuid(source.statement_snapshot_uuid,
                                     &value.statement_snapshot_uuid) ||
-      !ParseCanonicalBulkImportUuid(source.catalog_epoch_uuid,
+      !CopyCoordinationSystemUuid(source.catalog_epoch_uuid,
                                     &value.catalog_epoch_uuid) ||
-      !ParseCanonicalBulkImportUuid(source.security_context_uuid,
+      !CopyCoordinationSystemUuid(source.security_context_uuid,
                                     &value.security_context_uuid) ||
-      !ParseCanonicalBulkImportUuid(source.import_policy_snapshot_uuid,
+      !CopyCoordinationSystemUuid(source.import_policy_snapshot_uuid,
                                     &value.policy_snapshot_uuid) ||
-      !ParseCanonicalBulkImportUuid(source.import_route_snapshot_uuid,
+      !CopyCoordinationSystemUuid(source.import_route_snapshot_uuid,
                                     &value.route_snapshot_uuid) ||
-      !ParseCanonicalBulkImportUuid(source.row_shape_uuid,
+      !CopyCoordinationSystemUuid(source.row_shape_uuid,
                                     &value.row_shape_uuid) ||
-      !ParseCanonicalBulkImportUuid(source.resource_grant_uuid,
+      !CopyCoordinationSystemUuid(source.resource_grant_uuid,
                                     &value.resource_grant_uuid) ||
-      !ParseCanonicalBulkImportUuid(source.cluster_fence_uuid,
+      !CopyCoordinationSystemUuid(source.cluster_fence_uuid,
                                     &value.cluster_fence_uuid,
                                     !source.cluster_bound)) {
     return false;
@@ -11580,7 +11564,7 @@ BulkImportTransportAdmission AdmitBulkImportTransport(
   const auto session = registry->sessions_by_uuid.find(session_key);
   if (session == registry->sessions_by_uuid.end())
     return fail("SECURITY.ACCESS_DENIED", "session_hidden");
-  const auto receipt_text = UuidBytesToText(receipt_uuid);
+  const auto receipt_text = engine_api::EngineUuid{receipt_uuid};
   ServerStatementContextRecord receipt;
   bool found_receipt = false;
   {
@@ -11676,7 +11660,7 @@ BulkImportTransportAdmission AdmitBulkImportTransport(
   }
   const auto& context = admitted.engine_context;
   if (context.database_uuid != live_session.database_uuid ||
-      context.session_uuid != session_key ||
+      context.session_uuid.bytes != request.header.session_uuid ||
       context.statement_receipt_uuid != receipt_text ||
       context.transaction_uuid !=
           admitted.authority.owning_transaction_uuid ||
@@ -11950,7 +11934,7 @@ SessionOperationResult HandleCoordinateBulkImportStream(
   if (session == registry->sessions_by_uuid.end()) {
     return refuse("SECURITY.ACCESS_DENIED", "session_hidden");
   }
-  const auto receipt_text = UuidBytesToText(decoded.receipt);
+  const auto receipt_text = engine_api::EngineUuid{decoded.receipt};
   ServerStatementContextRecord receipt;
   bool found_receipt = false;
   {
@@ -11973,7 +11957,7 @@ SessionOperationResult HandleCoordinateBulkImportStream(
   }
   if (receipt.released || !receipt.receipt ||
       receipt.owning_local_transaction_id == 0 ||
-      receipt.owning_transaction_uuid.empty()) {
+      scratchbird::core::uuid::IsNilUuid(receipt.owning_transaction_uuid)) {
     return refuse("MGA.TRANSACTION_INVALID",
                   "bulk_import_stream_receipt_ended");
   }
@@ -12044,7 +12028,7 @@ SessionOperationResult HandleCoordinateBulkImportStream(
                                          : std::move(context_detail));
   }
   if (engine_context.database_uuid != live_session.database_uuid ||
-      engine_context.session_uuid != session_key ||
+      engine_context.session_uuid.bytes != request.header.session_uuid ||
       engine_context.statement_receipt_uuid != receipt_text ||
       engine_context.transaction_uuid !=
           receipt.owning_transaction_uuid ||
@@ -12217,11 +12201,11 @@ SessionOperationResult HandleCoordinateProcedureInvoke(
           DecodeSblrProcedureInvokeAuthorityInputV1(
               descriptor, &descriptor_authority, &detail) ||
       descriptor_authority.owning_transaction_uuid !=
-          TextToUuid(receipt.view.owning_transaction_uuid) ||
+          (receipt.view.owning_transaction_uuid.bytes) ||
       descriptor_authority.owning_local_transaction_id !=
           receipt.view.owning_local_transaction_id ||
       descriptor_authority.statement_snapshot_uuid !=
-          TextToUuid(receipt.view.statement_snapshot_uuid) ||
+          (receipt.view.statement_snapshot_uuid.bytes) ||
       descriptor_authority.procedure_uuid !=
           TextToUuid(authority.procedure_uuid) ||
       descriptor_authority.procedure_generation !=
@@ -12461,7 +12445,7 @@ SessionOperationResult HandleCoordinateDdlCreateSchema(
       descriptor.schema_occurrence != decoded.schema_occurrence ||
       descriptor.schema_uuid != TextToUuid(authority.schema_uuid) ||
       descriptor.owning_transaction_uuid !=
-          TextToUuid(receipt.view.owning_transaction_uuid) ||
+          (receipt.view.owning_transaction_uuid.bytes) ||
       descriptor.owning_local_transaction_id !=
           receipt.view.owning_local_transaction_id ||
       descriptor.catalog_generation != receipt.view.catalog_generation_id ||
@@ -12734,7 +12718,7 @@ SessionOperationResult HandleCoordinateDdlCreateTrigger(
       descriptor.target_relation_uuid !=
           TextToUuid(authority.target_relation_uuid) ||
       descriptor.owning_transaction_uuid !=
-          TextToUuid(receipt.view.owning_transaction_uuid) ||
+          (receipt.view.owning_transaction_uuid.bytes) ||
       descriptor.owning_local_transaction_id !=
           receipt.view.owning_local_transaction_id ||
       descriptor.catalog_generation != receipt.view.catalog_generation_id ||
@@ -12847,7 +12831,7 @@ SessionOperationResult HandleCoordinateDdlAlterTrigger(
       descriptor.target_relation_uuid !=
           TextToUuid(authority.target_relation_uuid) ||
       descriptor.owning_transaction_uuid !=
-          TextToUuid(receipt.view.owning_transaction_uuid) ||
+          (receipt.view.owning_transaction_uuid.bytes) ||
       descriptor.owning_local_transaction_id !=
           receipt.view.owning_local_transaction_id ||
       descriptor.catalog_generation != receipt.view.catalog_generation_id ||
@@ -12957,7 +12941,7 @@ SessionOperationResult HandleCoordinateDdlDropTrigger(
       descriptor.target_relation_uuid !=
           TextToUuid(authority.target_relation_uuid) ||
       descriptor.owning_transaction_uuid !=
-          TextToUuid(receipt.view.owning_transaction_uuid) ||
+          (receipt.view.owning_transaction_uuid.bytes) ||
       descriptor.owning_local_transaction_id !=
           receipt.view.owning_local_transaction_id ||
       descriptor.catalog_generation != receipt.view.catalog_generation_id ||
@@ -13113,11 +13097,11 @@ SessionOperationResult HandleCoordinateDdlCreateProcedure(
           TextToUuid(authority.procedure_uuid) ||
       descriptor_authority.schema_uuid != TextToUuid(authority.schema_uuid) ||
       descriptor_authority.owning_transaction_uuid !=
-          TextToUuid(receipt.view.owning_transaction_uuid) ||
+          (receipt.view.owning_transaction_uuid.bytes) ||
       descriptor_authority.owning_local_transaction_id !=
           receipt.view.owning_local_transaction_id ||
       descriptor_authority.statement_snapshot_uuid !=
-          TextToUuid(receipt.view.statement_snapshot_uuid) ||
+          (receipt.view.statement_snapshot_uuid.bytes) ||
       descriptor_authority.body_sblr_uuid !=
           TextToUuid(authority.body_sblr_uuid) ||
       descriptor_authority.body_sblr_generation !=
@@ -13262,11 +13246,11 @@ SessionOperationResult HandleCoordinateSecurityCreatePrivilegeTemplate(
           TextToUuid(authority.owner_principal_uuid) ||
       descriptor.grantee_uuid != TextToUuid(authority.grantee_uuid) ||
       descriptor.owning_transaction_uuid !=
-          TextToUuid(receipt.view.owning_transaction_uuid) ||
+          (receipt.view.owning_transaction_uuid.bytes) ||
       descriptor.owning_local_transaction_id !=
           receipt.view.owning_local_transaction_id ||
       descriptor.statement_snapshot_uuid !=
-          TextToUuid(receipt.view.statement_snapshot_uuid) ||
+          (receipt.view.statement_snapshot_uuid.bytes) ||
       descriptor.catalog_generation != receipt.view.catalog_generation_id ||
       descriptor.security_epoch != receipt.view.security_epoch ||
       descriptor.resource_generation != receipt.view.resource_epoch ||
@@ -13291,7 +13275,7 @@ SessionOperationResult HandleCoordinateSecurityCreatePrivilegeTemplate(
   result.accepted = true;
   return result;
 }
-SessionOperationResult HandleCoordinateSecurityCreateUser(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=331;result.response_schema_id=sbps::kSchemaCoordinateSecurityCreateUserResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_create_user_refused","User creation coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecurityCreateUserRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecurityCreateUserRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","user_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_security_create_user_binder");auto q=engine_api::CompileSblrSecurityCreateUserDescriptor(c,ru,v.occurrence,v.template_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecurityCreateUserDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.USER_APPLICATION_FAILED","SCUD_encode_failed");result.accepted=true;return result;}
+SessionOperationResult HandleCoordinateSecurityCreateUser(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=331;result.response_schema_id=sbps::kSchemaCoordinateSecurityCreateUserResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_create_user_refused","User creation coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecurityCreateUserRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecurityCreateUserRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=engine_api::EngineUuid{v.receipt};ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","user_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_security_create_user_binder");auto q=engine_api::CompileSblrSecurityCreateUserDescriptor(c,ru,v.occurrence,v.template_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecurityCreateUserDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.USER_APPLICATION_FAILED","SCUD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateSecurityAlterPrivilegeTemplate(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=235;result.response_schema_id=sbps::kSchemaCoordinateSecurityAlterPrivilegeTemplateResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_alter_privilege_template_refused","Privilege template coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecurityAlterPrivilegeTemplateRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecurityAlterPrivilegeTemplateRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","privilege_template_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_security_alter_privilege_template_binder");auto q=engine_api::CompileSblrSecurityAlterPrivilegeTemplateDescriptor(c,ru,v.occurrence,v.template_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecurityAlterPrivilegeTemplateDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.PRIVILEGE_TEMPLATE_APPLICATION_FAILED","PTDD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateSecurityDropPrivilegeTemplate(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=237;result.response_schema_id=sbps::kSchemaCoordinateSecurityDropPrivilegeTemplateResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.security_drop_privilege_template_refused","Privilege template coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrSecurityDropPrivilegeTemplateRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrSecurityDropPrivilegeTemplateRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","privilege_template_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_security_drop_privilege_template_binder");auto q=engine_api::CompileSblrSecurityDropPrivilegeTemplateDescriptor(c,ru,v.occurrence,v.template_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrSecurityDropPrivilegeTemplateDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("SECURITY.PRIVILEGE_TEMPLATE_APPLICATION_FAILED","PTDD_encode_failed");result.accepted=true;return result;}
 SessionOperationResult HandleCoordinateDatabaseCreateTemplateClone(ServerSessionRegistry*registry,const HostedEngineState&engine_state,const sbps::Frame&request){SessionOperationResult result;result.response_message_type=239;result.response_schema_id=sbps::kSchemaCoordinateDatabaseCreateTemplateCloneResultV1;result.frame_flags=sbps::kFlagResponse|sbps::kFlagFinal;result.session_uuid=request.header.session_uuid;auto refuse=[&](std::string c,std::string d){result.frame_flags|=sbps::kFlagError;result.diagnostics.push_back(sbps::IpcDiagnostic(std::move(c),"parser_server_ipc.database_create_template_clone_refused","Template database clone coordination was refused.",{{"detail",std::move(d)}}));return result;};scratchbird::engine::sblr::SblrDatabaseCreateTemplateCloneRequestV1 v;std::string d;if(!registry||!scratchbird::engine::sblr::DecodeSblrDatabaseCreateTemplateCloneRequestV1(request.payload.data(),request.payload.size(),&v,&d))return refuse("SBLR.OPERAND.INVALID",d);auto s=registry->sessions_by_uuid.find(UuidBytesToText(request.header.session_uuid));if(s==registry->sessions_by_uuid.end())return refuse("SECURITY.ACCESS_DENIED","session_hidden");auto ru=UuidBytesToText(v.receipt);ServerStatementContextRecord*r=nullptr;{std::lock_guard<std::mutex>g(*registry->statement_context_mutex);for(auto&[x,row]:registry->statement_contexts_by_statement_uuid){(void)x;if(!row.released&&row.view.receipt_uuid==ru){r=&row;break;}}}if(!r||r->session_uuid!=request.header.session_uuid)return refuse("SECURITY.ACCESS_DENIED","template_clone_receipt_hidden");auto c=EngineContextForSession(s->second,engine_state,request);c.statement_uuid=ru;c.statement_metadata_snapshot_engine_owned=true;c.trace_tags.push_back("private_database_create_template_clone_binder");auto q=engine_api::CompileSblrDatabaseCreateTemplateCloneDescriptor(c,ru,v.occurrence,v.template_clone_occurrence,r->view.kv_structured_read_executor_availability_generation);if(!q.ok)return refuse(q.diagnostic.code,q.diagnostic.message_key);result.payload=scratchbird::engine::sblr::EncodeSblrDatabaseCreateTemplateCloneDescriptorV1(q.descriptor,false);if(result.payload.empty())return refuse("DATABASE.TEMPLATE_CLONE_FAILED","TCDD_encode_failed");result.accepted=true;return result;}
@@ -13612,19 +13596,19 @@ SessionOperationResult HandleCoordinateSecurityAlterPolicy(
           authority.expected_policy_generation ||
       descriptor.database_uuid != TextToUuid(authority.database_uuid) ||
       descriptor.owning_transaction_uuid !=
-          TextToUuid(receipt.view.owning_transaction_uuid) ||
+          (receipt.view.owning_transaction_uuid.bytes) ||
       descriptor.owning_local_transaction_id !=
           receipt.view.owning_local_transaction_id ||
       descriptor.statement_snapshot_uuid !=
-          TextToUuid(receipt.view.statement_snapshot_uuid) ||
+          (receipt.view.statement_snapshot_uuid.bytes) ||
       descriptor.catalog_epoch_uuid !=
-          TextToUuid(receipt.view.catalog_epoch_uuid) ||
+          (receipt.view.catalog_epoch_uuid.bytes) ||
       descriptor.catalog_generation != receipt.view.catalog_generation_id ||
       descriptor.security_context_uuid !=
-          TextToUuid(receipt.view.security_context_uuid) ||
+          (receipt.view.security_context_uuid.bytes) ||
       descriptor.security_generation != receipt.view.security_epoch ||
       descriptor.resource_grant_uuid !=
-          TextToUuid(receipt.view.resource_admission_uuid) ||
+          (receipt.view.resource_admission_uuid.bytes) ||
       descriptor.resource_generation != receipt.view.resource_epoch ||
       descriptor.syntax_demand_sha256 != decoded.evidence ||
       descriptor.descriptor_evidence !=

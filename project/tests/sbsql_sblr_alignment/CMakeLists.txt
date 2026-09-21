@@ -1,6 +1,20 @@
 # Copyright (c) 2026 ScratchBird Software Inc.
 # SPDX-License-Identifier: MPL-2.0
 
+add_executable(sbsql_sblr_alignment_server_coordination_binary_uuid
+  server_coordination_binary_uuid_test.cpp)
+target_compile_features(sbsql_sblr_alignment_server_coordination_binary_uuid PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_server_coordination_binary_uuid PRIVATE
+  ../../src ../../include ../../src/server_engine_bridge ../../src/engine/internal_api
+  ../../src/core/memory ../../src/core/agents ../../src/core/metrics
+  ../../src/core/catalog ../../src/core/datatypes ../../src/core/index
+  ../../src/core/resources ../../src/storage/database ../../src/transaction/mga)
+target_link_libraries(sbsql_sblr_alignment_server_coordination_binary_uuid PRIVATE sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_server_coordination_binary_uuid
+  COMMAND sbsql_sblr_alignment_server_coordination_binary_uuid)
+set_tests_properties(sbsql_sblr_alignment_server_coordination_binary_uuid PROPERTIES
+  TIMEOUT 60 LABELS "sbsql_sblr_alignment;binary_uuid;server_coordination;not_runtime_acceptance")
+
 add_executable(sbsql_sblr_alignment_prepared_registry_binary_identity
   prepared_registry_binary_identity_test.cpp
   ../../src/engine/internal_api/sblr_prepared_statement_registry.cpp

@@ -570,7 +570,7 @@ struct ServerRequestRecord {
   std::string detail;
   std::uint64_t local_transaction_id_at_start = 0;
   std::uint64_t snapshot_visible_through_local_transaction_id = 0;
-  std::string transaction_uuid_at_start;
+  scratchbird::core::platform::Uuid transaction_uuid_at_start;
   std::uint64_t fetch_timeout_ms = 30000;
   std::uint64_t cancel_timeout_ms = 5000;
   std::uint64_t drain_timeout_ms = 30000;
@@ -672,7 +672,7 @@ struct ServerSessionRegistry {
       public_abi_sessions_by_session_uuid;
   std::map<scratchbird::core::platform::Uuid, ServerStatementContextRecord>
       statement_contexts_by_statement_uuid;
-  std::map<std::string, ServerParameterExecutionCoordinationRecord>
+  std::map<scratchbird::core::platform::Uuid, ServerParameterExecutionCoordinationRecord>
       parameter_coordinations_by_uuid;
   std::map<std::string, ServerVariableFrameRecord>
       variable_frames_by_coordination_uuid;

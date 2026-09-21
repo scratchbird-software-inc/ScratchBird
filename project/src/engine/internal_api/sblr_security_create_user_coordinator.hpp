@@ -46,7 +46,7 @@ inline EngineApiDiagnostic Diagnostic(std::string code, std::string key) {
 
 inline SblrSecurityCreateUserCoordinationResult
 CompileSblrSecurityCreateUserDescriptor(const EngineRequestContext& context,
-                                        const std::string& receipt,
+                                        const EngineUuid& receipt,
                                         std::uint64_t occurrence,
                                         std::uint32_t user_occurrence,
                                         std::uint64_t availability) {
