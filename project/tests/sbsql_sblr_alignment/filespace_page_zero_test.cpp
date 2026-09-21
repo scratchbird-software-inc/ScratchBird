@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <new>
 #include <source_location>
 #include <set>
@@ -43,6 +44,8 @@ unsigned stage_write_fault_after=0,stage_sync_fault_after=0;
 unsigned stage_corrupt_read=0;
 unsigned initialization_entropy_fault=0,initialization_entropy_calls=0;
 bool initialization_repeat_entropy=false;
+bool initialization_clock_failure=false,initialization_clock_allocation_failure=false;
+constexpr std::uint64_t initialization_uuid_millis=0x010203040506ULL;
 const scratchbird::core::platform::TypedUuid* revoke_on_stage_sync=nullptr;
 unsigned observed_full_digests=0;
 bool count_full_digests=false;
@@ -67,8 +70,17 @@ extern "C" int __real_RAND_bytes(unsigned char*,int);
 extern "C" int __wrap_RAND_bytes(unsigned char* out,int count) {
   ++initialization_entropy_calls;
   if(initialization_entropy_fault&&--initialization_entropy_fault==0)return 0;
-  if(initialization_repeat_entropy){std::fill_n(out,count,0xab);return 1;}
+  if(initialization_repeat_entropy){if(count!=16)return 0;
+    const unsigned char collision[16]={1,2,3,4,5,6,0x71,8,0x89,10,11,12,13,14,15,5};
+    std::copy_n(collision,16,out);return 1;}
   return __real_RAND_bytes(out,count);
+}
+extern "C" scratchbird::core::time::ClockSnapshotResult __wrap__ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv() {
+  if(initialization_clock_allocation_failure)throw std::bad_alloc();
+  scratchbird::core::time::ClockSnapshotResult result;
+  if(initialization_clock_failure){result.status={scratchbird::core::platform::StatusCode::time_source_unavailable,scratchbird::core::platform::Severity::error,scratchbird::core::platform::Subsystem::time};return result;}
+  result.value={{100},{static_cast<std::int64_t>(initialization_uuid_millis/1000),static_cast<std::uint32_t>((initialization_uuid_millis%1000)*1000000)}};
+  return result;
 }
 extern "C" EVP_MD_CTX* __real_EVP_MD_CTX_new();
 extern "C" int __real_EVP_Digest(const void*,size_t,unsigned char*,unsigned int*,const EVP_MD*,ENGINE*);
@@ -1829,7 +1841,7 @@ Bytes AllocationOracle(const page::NativeAllocationMap& map) {
 constexpr std::array<u64,5> initialization_coverage{{60,124,252,507,1017}};
 db::NativeFilespaceInitializationRequest InitializationRequest(unsigned p=0,unsigned role=1,u64 total=5,unsigned flags=0){
   db::NativeFilespaceInitializationRequest r;r.bootstrap=Example(p,role,7,flags).bootstrap;
-  r.operation_uuid=Id(5);r.writer_uuid=Id(6);r.creator={{1},{scratchbird::core::platform::UuidKind::transaction,Id(90)},mga::TransactionScope::local_node};
+  r.operation_uuid=Id(5);r.writer_uuid=Id(6);r.policy_snapshot_uuid=Id(10);r.creator={{1},{scratchbird::core::platform::UuidKind::transaction,Id(90)},mga::TransactionScope::local_node};
   r.creation_utc_millis=1790000000000ULL;r.total_pages=total;return r;
 }
 void VerifyInitializedFilespace(disk::FileDevice& device,const db::NativeFilespaceInitializationRequest& request,
@@ -1849,9 +1861,9 @@ void VerifyInitializedFilespace(disk::FileDevice& device,const db::NativeFilespa
   const auto chain=page::ReadNativeAllocationChainFromOpenDevice(device,{b.database_uuid,b.filespace_uuid,b.page_size_profile_uuid},budget);
   Check(chain.ok()&&chain.pages.size()==count&&chain.state_counts[0]==total-count-1&&chain.state_counts[2]==count+1,"actual complete initial allocation chain");
   std::set<Uuid> ids{b.database_uuid,b.filespace_uuid,b.page_size_profile_uuid,b.checksum_profile_uuid,b.encryption_profile_uuid,
-    request.operation_uuid,request.writer_uuid,request.creator.transaction_uuid.value};
+    request.operation_uuid,request.writer_uuid,request.creator.transaction_uuid.value,request.policy_snapshot_uuid};
   const auto fresh=[&](const Uuid& id){u64 timestamp=0;for(unsigned i=0;i<6;++i)timestamp=(timestamp<<8)|id.bytes[i];
-    Check((id.bytes[6]>>4)==7&&(id.bytes[8]&0xc0)==0x80&&timestamp==request.creation_utc_millis&&ids.insert(id).second,"fresh distinct binary UUIDv7 identity");};
+    Check((id.bytes[6]>>4)==7&&(id.bytes[8]&0xc0)==0x80&&timestamp==initialization_uuid_millis&&timestamp!=request.creation_utc_millis&&ids.insert(id).second,"fresh distinct binary UUIDv7 identity from accepted clock not lineage timestamp");};
   fresh(zero.page_uuid);fresh(root.object_uuid);
   for(const auto& image:chain.pages)fresh(image.map->header.page_uuid);
   Bytes actual(size);Check(device.ReadAt(0,actual.data(),actual.size()).ok()&&actual==Oracle(zero),"independent exact initialized page-zero image");
@@ -1885,22 +1897,24 @@ void VerifyInitializedFilespace(disk::FileDevice& device,const db::NativeFilespa
 void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializationError;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=15;++role){Fixture fixture;disk::FileDevice device;
     const auto path=(fixture.root/"initializing").string();auto request=InitializationRequest(p,role==15?1:role,role==1?initialization_coverage[p]+1:5,role==15?1:0);
+    auto issuer=std::make_unique<scratchbird::core::uuid::StandaloneUuidV7Issuer>(scratchbird::core::uuid::StandaloneUuidV7Binding{request.bootstrap.database_uuid,request.policy_snapshot_uuid},scratchbird::core::uuid::StandaloneUuidV7Policy{{},0,1000});
     const u64 count=(request.total_pages+initialization_coverage[p]-1)/initialization_coverage[p],budget=(count+2)*sizes[p];
     Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"exclusively own empty initialization device");
-    auto result=db::InitializeNativeFilespaceOnOpenDevice(device,request,budget-1);
+    auto result=db::InitializeNativeFilespaceOnOpenDevice(device,request,budget-1,*issuer);
     Check(!result.ok()&&!result.receipt&&result.error==E::resource_exhausted&&device.Size().size_bytes==0,"one-byte image-budget deficit cannot write");
-    result=db::InitializeNativeFilespaceOnOpenDevice(device,request,budget);Check(result.ok(),"real initializing filespace writer");
+    result=db::InitializeNativeFilespaceOnOpenDevice(device,request,budget,*issuer);Check(result.ok(),"real initializing filespace writer");
     VerifyInitializedFilespace(device,request,p,&*result.receipt);
-    const auto prior=disk::ReadFilespacePageZeroFromOpenDevice(device);result=db::InitializeNativeFilespaceOnOpenDevice(device,request,budget);
+    const auto prior=disk::ReadFilespacePageZeroFromOpenDevice(device);result=db::InitializeNativeFilespaceOnOpenDevice(device,request,budget,*issuer);
     Check(!result.ok()&&!result.receipt&&result.error==E::device_not_empty&&Oracle(*disk::ReadFilespacePageZeroFromOpenDevice(device).record)==Oracle(*prior.record),"nonempty initializing device cannot be reinterpreted or retried");
     if(role==1){Exclusive(path);Check(device.Close().ok(),"release initialization owner before fresh reader");const auto child=::fork();Check(child>=0,"fork initialized filespace reader");
       if(child==0){const auto profile=std::to_string(p),total=std::to_string(request.total_pages);::execl("/proc/self/exe","filespace-initialization-probe","--filespace-initialization-probe",path.c_str(),profile.c_str(),total.c_str(),nullptr);::_exit(125);}
       int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process verifies real initialization without creator caches");}
   }
   Fixture fixture;disk::FileDevice device;unsigned attempt=0;auto request=InitializationRequest();const u64 budget=3*sizes[0];std::string path;
-  const auto reset=[&](){if(device.is_open())Check(device.Close().ok(),"close owned initialization fault fixture");path=(fixture.root/std::to_string(attempt++)).string();
+  std::unique_ptr<scratchbird::core::uuid::StandaloneUuidV7Issuer> issuer;
+  const auto reset=[&](){issuer=std::make_unique<scratchbird::core::uuid::StandaloneUuidV7Issuer>(scratchbird::core::uuid::StandaloneUuidV7Binding{request.bootstrap.database_uuid,request.policy_snapshot_uuid},scratchbird::core::uuid::StandaloneUuidV7Policy{{},0,1000});if(device.is_open())Check(device.Close().ok(),"close owned initialization fault fixture");path=(fixture.root/std::to_string(attempt++)).string();
     Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"new empty initialization fault fixture");};
-  const auto initialize=[&](){return db::InitializeNativeFilespaceOnOpenDevice(device,request,budget);};
+  const auto initialize=[&](){return db::InitializeNativeFilespaceOnOpenDevice(device,request,budget,*issuer);};
   const auto empty=[&](const auto& r,std::source_location at=std::source_location::current()){
     Check(!r.ok()&&!r.receipt,"initialization failure never returns a receipt",at);};
   const auto image=[&](){const auto size=device.Size();Check(size.ok(),"read actual interrupted extent");Bytes bytes(size.size_bytes);if(!bytes.empty())Check(device.ReadAt(0,bytes.data(),bytes.size()).ok(),"read actual interrupted bytes");return bytes;};
@@ -1908,7 +1922,11 @@ void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializatio
   reset();initialization_entropy_calls=stage_writes=stage_syncs=reads=observed_full_digests=observed_allocations=0;
   track_reads=count_full_digests=count_allocations=true;auto result=initialize();track_reads=count_full_digests=count_allocations=false;
   Check(result.ok(),"cold initialization succeeds");const auto entropy_count=initialization_entropy_calls,write_count=stage_writes,read_count=reads,digest_count=observed_full_digests;
-  const auto allocation_count=observed_allocations;Check(entropy_count==5&&write_count==7&&stage_syncs==1,"all identities issued before exact physical writes and sync");
+  const auto allocation_count=observed_allocations;Check(entropy_count==1&&write_count==7&&stage_syncs==1,"all identities issued before exact physical writes and sync");
+  for(bool allocation:{false,true}){reset();initialization_clock_failure=!allocation;initialization_clock_allocation_failure=allocation;
+    result=initialize();initialization_clock_failure=initialization_clock_allocation_failure=false;empty(result);
+    Check(result.error==(allocation?E::resource_exhausted:E::identity_failure)&&!device.Size().size_bytes,"clock or allocation source failure preserves empty filespace and exact error");
+  }
   for(unsigned fault=1;fault<=entropy_count;++fault){reset();initialization_entropy_fault=fault;result=initialize();Check(!initialization_entropy_fault,"each entropy failure consumed");empty(result);
     Check(result.error==E::identity_failure&&device.Size().size_bytes==0,"no generated substitute after randomness failure");}
   reset();initialization_repeat_entropy=true;result=initialize();initialization_repeat_entropy=false;empty(result);Check(result.error==E::identity_failure&&device.Size().size_bytes==0,"duplicate generated UUIDs refuse before writes");
@@ -1933,7 +1951,7 @@ void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializatio
     }else {empty(result);preserved();}}
   Check(allocation_end,"all reachable allocation failure positions exercised");
   std::cout<<"initialization fault sites: allocations="<<consumed<<" observation_loss="<<observation_loss_sites<<" entropy="<<entropy_count<<" writes="<<write_count<<" reads="<<read_count<<" full_hashes="<<digest_count<<std::endl;
-  for(unsigned fault=0;fault<17;++fault){reset();auto changed=request;
+  for(unsigned fault=0;fault<22;++fault){reset();auto changed=request;
     if(fault==0)changed.bootstrap.lifecycle_state=1;if(fault==1)changed.bootstrap.page_size_bytes=4096;
     if(fault==2)changed.bootstrap.database_uuid={};if(fault==3)changed.bootstrap.filespace_uuid={};if(fault==4)changed.bootstrap.page_size_profile_uuid=Id(91);
     if(fault==5)changed.operation_uuid={};if(fault==6)changed.writer_uuid.bytes[6]=0x41;if(fault==7)changed.creator.transaction_uuid.value={};
@@ -1941,7 +1959,9 @@ void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializatio
     if(fault==10)changed.creator.scope=mga::TransactionScope::cluster_global;if(fault==11)changed.creation_utc_millis=0;if(fault==12)changed.creation_utc_millis=0x1000000000000ULL;
     if(fault==13)changed.total_pages=0;if(fault==14)changed.total_pages=1;if(fault==15)changed.total_pages=std::numeric_limits<u64>::max();
     if(fault==16)changed.bootstrap.flags|=disk::FilespaceBootstrapFlag::cluster_authority_required;
-    result=db::InitializeNativeFilespaceOnOpenDevice(device,changed,budget);empty(result);Check(device.Size().size_bytes==0,"invalid input preserves empty owned device");
+    if(fault==17)changed.policy_snapshot_uuid={};if(fault==18)changed.policy_snapshot_uuid.bytes[6]=0x40;
+    if(fault==19)changed.policy_snapshot_uuid=Id(91);if(fault==20)changed.bootstrap.database_uuid=Id(91);if(fault==21)changed.policy_snapshot_uuid=changed.writer_uuid;
+    result=db::InitializeNativeFilespaceOnOpenDevice(device,changed,budget,*issuer);empty(result);Check(device.Size().size_bytes==0,"invalid input preserves empty owned device");
     if(fault==16)Check(result.error==E::cluster_requires_authority,"cluster initialization stays at provider boundary");}
   reset();Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"empty read-only fixture");result=initialize();empty(result);Check(result.error==E::invalid_device,"read-only initialization refused");
   Check(device.Close().ok(),"closed initialization fixture");result=initialize();empty(result);Check(result.error==E::invalid_device,"closed initialization refused");
@@ -1955,10 +1975,10 @@ void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializatio
   reset();request.total_pages=2;result=initialize();Check(result.ok()&&result.receipt->free_pages==0,"minimum complete physical capacity initializes without free pages");VerifyInitializedFilespace(device,request,0,&*result.receipt);
   request.total_pages=initialization_coverage[0]+1;
   for(unsigned fault:{1u,61u,62u,63u,64u}){reset();stage_write_fault=3;stage_write_fault_after=fault;
-    result=db::InitializeNativeFilespaceOnOpenDevice(device,request,4*sizes[0]);empty(result);
+    result=db::InitializeNativeFilespaceOnOpenDevice(device,request,4*sizes[0],*issuer);empty(result);
     Check(!stage_write_fault&&!stage_write_fault_after,"multi-map zeroing, first and second map, and final page-zero write faults consumed");preserved();}
   reset();request.total_pages=initialization_coverage[0]*initialization_coverage[0]+1;
-  result=db::InitializeNativeFilespaceOnOpenDevice(device,request,63*sizes[0]);Check(result.ok()&&result.receipt->map_pages==61,"control pages can span allocation coverage ranges");VerifyInitializedFilespace(device,request,0,&*result.receipt);
+  result=db::InitializeNativeFilespaceOnOpenDevice(device,request,63*sizes[0],*issuer);Check(result.ok()&&result.receipt->map_pages==61,"control pages can span allocation coverage ranges");VerifyInitializedFilespace(device,request,0,&*result.receipt);
 }
 void CanonicalCheckpointAllocation() {
   using E=db::NativeCheckpointError;using S=page::NativeAllocationState;

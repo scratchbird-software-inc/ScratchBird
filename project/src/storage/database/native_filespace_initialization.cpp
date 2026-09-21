@@ -35,13 +35,15 @@ u64 Coverage(u64 size) {
 
 NativeFilespaceInitializationResult InitializeNativeFilespaceOnOpenDevice(
     disk::FileDevice& device, const NativeFilespaceInitializationRequest& request,
-    u64 budget) noexcept {
+    u64 budget, core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
   try {
     const auto guard = device.AcquireOperationGuard();
     const auto& b = request.bootstrap;
     if (disk::ValidateFilespaceBootstrap(b) != disk::FilespaceBootstrapError::none ||
         b.lifecycle_state != 7 || !V7(request.operation_uuid) || !V7(request.writer_uuid) ||
         !V7(request.creator.transaction_uuid.value) ||
+        !V7(request.policy_snapshot_uuid) || issuer.binding().database_uuid != b.database_uuid ||
+        issuer.binding().policy_snapshot_uuid != request.policy_snapshot_uuid ||
         request.creator.transaction_uuid.kind != UuidKind::transaction ||
         !request.creator.local_id.value ||
         request.creator.scope != transaction::mga::TransactionScope::local_node ||
@@ -67,12 +69,14 @@ NativeFilespaceInitializationResult InitializeNativeFilespaceOnOpenDevice(
     // Resolve every identity and seal every metadata image before any write.
     std::set<Uuid> ids{b.database_uuid, b.filespace_uuid, b.page_size_profile_uuid,
                       b.checksum_profile_uuid, request.operation_uuid, request.writer_uuid,
-                      request.creator.transaction_uuid.value};
+                      request.creator.transaction_uuid.value, request.policy_snapshot_uuid};
+    if (ids.size() != 8) return Fail(E::invalid_request);
     if (!b.encryption_profile_uuid.is_nil()) ids.insert(b.encryption_profile_uuid);
     const auto issue = [&](UuidKind kind) -> std::optional<Uuid> {
-      const auto id = core::uuid::GenerateDurableEngineIdentityV7(kind, request.creation_utc_millis);
-      if (!id.ok() || !ids.insert(id.value.value).second) return {};
-      return id.value.value;
+      const auto id = issuer.Issue(kind);
+      if (id.error == core::uuid::StandaloneUuidV7Error::resource_exhausted) throw E::resource_exhausted;
+      if (!id.ok() || !ids.insert(id.value->value).second) return {};
+      return id.value->value;
     };
     const auto zero_id = issue(UuidKind::page), map_id = issue(UuidKind::object);
     if (!zero_id || !map_id) return Fail(E::identity_failure);
@@ -190,6 +194,8 @@ NativeFilespaceInitializationResult InitializeNativeFilespaceOnOpenDevice(
     result.error = E::none;
     result.receipt = receipt;
     return result;
+  } catch (E error) {
+    return Fail(error);
   } catch (const std::bad_alloc&) {
     return Fail(E::resource_exhausted);
   } catch (const std::length_error&) {

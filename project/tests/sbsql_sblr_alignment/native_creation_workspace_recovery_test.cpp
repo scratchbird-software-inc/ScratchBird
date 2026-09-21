@@ -45,7 +45,7 @@ Uuid Id(unsigned n){Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.b
 db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=21){
   const auto& p=disk::kCanonicalFilespacePageProfiles[profile];db::NativeFilespaceInitializationRequest r;
   r.bootstrap={Id(1),Id(2),p.uuid,disk::kNativeBootstrapIntegrityProfile,{},p.page_size_bytes,1,0,1,7};
-  r.operation_uuid=Id(3);r.writer_uuid=Id(4);r.creator.transaction_uuid={UuidKind::transaction,Id(5)};
+  r.operation_uuid=Id(3);r.writer_uuid=Id(4);r.policy_snapshot_uuid=Id(10);r.creator.transaction_uuid={UuidKind::transaction,Id(5)};
   r.creator.local_id=mga::MakeLocalTransactionId(1);r.creator.scope=mga::TransactionScope::local_node;
   r.total_pages=total;r.creation_utc_millis=1789357072000ULL;return r;
 }
@@ -134,7 +134,8 @@ int main(int argc,char** argv){try{
   Fixture f;
   const auto request=Request();const u64 size=8192;
   disk::FileDevice device;const auto path=f.Next();Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"fixture owns actual file");
-  Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,27*size).ok(),"actual initial workspace");
+  scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({request.bootstrap.database_uuid,request.policy_snapshot_uuid},{{},0,1000});
+  Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,27*size,issuer).ok(),"actual initial workspace");
   const auto original=Read(device,0,21*size);auto damaged=original;std::fill(damaged.begin()+18*size,damaged.begin()+19*size,0);
   Restore(device,damaged);Check(Recover(device,request).ok(),"warm actual recovery");
   if(argc>=2&&std::string_view(argv[1])=="--allocations"){
@@ -175,7 +176,8 @@ int main(int argc,char** argv){try{
   }
   for(unsigned profile=0;profile<5;++profile){const auto r=Request(profile,64);const u64 p=r.bootstrap.page_size_bytes;
     disk::FileDevice d;const auto filename=f.Next();Check(d.Open(filename.string(),disk::FileOpenMode::create_new).ok(),"profile fixture");
-    const auto created=db::InitializeNativeCreationWorkspaceOnOpenDevice(d,r,64*p);Check(created.ok(),"all-profile genesis");
+    scratchbird::core::uuid::StandaloneUuidV7Issuer profile_issuer({r.bootstrap.database_uuid,r.policy_snapshot_uuid},{{},0,1000});
+    const auto created=db::InitializeNativeCreationWorkspaceOnOpenDevice(d,r,64*p,profile_issuer);Check(created.ok(),"all-profile genesis");
     const auto bytes=Read(d,0,64*p);const u64 maps=profile==0?2:1;
     for(unsigned slot=0;slot<2;++slot)for(unsigned mode=0;mode<3;++mode){auto broken=bytes;const auto off=(maps+16+slot)*p;
       if(mode==0)std::fill(broken.begin()+off,broken.begin()+off+p,0);
@@ -193,7 +195,8 @@ int main(int argc,char** argv){try{
   }
   {const auto filename=f.Next();const auto child=fork();Check(child>=0,"actual creation loss fork");
     if(child==0){disk::FileDevice d;if(!d.Open(filename.string(),disk::FileOpenMode::create_new).ok())_exit(87);
-      stop_creation=true;(void)db::InitializeNativeCreationWorkspaceOnOpenDevice(d,request,27*size);_exit(88);}
+      scratchbird::core::uuid::StandaloneUuidV7Issuer child_issuer({request.bootstrap.database_uuid,request.policy_snapshot_uuid},{{},0,1000});
+      stop_creation=true;(void)db::InitializeNativeCreationWorkspaceOnOpenDevice(d,request,27*size,child_issuer);_exit(88);}
     int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,"actual process loss before second selector");
     disk::FileDevice d;Check(d.Open(filename.string(),disk::FileOpenMode::open_existing).ok(),"new owner after process loss");
     const auto before=Read(d,0,21*size);const auto first=db::DecodeNativeCheckpointSelection(Page(before,17,size));Check(first.ok(),"surviving original publication");
@@ -223,7 +226,8 @@ int main(int argc,char** argv){try{
     refuse(bytes);
   }
   {const auto large=Request(0,3601);disk::FileDevice d;Check(d.Open(f.Next().string(),disk::FileOpenMode::create_new).ok(),"multi-map recovery fixture");
-    const auto created=db::InitializeNativeCreationWorkspaceOnOpenDevice(d,large,87*size);Check(created.ok()&&created.receipt->map_pages==61,"controls span allocation coverage ranges");
+    scratchbird::core::uuid::StandaloneUuidV7Issuer large_issuer({large.bootstrap.database_uuid,large.policy_snapshot_uuid},{{},0,1000});
+    const auto created=db::InitializeNativeCreationWorkspaceOnOpenDevice(d,large,(2*61+4)*size,large_issuer);Check(created.ok()&&created.receipt->map_pages==61,"controls span allocation coverage ranges");
     const auto before=Read(d,0,large.total_pages*size);Write(d,78*size,std::vector<byte>(size,0));
     const auto recovered=Recover(d,large,87*size);Check(recovered.ok()&&recovered.repaired_slots==2&&Read(d,0,before.size())==before,
       "multi-map graph and original cross-range selector allocation recovered");}

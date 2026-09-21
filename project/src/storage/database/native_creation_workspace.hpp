@@ -34,5 +34,6 @@ struct NativeCreationWorkspaceResult {
 // owned partial bytes; a subsequent call refuses a nonempty device.
 NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
     disk::FileDevice&,const NativeFilespaceInitializationRequest&,
-    core::platform::u64 maximum_retained_image_bytes) noexcept;
+    core::platform::u64 maximum_retained_image_bytes,
+    core::uuid::StandaloneUuidV7Issuer&) noexcept;
 }  // namespace scratchbird::storage::database

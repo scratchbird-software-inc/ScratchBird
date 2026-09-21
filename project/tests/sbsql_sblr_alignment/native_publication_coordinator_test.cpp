@@ -50,7 +50,7 @@ struct Fixture {
 db::NativeFilespaceInitializationRequest Request(unsigned profile){
   const auto& p=disk::kCanonicalFilespacePageProfiles[profile];db::NativeFilespaceInitializationRequest r;
   r.bootstrap={Id(1),Id(2),p.uuid,disk::kNativeBootstrapIntegrityProfile,{},p.page_size_bytes,1,0,1,7};
-  r.operation_uuid=Id(3);r.writer_uuid=Id(4);r.creator.transaction_uuid={UuidKind::transaction,Id(5)};
+  r.operation_uuid=Id(3);r.writer_uuid=Id(4);r.policy_snapshot_uuid=Id(10);r.creator.transaction_uuid={UuidKind::transaction,Id(5)};
   r.creator.local_id=mga::MakeLocalTransactionId(1);r.creator.scope=mga::TransactionScope::local_node;
   r.creation_utc_millis=1789357072000ULL;r.total_pages=64;return r;
 }
@@ -58,10 +58,11 @@ struct Node {
   disk::FileDevice device;db::NativeFilespaceInitializationRequest request;
   std::vector<disk::NativeFilespaceDevice> devices;
   u64 size,budget,first;
-  Node(const fs::path& path,unsigned profile,bool create=true):request(Request(profile)),size(request.bootstrap.page_size_bytes),budget(256*size),first((profile?1:2)+18){
+  scratchbird::core::uuid::StandaloneUuidV7Issuer issuer;
+  Node(const fs::path& path,unsigned profile,bool create=true):request(Request(profile)),size(request.bootstrap.page_size_bytes),budget(256*size),first((profile?1:2)+18),issuer({request.bootstrap.database_uuid,request.policy_snapshot_uuid},{{},0,1000}){
     Check(device.Open(path.string(),create?disk::FileOpenMode::create_new:disk::FileOpenMode::open_existing).ok(),"owned node open");
     devices={{Id(2),request.bootstrap.page_size_profile_uuid,&device}};
-    if(create)Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,budget).ok(),"actual complete construction");
+    if(create)Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,budget,issuer).ok(),"actual complete construction");
     first_offset=first*size;second_offset=(first+1)*size;
   }
   auto Inspect(){return db::InspectNativePublicationGenerationOnOpenDevices(Id(1),devices,Id(2),budget);}
@@ -322,13 +323,14 @@ int main(int argc,char** argv){try{
   }
   {disk::FileDevice foreign;const auto foreign_path=fixture.Next();Check(foreign.Open(foreign_path.string(),disk::FileOpenMode::create_new).ok(),"foreign node fixture");
     auto request=Request(1);request.bootstrap.database_uuid=Id(95);request.bootstrap.filespace_uuid=Id(96);
-    Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(foreign,request,256ULL*request.bootstrap.page_size_bytes).ok(),"actual foreign database graph");
+    scratchbird::core::uuid::StandaloneUuidV7Issuer foreign_issuer({request.bootstrap.database_uuid,request.policy_snapshot_uuid},{{},0,1000});
+    Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(foreign,request,256ULL*request.bootstrap.page_size_bytes,foreign_issuer).ok(),"actual foreign database graph");
     auto supplied=n.devices;supplied.push_back({Id(96),request.bootstrap.page_size_profile_uuid,&foreign});
     Arm();const auto r=db::InspectNativePublicationGenerationOnOpenDevices(Id(1),supplied,Id(2),n.budget);Off();
     Check(!r.ok()&&!r.snapshot&&!calls[write_call],"unused supplied device cannot cross database identity boundary");}
   {disk::FileDevice secondary;const auto secondary_path=fixture.Next();Check(secondary.Open(secondary_path.string(),disk::FileOpenMode::create_new).ok(),"same-node secondary fixture");
     auto request=Request(1);request.bootstrap.filespace_uuid=Id(97);request.bootstrap.filespace_role=5;
-    Check(db::InitializeNativeFilespaceOnOpenDevice(secondary,request,256ULL*request.bootstrap.page_size_bytes).ok(),"actual secondary filespace initialization");
+    Check(db::InitializeNativeFilespaceOnOpenDevice(secondary,request,256ULL*request.bootstrap.page_size_bytes,n.issuer).ok(),"actual secondary filespace initialization");
     auto supplied=n.devices;supplied.push_back({Id(97),request.bootstrap.page_size_profile_uuid,&secondary});
     for(unsigned fault=0;fault<3;++fault){n.Restore(original);Arm(fault?sync_call:call_count,fault);
       auto r=db::ReserveNativePublicationGenerationOnOpenDevices(Id(1),supplied,Id(2),*initial.snapshot,Id(98),n.budget);Off();

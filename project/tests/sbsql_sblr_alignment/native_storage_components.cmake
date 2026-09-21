@@ -91,6 +91,7 @@ target_link_libraries(sbsql_sblr_alignment_native_storage_components PRIVATE
 target_compile_options(sbsql_sblr_alignment_native_storage_components PRIVATE
   -ffunction-sections -fdata-sections)
 target_link_options(sbsql_sblr_alignment_native_storage_components PRIVATE
+  -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
   -Wl,--gc-sections -Wl,--wrap=RAND_bytes -Wl,--wrap=EVP_Digest
   -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
   -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex

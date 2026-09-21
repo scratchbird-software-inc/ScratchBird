@@ -39,7 +39,8 @@ u64 Coverage(u64 size) {
 }  // namespace
 
 NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
-    disk::FileDevice& device,const NativeFilespaceInitializationRequest& request,u64 budget) noexcept {
+    disk::FileDevice& device,const NativeFilespaceInitializationRequest& request,u64 budget,
+    core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
   try {
     const auto guard=device.AcquireOperationGuard();
     const auto& b=request.bootstrap;
@@ -47,6 +48,8 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
     if(disk::ValidateFilespaceBootstrap(b)!=disk::FilespaceBootstrapError::none||
        b.lifecycle_state!=7||b.filespace_role>4||!v7(request.operation_uuid)||
        !v7(request.writer_uuid)||!v7(request.creator.transaction_uuid.value)||
+       !v7(request.policy_snapshot_uuid)||issuer.binding().database_uuid!=b.database_uuid||
+       issuer.binding().policy_snapshot_uuid!=request.policy_snapshot_uuid||
        request.creator.transaction_uuid.kind!=UuidKind::transaction||request.creator.local_id.value!=1||
        request.creator.scope!=mga::TransactionScope::local_node||!request.creation_utc_millis||
        request.creation_utc_millis>0xffffffffffffULL) return Fail(E::invalid_request);
@@ -63,16 +66,19 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
     if(maps>total||total-maps<count) return Fail(E::invalid_capacity);
     // Full graph + one in-flight encoder image + one physical readback image.
     if(budget/size<count+2||maps>budget/size-count-2||
+       maps>(budget/size-4)/2||
        maps>std::numeric_limits<std::size_t>::max()-count) return Fail(E::resource_exhausted);
 
     std::set<Uuid> ids;
     for(const auto& id:{b.database_uuid,b.filespace_uuid,b.page_size_profile_uuid,
-        b.checksum_profile_uuid,request.operation_uuid,request.writer_uuid,request.creator.transaction_uuid.value})
+        b.checksum_profile_uuid,request.operation_uuid,request.writer_uuid,request.creator.transaction_uuid.value,
+        request.policy_snapshot_uuid})
       if(!ids.insert(id).second) return Fail(E::invalid_request);
     const auto issue=[&](UuidKind kind)->Uuid {
-      const auto id=core::uuid::GenerateDurableEngineIdentityV7(kind,request.creation_utc_millis);
-      if(!id.ok()||!ids.insert(id.value.value).second) throw E::identity_failure;
-      return id.value.value;
+      const auto id=issuer.Issue(kind);
+      if(id.error==core::uuid::StandaloneUuidV7Error::resource_exhausted) throw E::resource_exhausted;
+      if(!id.ok()||!ids.insert(id.value->value).second) throw E::identity_failure;
+      return id.value->value;
     };
     const Uuid map_object=issue(UuidKind::object), timeline=issue(UuidKind::object),
       locator=issue(UuidKind::object), publication=issue(UuidKind::object), selector=issue(UuidKind::object),

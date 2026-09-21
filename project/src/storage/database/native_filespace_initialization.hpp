@@ -4,11 +4,12 @@
 #include "filespace_page_zero.hpp"
 #include "native_allocation_map.hpp"
 #include "transaction_state.hpp"
+#include "node_uuid_issuer.hpp"
 
 namespace scratchbird::storage::database {
 struct NativeFilespaceInitializationRequest {
   disk::FilespaceBootstrap bootstrap;
-  core::platform::Uuid operation_uuid,writer_uuid;
+  core::platform::Uuid operation_uuid,writer_uuid,policy_snapshot_uuid;
   transaction::mga::TransactionIdentity creator;
   core::platform::u64 total_pages=0,creation_utc_millis=0;
 };
@@ -35,5 +36,6 @@ struct NativeFilespaceInitializationResult {
 // device. No node activation, selected inventory, allocation grant or SQL success.
 NativeFilespaceInitializationResult InitializeNativeFilespaceOnOpenDevice(
     disk::FileDevice&,const NativeFilespaceInitializationRequest&,
-    core::platform::u64 maximum_retained_image_bytes) noexcept;
+    core::platform::u64 maximum_retained_image_bytes,
+    core::uuid::StandaloneUuidV7Issuer&) noexcept;
 } // namespace scratchbird::storage::database
