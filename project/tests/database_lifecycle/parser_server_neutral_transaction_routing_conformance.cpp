@@ -692,7 +692,10 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
       session_uuid,
       sbps::MakeUuidV7Bytes(),
       Transaction(202, "019f0000-0000-7000-8000-000000000202"));
-  session.database_uuid = "neutral-close-database";
+  session.database_uuid = platform::Uuid{{0x01,0x9f,0,0,0,0,0x70,0,0x80,0,0,0,0,0,3,2}};
+  session.auth_context_uuid = sbps::MakeUuidV7Bytes();
+  session.principal_uuid = sbps::MakeUuidV7Bytes();
+  session.effective_user_uuid = session.principal_uuid;
   registry.sessions_by_uuid[server::UuidBytesToText(session_uuid)] = session;
   auto& stored_session = registry.sessions_by_uuid.at(
       server::UuidBytesToText(session_uuid));
@@ -700,7 +703,7 @@ void VerifySessionOwnedPreparedCloseAfterFinality() {
   const auto shared_handle = server::AllocateSessionObjectHandle(
       &registry,
       stored_session,
-      "019f0000-0000-7000-8000-000000000301",
+      platform::Uuid{{0x01,0x9f,0,0,0,0,0x70,0,0x80,0,0,0,0,0,3,1}},
       "relation",
       "crud.select",
       "columns/all");

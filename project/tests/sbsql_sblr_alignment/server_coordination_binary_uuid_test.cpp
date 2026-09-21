@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "../../src/server/session_registry.hpp"
 #include "../../src/server/statement_coordination_uuid.hpp"
+#include "../../src/server/authority_cache_scope.hpp"
+#include <new>
 
 #include "../../src/engine/internal_api/sblr_accel_gpu_compile_coordinator.hpp"
 #include "../../src/engine/internal_api/sblr_advisory_lock_coordinator.hpp"
@@ -216,6 +218,21 @@
 #include <cstdlib>
 #include <cstdio>
 #include <type_traits>
+
+namespace {
+long allocation_fail_after = -1;
+}
+void* operator new(std::size_t size) {
+  if (allocation_fail_after == 0) throw std::bad_alloc();
+  if (allocation_fail_after > 0) --allocation_fail_after;
+  if (void* memory = std::malloc(size ? size : 1)) return memory;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 
 namespace server = scratchbird::server;
 using Uuid = scratchbird::core::platform::Uuid;
@@ -535,5 +552,169 @@ int main() {
   context.statement_uuid = base;
   check(api::ConsumeSblrSessionSettingSetDescriptor(context, first.descriptor).ok);
   check(!api::ConsumeSblrSessionSettingSetDescriptor(context, first.descriptor).ok);
+  // The actual server handle/cache owner, not a copied test implementation.
+  server::ServerSessionRecord session;
+  session.session_uuid = base.bytes;
+  session.auth_context_uuid = base.bytes;
+  session.principal_uuid = base.bytes;
+  session.effective_user_uuid = base.bytes;
+  session.database_uuid = base;
+  session.role_set_hash = std::string("role\0\nset", 9);
+  session.group_set_hash = "group";
+  session.search_path_hash = "path";
+  const std::string kind = "negative_authorization";
+  const std::string operation = "operation";
+  const std::string shape("shape\0tail", 10);
+  const auto encoded = server::EncodeServerAuthorityCacheScope(kind, session, operation, base, shape);
+  check(encoded.has_value());
+  check(encoded->substr(0, 8) == "SBACKEY2");
+  std::size_t offset = 8;
+  const auto read_number = [&]() {
+    check(encoded->size() - offset >= 8);
+    std::uint64_t result = 0;
+    for (unsigned i = 0; i < 8; ++i)
+      result |= std::uint64_t(static_cast<unsigned char>((*encoded)[offset++])) << (8 * i);
+    return result;
+  };
+  const auto read_field = [&](std::string_view expected) {
+    const auto length = read_number();
+    check(length == expected.size());
+    check(encoded->substr(offset, length) == expected);
+    offset += length;
+  };
+  read_field(kind); read_field(operation); read_field(shape);
+  for (unsigned field = 0; field != 6; ++field) {
+    for (const auto byte : base.bytes)
+      check(static_cast<unsigned char>((*encoded)[offset++]) == byte);
+  }
+  for (const auto value : {session.catalog_generation, session.security_epoch,
+       session.descriptor_epoch, session.grant_epoch, session.policy_generation,
+       session.capability_policy_generation, session.cache_invalidation_epoch,
+       session.name_resolution_epoch, session.resource_epoch}) check(read_number() == value);
+  read_field(session.role_set_hash); read_field(session.group_set_hash);
+  read_field(session.search_path_hash); check(offset == encoded->size());
+  for (unsigned field = 0; field != 6; ++field) {
+    for (unsigned bit = 0; bit != 128; ++bit) {
+      auto changed = session;
+      auto target = base;
+      auto* identity = field == 0 ? &changed.session_uuid : field == 1 ? &changed.auth_context_uuid :
+          field == 2 ? &changed.principal_uuid : field == 3 ? &changed.effective_user_uuid :
+          field == 4 ? &changed.database_uuid.bytes : &target.bytes;
+      (*identity)[bit / 8] ^= static_cast<std::uint8_t>(1u << (bit % 8));
+      const bool valid = ((*identity)[6] >> 4) == 7 && ((*identity)[8] & 0xc0) == 0x80;
+      const auto result = server::EncodeServerAuthorityCacheScope(kind, changed, operation, target, shape);
+      check(result.has_value() == valid);
+      if (result) check(*result != *encoded);
+    }
+  }
+  for (auto member : {&server::ServerSessionRecord::catalog_generation,
+       &server::ServerSessionRecord::security_epoch, &server::ServerSessionRecord::descriptor_epoch,
+       &server::ServerSessionRecord::grant_epoch, &server::ServerSessionRecord::policy_generation,
+       &server::ServerSessionRecord::capability_policy_generation,
+       &server::ServerSessionRecord::cache_invalidation_epoch,
+       &server::ServerSessionRecord::name_resolution_epoch, &server::ServerSessionRecord::resource_epoch}) {
+    auto changed = session; ++(changed.*member);
+    check(server::EncodeServerAuthorityCacheScope(kind, changed, operation, base, shape) != encoded);
+  }
+  auto injected_a = session, injected_b = session;
+  injected_a.role_set_hash = "one\ngroup_set_hash=two"; injected_a.group_set_hash = "three";
+  injected_b.role_set_hash = "one"; injected_b.group_set_hash = "two\ngroup_set_hash=three";
+  check(server::ServerAuthorityCacheKey(kind, injected_a, operation, base, shape) !=
+        server::ServerAuthorityCacheKey(kind, injected_b, operation, base, shape));
+  auto invalid_session = session; invalid_session.session_uuid = {};
+  check(!server::EncodeServerAuthorityCacheScope(kind, invalid_session, operation, base, shape));
+  check(server::EncodeServerAuthorityCacheScope(kind, session, operation, {}, shape).has_value());
+  check(!server::EncodeServerAuthorityCacheScope({}, session, operation, base, shape));
+  check(!server::EncodeServerAuthorityCacheScope(kind, session, {}, base, shape));
+  server::ServerSessionRegistry registry;
+  const auto handle = server::AllocateSessionObjectHandle(&registry, session, base, "object", operation, "columns");
+  check(handle.handle_id != 0 && handle.generation == 1 && handle.object_uuid == base);
+  check(registry.object_handles_by_key.contains({base, handle.handle_id}));
+  check(server::AllocateSessionObjectHandle(&registry, session, base, "object", operation, "columns").handle_id == handle.handle_id);
+  check(server::ValidateSessionObjectHandle(registry, session, handle.handle_id, handle.generation, base, operation, "columns").accepted);
+  check(!server::ValidateSessionObjectHandle(registry, session, handle.handle_id, handle.generation, different, operation, "columns").accepted);
+  check(!server::ValidateSessionObjectHandle(registry, session, handle.handle_id, handle.generation, base, {}, "columns").accepted);
+  check(!server::ValidateSessionObjectHandle(registry, session, handle.handle_id, handle.generation, base, operation, {}).accepted);
+  auto stale = session; ++stale.catalog_generation;
+  check(!server::ValidateSessionObjectHandle(registry, stale, handle.handle_id, handle.generation, base, operation, "columns").accepted);
+  const auto refreshed = server::AllocateSessionObjectHandle(&registry, stale, base, "object", operation, "columns");
+  check(refreshed.handle_id == handle.handle_id && refreshed.generation == 2);
+  server::CloseSessionObjectHandlesForSession(&registry, session.session_uuid);
+  check(!server::ValidateSessionObjectHandle(registry, stale, refreshed.handle_id, refreshed.generation, base, operation, "columns").accepted);
+  auto& exhausted_handle = registry.object_handles_by_key.at({base, handle.handle_id});
+  exhausted_handle.generation = UINT64_MAX;
+  exhausted_handle.closed = false;
+  server::CloseSessionObjectHandlesForSession(&registry, session.session_uuid);
+  check(exhausted_handle.closed && exhausted_handle.generation == UINT64_MAX);
+  check(server::AllocateSessionObjectHandle(&registry, session, base, "object", operation, "columns").handle_id == 0);
+  registry.next_session_object_handle_id = UINT64_MAX;
+  const auto last = server::AllocateSessionObjectHandle(&registry, session, different, "object", operation, "columns");
+  check(last.handle_id == UINT64_MAX && registry.next_session_object_handle_id == 0);
+  check(server::AllocateSessionObjectHandle(&registry, session, base, "object", "another", "columns").handle_id == 0);
+  const auto cache = server::StoreServerAuthorityCacheDecision(&registry, session, kind, operation, base, shape, "SECURITY.ACCESS_DENIED", "refusal", true);
+  check(cache.generation == 1 && !cache.grants_authority);
+  check(!server::ValidateServerAuthorityCacheEntry(registry, session, cache.cache_key, kind, {}, base, shape).accepted);
+  check(!server::ValidateServerAuthorityCacheEntry(registry, session, cache.cache_key, kind, operation, base, {}).accepted);
+  check(server::ValidateServerAuthorityCacheEntry(registry, session, cache.cache_key, kind, operation, base, shape).accepted);
+  check(!server::ValidateServerAuthorityCacheEntry(registry, session, cache.cache_key, kind, operation, {}, shape).accepted);
+  check(!server::ValidateServerAuthorityCacheEntry(registry, stale, cache.cache_key, kind, operation, base, shape).accepted);
+  for (auto member : {&server::ServerSessionRecord::catalog_generation,
+       &server::ServerSessionRecord::security_epoch, &server::ServerSessionRecord::descriptor_epoch,
+       &server::ServerSessionRecord::grant_epoch, &server::ServerSessionRecord::policy_generation,
+       &server::ServerSessionRecord::capability_policy_generation,
+       &server::ServerSessionRecord::cache_invalidation_epoch,
+       &server::ServerSessionRecord::name_resolution_epoch, &server::ServerSessionRecord::resource_epoch}) {
+    auto changed = session; ++(changed.*member);
+    check(!server::ValidateServerAuthorityCacheEntry(registry, changed, cache.cache_key, kind, operation, base, shape).accepted);
+  }
+  auto cross_session = session; cross_session.session_uuid = different.bytes;
+  check(!server::ValidateServerAuthorityCacheEntry(registry, cross_session, cache.cache_key, kind, operation, base, shape).accepted);
+  auto& cached = registry.authority_cache_by_key.at(cache.cache_key);
+  cached.grants_authority = true;
+  check(!server::ValidateServerAuthorityCacheEntry(registry, session, cache.cache_key, kind, operation, base, shape).accepted);
+  cached.grants_authority = false; cached.hit_count = UINT64_MAX;
+  check(!server::MarkServerAuthorityCacheHit(&registry, cache.cache_key));
+  check(cached.hit_count == UINT64_MAX);
+  registry.next_authority_cache_generation = UINT64_MAX;
+  const auto last_cache = server::StoreServerAuthorityCacheDecision(&registry, session, kind, operation, different, shape, "SECURITY.ACCESS_DENIED", "last", true);
+  check(last_cache.generation == UINT64_MAX && registry.next_authority_cache_generation == 0);
+  check(server::StoreServerAuthorityCacheDecision(&registry, session, kind, operation, {}, shape, "SECURITY.ACCESS_DENIED", "exhausted", true).generation == 0);
+  std::size_t allocation_failures = 0;
+  for (unsigned owner = 0; owner != 4; ++owner) {
+    bool reached_success = false;
+    for (long budget = 0; budget != 256 && !reached_success; ++budget) {
+      server::ServerSessionRegistry fault_registry;
+      if (owner == 2) server::AllocateSessionObjectHandle(&fault_registry, session, base, "object", operation, "columns");
+      if (owner == 3) server::StoreServerAuthorityCacheDecision(&fault_registry, session, kind, operation, base, shape, "old-code", "old-detail", true);
+      const auto before_handle_counter = fault_registry.next_session_object_handle_id;
+      const auto before_cache_counter = fault_registry.next_authority_cache_generation;
+      const auto before_handles = fault_registry.object_handles_by_key;
+      const auto before_caches = fault_registry.authority_cache_by_key;
+      bool failed = false;
+      allocation_fail_after = budget;
+      try {
+        if (owner == 0 || owner == 2) {
+          const auto result = server::AllocateSessionObjectHandle(&fault_registry, owner == 2 ? stale : session, base, "object", operation, "columns");
+          reached_success = result.handle_id != 0;
+        } else {
+          const auto result = server::StoreServerAuthorityCacheDecision(&fault_registry, session, kind, operation, base, shape, "new-code", "new-detail", true);
+          reached_success = result.generation != 0;
+        }
+      } catch (const std::bad_alloc&) { failed = true; }
+      allocation_fail_after = -1;
+      if (failed || !reached_success) {
+        ++allocation_failures;
+        check(fault_registry.next_session_object_handle_id == before_handle_counter);
+        check(fault_registry.next_authority_cache_generation == before_cache_counter);
+        check(fault_registry.object_handles_by_key.size() == before_handles.size());
+        check(fault_registry.authority_cache_by_key.size() == before_caches.size());
+        if (!before_handles.empty()) check(fault_registry.object_handles_by_key.begin()->second.generation == before_handles.begin()->second.generation);
+        if (!before_caches.empty()) check(fault_registry.authority_cache_by_key.begin()->second.diagnostic_detail == before_caches.begin()->second.diagnostic_detail);
+      }
+    }
+    check(reached_success);
+  }
+  check(allocation_failures != 0);
+  std::printf("server identity owner allocation failures checked: %zu\n", allocation_failures);
   std::printf("server coordination binary UUID component: PASS %zu checks; not live IPC acceptance\n", checks);
 }

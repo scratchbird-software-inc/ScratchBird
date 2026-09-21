@@ -30,6 +30,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <utility>
 
 namespace scratchbird::engine::internal_api {
 struct DurableAuthorizationMaterializeResult;
@@ -659,7 +660,7 @@ struct ServerSessionRegistry {
   std::map<std::string, ServerPreparedStatementRecord> prepared_by_uuid;
   std::map<std::string, ServerPreparedExecutionContextRecord>
       prepared_execution_contexts_by_uuid;
-  std::map<std::string, ServerSessionObjectHandleRecord> object_handles_by_key;
+  std::map<std::pair<scratchbird::core::platform::Uuid, std::uint64_t>, ServerSessionObjectHandleRecord> object_handles_by_key;
   std::map<std::string, ServerAuthorityCacheRecord> authority_cache_by_key;
   std::map<std::string, ServerPublicNameResolutionCacheRecord>
       public_name_resolution_cache_by_key;
@@ -966,10 +967,12 @@ void LinkServerRequestPreparedStatement(
     ServerSessionRegistry* registry,
     const std::array<std::uint8_t, 16>& request_uuid,
     const std::array<std::uint8_t, 16>& prepared_statement_uuid);
+std::pair<scratchbird::core::platform::Uuid, std::uint64_t> SessionObjectHandleKey(
+    const std::array<std::uint8_t, 16>& session_uuid, std::uint64_t handle_id);
 ServerSessionObjectHandleRecord AllocateSessionObjectHandle(
     ServerSessionRegistry* registry,
     const ServerSessionRecord& session,
-    std::string object_uuid,
+    const scratchbird::core::platform::Uuid& object_uuid,
     std::string object_kind,
     std::string operation_id,
     std::string column_set_hash = {});
@@ -978,7 +981,7 @@ ServerSessionObjectHandleValidation ValidateSessionObjectHandle(
     const ServerSessionRecord& session,
     std::uint64_t handle_id,
     std::uint64_t generation,
-    const std::string& object_uuid,
+    const scratchbird::core::platform::Uuid& object_uuid,
     const std::string& operation_id,
     const std::string& column_set_hash = {});
 void CloseSessionObjectHandlesForSession(
@@ -1337,14 +1340,14 @@ bool ReleaseServerStatementContext(
 std::string ServerAuthorityCacheKey(const std::string& cache_kind,
                                     const ServerSessionRecord& session,
                                     const std::string& operation_id,
-                                    const std::string& target_object_uuid,
+                                    const scratchbird::core::platform::Uuid& target_object_uuid,
                                     const std::string& statement_shape_hash);
 ServerAuthorityCacheRecord StoreServerAuthorityCacheDecision(
     ServerSessionRegistry* registry,
     const ServerSessionRecord& session,
     std::string cache_kind,
     std::string operation_id,
-    std::string target_object_uuid,
+    const scratchbird::core::platform::Uuid& target_object_uuid,
     std::string statement_shape_hash,
     std::string diagnostic_code,
     std::string diagnostic_detail,
@@ -1355,7 +1358,7 @@ ServerAuthorityCacheValidation ValidateServerAuthorityCacheEntry(
     const std::string& cache_key,
     const std::string& cache_kind,
     const std::string& operation_id,
-    const std::string& target_object_uuid,
+    const scratchbird::core::platform::Uuid& target_object_uuid,
     const std::string& statement_shape_hash);
 bool MarkServerAuthorityCacheHit(ServerSessionRegistry* registry,
                                  const std::string& cache_key);

@@ -174,6 +174,7 @@ if(SB_BUILD_SERVER)
     server_daemon_lifecycle.cpp
     server_ipc_lifecycle.cpp
     session_registry.cpp
+    session_identity_cache.cpp
     sblr_admission.cpp
     sblr_dispatch_server.cpp
     startup.cpp
@@ -187,6 +188,7 @@ if(SB_BUILD_SERVER)
   target_compile_features(sb_server_core PUBLIC cxx_std_23)
 
   target_link_libraries(sb_server_core PUBLIC
+    sb_core_hash
     sb_core_agents
     sb_core_memory
     sb_server_resource_governance

@@ -2017,39 +2017,26 @@ bool TextBoolField(std::string_view encoded,
                    std::string_view key,
                    bool default_value);
 
-void BindPreparedSessionObjectHandle(ServerSessionRegistry* registry,
+bool BindPreparedSessionObjectHandle(ServerSessionRegistry* registry,
                                      ServerPreparedStatementRecord* prepared,
                                      const ServerSessionRecord& session,
-                                     std::string_view encoded,
                                      std::string_view operation_id) {
-  if (registry == nullptr || prepared == nullptr || operation_id.empty()) return;
-  std::string object_uuid =
-      TextLineValue(encoded, "target_object_uuid")
-          .value_or(JsonTextField(encoded, "target_object_uuid").value_or(""));
-  if (object_uuid.empty()) {
-    object_uuid =
-        TextLineValue(encoded, "object_uuid")
-            .value_or(JsonTextField(encoded, "object_uuid").value_or(""));
-  }
-  if (object_uuid.empty()) return;
-  std::string object_kind =
-      TextLineValue(encoded, "target_object_kind")
-          .value_or(JsonTextField(encoded, "target_object_kind").value_or("object"));
-  std::string column_set_hash =
-      TextLineValue(encoded, "column_set_hash")
-          .value_or(JsonTextField(encoded, "column_set_hash").value_or("columns/all"));
-  auto handle = AllocateSessionObjectHandle(registry,
-                                            session,
-                                            object_uuid,
-                                            object_kind,
-                                            std::string(operation_id),
-                                            column_set_hash);
+  if (registry == nullptr || prepared == nullptr || operation_id.empty()) return false;
+  if (prepared->target_object_uuid.is_nil()) return true;
+  // Only an already-bound binary target can supply an object handle. Retired
+  // text envelopes and JSON hints are not catalog or execution authority.
+  const auto handle = AllocateSessionObjectHandle(
+      registry, session, prepared->target_object_uuid,
+      prepared->target_object_kind, std::string(operation_id),
+      prepared->target_column_set_hash);
+  if (handle.handle_id == 0 || handle.generation == 0) return false;
   prepared->session_object_handle_id = handle.handle_id;
   prepared->session_object_handle_generation = handle.generation;
-  prepared->target_object_uuid = std::move(handle.object_uuid);
-  prepared->target_object_kind = std::move(handle.object_kind);
-  prepared->target_operation_id = std::move(handle.operation_id);
-  prepared->target_column_set_hash = std::move(handle.column_set_hash);
+  prepared->target_object_uuid = handle.object_uuid;
+  prepared->target_object_kind = handle.object_kind;
+  prepared->target_operation_id = handle.operation_id;
+  prepared->target_column_set_hash = handle.column_set_hash;
+  return true;
 }
 
 ServerPreparedExecutionContextRecord BuildPreparedExecutionContext(
@@ -9329,11 +9316,21 @@ SessionOperationResult HandlePrepareSblr(ServerSessionRegistry* registry,
     prepared.prepared_metadata_binding = binding.binding;
     prepared.prepared_metadata_transferable = true;
   }
-  BindPreparedSessionObjectHandle(registry,
+  if (!BindPreparedSessionObjectHandle(registry,
                                   &prepared,
                                   prepare_session,
-                                  prepared.encoded_sblr_envelope,
-                                  prepared.operation_id);
+                                  prepared.operation_id)) {
+    if (prepared.prepared_metadata_binding != nullptr) {
+      (void)engine_bridge::ReleasePreparedMetadataBinding(prepared.prepared_metadata_binding);
+    }
+    CompleteServerRequestLifecycle(registry, request_record.request_uuid,
+        ServerRequestLifecycleState::kFailed, "prepared_object_handle_unavailable");
+    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kPrepareResult),
+        response_schema, decoded->session_uuid,
+        "PARSER_SERVER_IPC.PREPARED_METADATA_BIND_FAILED",
+        "The server could not bind the prepared object handle.",
+        "prepared_object_handle_unavailable");
+  }
   SealPreparedAuthorityProof(&prepared, prepare_session);
   StorePreparedExecutionContext(registry, prepared, prepare_session);
   registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
@@ -9682,10 +9679,10 @@ SessionOperationResult HandleExecuteSblrImpl(
   mark_execute_phase("prepared_statement_authority");
   const std::string statement_shape_hash = DispatchStatementShapeHash(encoded);
   const std::string operation_hint = EncodedTextField(encoded, "operation_id");
-  const std::string target_object_hint =
-      EncodedTextField(encoded, "target_object_uuid");
+  const auto target_object_hint = prepared_statement == nullptr
+      ? scratchbird::core::platform::Uuid{} : prepared_statement->target_object_uuid;
   const bool implicit_negative_cache_allowed =
-      !v2 && !operation_hint.empty() && !target_object_hint.empty();
+      !v2 && !operation_hint.empty() && !target_object_hint.is_nil();
   mark_execute_phase("shape_and_hint_extract");
   const auto fail_authority_cache_before_dispatch =
       [&](std::string detail) -> SessionOperationResult {
@@ -9807,49 +9804,9 @@ SessionOperationResult HandleExecuteSblrImpl(
       }
     }
   } package_reservation_guard{&package_reservation_handle};
-  const bool prepared_operation_matches =
-      prepared_statement != nullptr &&
-      !prepared_statement->operation_id.empty() &&
-      operation_hint == prepared_statement->operation_id;
-  const bool prepared_target_matches =
-      prepared_statement == nullptr ||
-      prepared_statement->target_object_uuid.is_nil() ||
-      target_object_hint.empty() ||
-      target_object_hint == prepared_statement->target_object_uuid;
-  const auto prepared_reuse_dml_operation = [](std::string_view operation_id) {
-    return operation_id == "dml.insert_rows" ||
-           operation_id == "dml.update_rows" ||
-           operation_id == "dml.delete_rows" ||
-           operation_id == "dml.merge_rows" ||
-           operation_id == "dml.execute_import_rows" ||
-           operation_id == "dml.execute_native_bulk_ingest";
-  };
-  const bool prepared_admission_reuse_allowed =
-      prepared_operation_matches &&
-      prepared_target_matches &&
-      prepared_statement != nullptr &&
-      prepared_reuse_dml_operation(prepared_statement->operation_id);
-  if (prepared_statement != nullptr && !prepared_target_matches) {
-    CompleteServerRequestLifecycle(registry,
-                                   request_record.request_uuid,
-                                   ServerRequestLifecycleState::kFailed,
-                                   "prepared_statement_target_mismatch");
-    return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
-                   kSchemaExecuteResultTestV1,
-                   decoded->session_uuid,
-                   "PARSER_SERVER_IPC.PREPARED_STATEMENT_TARGET_MISMATCH",
-                   "The execute SBLR envelope does not match the prepared statement target.",
-                   "prepared_statement_target_mismatch");
-  }
-  if (prepared_admission_reuse_allowed) {
-    admission.admitted = true;
-    admission.operation_id = prepared_statement->operation_id;
-    admission.operation_family = prepared_statement->operation_family;
-    admission.requires_public_abi_dispatch = prepared_statement->requires_public_abi_dispatch;
-    admission.row_count_hint =
-        TextLineU64(encoded, "estimated_row_count").value_or(prepared_statement->row_count_hint);
-    mark_execute_phase("prepared_admission_reuse");
-  } else if (canonical_ingress) {
+  // A derivative prepared/cache record cannot set admitted=true. Every execute
+  // obtains current canonical admission and its immutable engine-bound token.
+  if (canonical_ingress) {
     PreAdmissionOpcodeStreamView pre_admission_stream;
     if (!LocatePreAdmissionOpcodeStream(decoded->encoded_execution_envelope,
                                         &pre_admission_stream)) {
@@ -10499,11 +10456,18 @@ SessionOperationResult HandleExecuteSblrImpl(
     prepared.group_set_hash = session->group_set_hash;
     prepared.search_path_hash = session->search_path_hash;
     CapturePreparedLanguageContext(&prepared, *session);
-    BindPreparedSessionObjectHandle(registry,
+    if (!BindPreparedSessionObjectHandle(registry,
                                     &prepared,
                                     *session,
-                                    prepared.encoded_sblr_envelope,
-                                    prepared.operation_id);
+                                    prepared.operation_id)) {
+      CompleteServerRequestLifecycle(registry, request_record.request_uuid,
+          ServerRequestLifecycleState::kFailed, "prepared_object_handle_unavailable");
+      return Failure(static_cast<std::uint16_t>(sbps::MessageType::kExecuteResult),
+          kSchemaExecuteResultTestV1, decoded->session_uuid,
+          "PARSER_SERVER_IPC.PREPARED_METADATA_BIND_FAILED",
+          "The server could not bind the prepared object handle.",
+          "prepared_object_handle_unavailable");
+    }
     SealPreparedAuthorityProof(&prepared, *session);
     StorePreparedExecutionContext(registry, prepared, *session);
     registry->prepared_by_uuid[UuidBytesToText(prepared.prepared_statement_uuid)] = prepared;
