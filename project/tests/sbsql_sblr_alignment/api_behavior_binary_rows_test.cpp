@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <new>
+#include <limits>
 
 namespace { long fail_after=-1; unsigned checks=0,failures=0,faults=0; }
 void* operator new(std::size_t n) {
@@ -121,6 +122,32 @@ void EvidenceGroupPublication() {
 }
 int main() {
   EvidenceGroupPublication();
+  for (unsigned position = 0; position < 8; ++position) for (unsigned byte = 0; byte < 256; ++byte) {
+    const auto integer = static_cast<api::EngineApiU64>(byte) << (8 * position);
+    const auto value = api::ApiBehaviorUnsignedValue(integer);
+    Check(value.encoded_value.empty() && value.binary_value.size() == 8 &&
+          value.descriptor.canonical_type_name == "uint64" && Unbound(value.descriptor),
+          "unsigned convenience carrier fabricated text or descriptor authority");
+    for (unsigned i = 0; i < 8; ++i)
+      Check(value.binary_value[i] == (i == position ? byte : 0), "unsigned LE bytes changed");
+  }
+  const auto maximum = api::ApiBehaviorUnsignedValue(std::numeric_limits<api::EngineApiU64>::max());
+  Check(std::all_of(maximum.binary_value.begin(), maximum.binary_value.end(),
+                   [](auto b) { return b == 255; }), "uint64 maximum truncated");
+  for (bool flag : {false, true}) {
+    const auto value = api::ApiBehaviorBooleanValue(flag);
+    Check(value.encoded_value.empty() && value.binary_value.size() == 1 &&
+          value.binary_value[0] == static_cast<unsigned>(flag) &&
+          value.descriptor.canonical_type_name == "boolean" && Unbound(value.descriptor),
+          "boolean carrier changed bytes or fabricated descriptor authority");
+  }
+  const auto scalar_row = api::ApiBehaviorRow({
+      {"count", api::ApiBehaviorUnsignedValue(std::numeric_limits<api::EngineApiU64>::max())},
+      {"flag", api::ApiBehaviorBooleanValue(true)}, {"literal", "false"}});
+  Check(scalar_row.fields[0].second.binary_value == maximum.binary_value &&
+        scalar_row.fields[1].second.binary_value == std::vector<std::uint8_t>{1} &&
+        scalar_row.fields[2].second.encoded_value == "false",
+        "named scalar helpers changed typed row or reinterpreted literal text");
   // These are data UUIDs, not system identity admission: retain every byte,
   // including nil and older versions, without inventing a text shadow.
   for(unsigned position=0;position<16;++position)for(unsigned byte=0;byte<256;++byte) {
@@ -182,9 +209,13 @@ int main() {
     try {
       fail_after=allocation;
       api::AddApiBehaviorRow(&output,{{"binary identity source field",Id(3)},
-          {"long source text field",std::string(128,'x')},{"bound source field",bound}});
+          {"long source text field",std::string(128,'x')},{"bound source field",bound},
+          {"binary unsigned", api::ApiBehaviorUnsignedValue(18446744073709551615ULL)},
+          {"binary flag", api::ApiBehaviorBooleanValue(true)}});
       fail_after=-1;completed=true;
-      Check(output.result_shape.rows.size()==3 && Binary(output.result_shape.rows.back().fields[0].second,Id(3)),
+      Check(output.result_shape.rows.size()==3 && Binary(output.result_shape.rows.back().fields[0].second,Id(3)) &&
+            output.result_shape.rows.back().fields[3].second.binary_value == maximum.binary_value &&
+            output.result_shape.rows.back().fields[4].second.binary_value == std::vector<std::uint8_t>{1},
             "successful append lost binary field");
       break;
     } catch(const std::bad_alloc&) {

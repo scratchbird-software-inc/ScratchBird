@@ -499,15 +499,11 @@ int main(int argc, char** argv) {
 
   EngineInspectTransactionLineageRequest lineage_request;
   lineage_request.context = inspect_base;
-  lineage_request.option_envelopes.push_back("schema_epoch:42");
-  lineage_request.option_envelopes.push_back("snapshot_capsule:probe_snapshot");
   const auto lineage_result = EngineInspectTransactionLineage(lineage_request);
   const bool lineage_evidence_visible = lineage_result.ok && !lineage_result.result_shape.rows.empty();
 
   EngineClassifyTransactionRestoreRequest restore_request;
   restore_request.context = inspect_base;
-  restore_request.option_envelopes.push_back("schema_epoch:42");
-  restore_request.option_envelopes.push_back("snapshot_capsule:probe_snapshot");
   const auto restore_result = EngineClassifyTransactionRestore(restore_request);
   const bool restore_classification_visible = restore_result.ok && restore_result.restore_allowed &&
                                               !restore_result.wal_required &&
@@ -516,7 +512,7 @@ int main(int argc, char** argv) {
   EngineClassifyTransactionRestoreRequest wal_restore_request = restore_request;
   wal_restore_request.option_envelopes.push_back("wal_required:true");
   const bool wal_restore_refused = HasDiagnostic(EngineClassifyTransactionRestore(wal_restore_request),
-                                                "SB-MGA-WAL-NOT-AUTHORITY");
+                                                "MGA.EVIDENCE.WAL_NOT_AUTHORITY");
 
   EngineInspectTransactionLineageRequest unauthorized_lineage_request;
   unauthorized_lineage_request.context = base;

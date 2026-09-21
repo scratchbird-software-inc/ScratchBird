@@ -17,14 +17,26 @@
 
 namespace scratchbird::transaction::mga {
 
+// Data provenance supplied by the owning admitted context. Structural validity
+// is not snapshot ownership, policy authorization or permission to restore.
+struct TransactionEvidenceContext {
+  core::platform::Uuid database_uuid, snapshot_uuid, policy_snapshot_uuid;
+  u64 snapshot_generation = 0, catalog_generation = 0;
+  u64 security_generation = 0, policy_generation = 0;
+};
+enum class TransactionEvidenceError {
+  none, invalid_context, wal_not_authority, invalid_inventory,
+  restore_refused, resource_exhausted, internal_failure
+};
+const char* TransactionEvidenceErrorCode(TransactionEvidenceError) noexcept;
+
 struct TransactionLineageEvidenceRecord {
   LocalTransactionId local_id;
-  std::string transaction_uuid;
+  core::platform::Uuid transaction_uuid;
+  TransactionEvidenceContext context;
   std::string event_class;
   std::string observed_state;
   std::string terminal_state;
-  std::string schema_epoch;
-  std::string snapshot_capsule;
   std::string restore_classification;
   std::string refusal_condition;
   bool terminal = false;
@@ -32,32 +44,30 @@ struct TransactionLineageEvidenceRecord {
   bool wal_required = false;
 };
 
-struct TransactionRestoreClassificationResult {
-  Status status;
+struct TransactionLineageEvidenceResult {
+  TransactionEvidenceError error = TransactionEvidenceError::invalid_context;
   std::vector<TransactionLineageEvidenceRecord> records;
-  DiagnosticRecord diagnostic;
-  bool restore_allowed = true;
+  bool ok() const noexcept { return error == TransactionEvidenceError::none; }
+};
+
+struct TransactionRestoreClassificationResult {
+  TransactionEvidenceError error = TransactionEvidenceError::invalid_context;
+  std::vector<TransactionLineageEvidenceRecord> records;
+  bool restore_allowed = false;
   bool wal_required = false;
 
   bool ok() const {
-    return status.ok();
+    return error == TransactionEvidenceError::none;
   }
 };
 
-std::vector<TransactionLineageEvidenceRecord> BuildTransactionLineageEvidence(
+TransactionLineageEvidenceResult BuildTransactionLineageEvidence(
     const LocalTransactionInventory& inventory,
-    std::string schema_epoch,
-    std::string snapshot_capsule);
+    const TransactionEvidenceContext& context) noexcept;
 
 TransactionRestoreClassificationResult ClassifyTransactionInventoryForRestore(
     const LocalTransactionInventory& inventory,
-    std::string schema_epoch,
-    std::string snapshot_capsule,
-    bool caller_requires_wal);
-
-DiagnosticRecord MakeTransactionEvidenceDiagnostic(Status status,
-                                                  std::string diagnostic_code,
-                                                  std::string message_key,
-                                                  std::string detail = {});
+    const TransactionEvidenceContext& context,
+    bool caller_requires_wal) noexcept;
 
 }  // namespace scratchbird::transaction::mga

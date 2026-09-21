@@ -41,7 +41,9 @@ using scratchbird::transaction::mga::TransactionStateName;
 using scratchbird::core::platform::TypedUuid;
 using scratchbird::core::platform::UuidKind;
 using scratchbird::core::uuid::GenerateDurableEngineIdentityV7;
-using scratchbird::core::uuid::UuidToString;
+using scratchbird::transaction::mga::TransactionEvidenceContext;
+using scratchbird::transaction::mga::TransactionEvidenceError;
+using scratchbird::transaction::mga::TransactionEvidenceErrorCode;
 
 EngineApiDiagnostic DiagnosticFromMGA(const DiagnosticRecord& diagnostic,
                                       const std::string& fallback_code,
@@ -83,68 +85,45 @@ std::optional<TResult> EnforceInspectRight(const EngineApiRequest& request,
   return std::nullopt;
 }
 
-std::string SchemaEpochFor(const EngineApiRequest& request) {
-  const auto explicit_epoch = SecurityOptionValue(request, "schema_epoch:");
-  if (!explicit_epoch.empty()) { return explicit_epoch; }
-  if (request.context.catalog_generation_id != 0) { return std::to_string(request.context.catalog_generation_id); }
-  return "local_schema_epoch_unspecified";
+TransactionEvidenceContext EvidenceContextFor(const EngineApiRequest& request) {
+  const auto& context = request.context;
+  return {context.database_uuid, context.statement_snapshot_uuid,
+          context.transaction_policy_snapshot_uuid, context.statement_snapshot_generation,
+          context.catalog_generation_id, context.security_epoch,
+          context.transaction_policy_snapshot_generation};
 }
 
-std::string SnapshotCapsuleFor(const EngineApiRequest& request) {
-  const auto explicit_capsule = SecurityOptionValue(request, "snapshot_capsule:");
-  if (!explicit_capsule.empty()) { return explicit_capsule; }
-  if (!request.context.transaction_uuid.is_nil()) {
-    return "transaction:" + request.context.transaction_uuid;
-  }
-  if (request.context.local_transaction_id != 0) {
-    return "local_transaction:" + std::to_string(request.context.local_transaction_id);
-  }
-  return "local_latest";
+EngineApiDiagnostic EvidenceDiagnostic(TransactionEvidenceError error) {
+  const char* code = TransactionEvidenceErrorCode(error);
+  return MakeEngineApiDiagnostic(code ? code : "MGA.EVIDENCE.INTERNAL_FAILURE",
+                                 "mga.transaction_evidence.projection_failed", {}, true);
 }
 
 void AddLineageRow(EngineApiResult* result, const TransactionLineageEvidenceRecord& record) {
   AddApiBehaviorRow(result,
-                    {{"local_transaction_id", std::to_string(record.local_id.value)},
+                    {{"local_transaction_id", ApiBehaviorUnsignedValue(record.local_id.value)},
                      {"transaction_uuid", record.transaction_uuid},
                      {"event_class", record.event_class},
                      {"observed_state", record.observed_state},
                      {"terminal_state", record.terminal_state},
-                     {"schema_epoch", record.schema_epoch},
-                     {"snapshot_capsule", record.snapshot_capsule},
+                     {"database_uuid", record.context.database_uuid},
+                     {"snapshot_uuid", record.context.snapshot_uuid},
+                     {"policy_snapshot_uuid", record.context.policy_snapshot_uuid},
+                     {"snapshot_generation", ApiBehaviorUnsignedValue(record.context.snapshot_generation)},
+                     {"catalog_generation", ApiBehaviorUnsignedValue(record.context.catalog_generation)},
+                     {"security_generation", ApiBehaviorUnsignedValue(record.context.security_generation)},
+                     {"policy_generation", ApiBehaviorUnsignedValue(record.context.policy_generation)},
                      {"restore_classification", record.restore_classification},
                      {"refusal_condition", record.refusal_condition},
-                     {"terminal", record.terminal ? "true" : "false"},
-                     {"evidence_written", record.evidence_written ? "true" : "false"},
-                     {"wal_required", record.wal_required ? "true" : "false"}});
+                     {"terminal", ApiBehaviorBooleanValue(record.terminal)},
+                     {"evidence_written", ApiBehaviorBooleanValue(record.evidence_written)},
+                     {"wal_required", ApiBehaviorBooleanValue(record.wal_required)}});
 }
 
 std::uint64_t CurrentUnixMillis() {
   return static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch()).count());
-}
-
-std::uint64_t ParseU64OrZero(const std::string& value) {
-  std::uint64_t parsed = 0;
-  for (const char ch : value) {
-    if (ch < '0' || ch > '9') { return 0; }
-    parsed = (parsed * 10U) + static_cast<std::uint64_t>(ch - '0');
-  }
-  return parsed;
-}
-
-std::uint64_t EffectiveTargetLocalTransactionId(const EngineLocateTransactionRequest& request) {
-  if (request.target_local_transaction_id != 0) {
-    return request.target_local_transaction_id;
-  }
-  return ParseU64OrZero(SecurityOptionValue(request, "target_local_transaction_id:"));
-}
-
-std::string EffectiveTargetTransactionUuid(const EngineLocateTransactionRequest& request) {
-  if (!request.target_transaction_uuid.is_nil()) {
-    return request.target_transaction_uuid;
-  }
-  return SecurityOptionValue(request, "target_transaction_uuid:");
 }
 
 std::string EffectiveRequestedLocationClass(const EngineLocateTransactionRequest& request) {
@@ -177,7 +156,7 @@ EngineApiDiagnostic AuditLocationDiagnostic(std::string code,
 
 struct TransactionLocationResolution {
   std::uint64_t target_local_transaction_id = 0;
-  std::string target_transaction_uuid;
+  EngineUuid target_transaction_uuid;
   std::string location_class = "unknown";
   std::string transaction_state = "unknown";
   bool queryable = false;
@@ -195,16 +174,16 @@ struct TransactionLocationResolution {
 const TransactionInventoryEntry* FindTransactionEntry(
     const LocalTransactionInventory& inventory,
     std::uint64_t local_transaction_id,
-    const std::string& transaction_uuid) {
+    const EngineUuid& transaction_uuid) {
   for (const auto& entry : inventory.entries) {
     const bool id_matches =
         local_transaction_id != 0 &&
         entry.identity.local_id.value == local_transaction_id;
     const bool uuid_matches =
-        !transaction_uuid.empty() &&
+        !transaction_uuid.is_nil() &&
         entry.identity.transaction_uuid.valid() &&
-        UuidToString(entry.identity.transaction_uuid.value) == transaction_uuid;
-    if (id_matches || uuid_matches) {
+        entry.identity.transaction_uuid.value == transaction_uuid;
+    if (local_transaction_id != 0 ? id_matches : uuid_matches) {
       return &entry;
     }
   }
@@ -219,8 +198,16 @@ TransactionLocationResolution ResolveTransactionLocation(
     const EngineLocateTransactionRequest& request,
     const LocalTransactionInventory& inventory) {
   TransactionLocationResolution resolved;
-  resolved.target_local_transaction_id = EffectiveTargetLocalTransactionId(request);
-  resolved.target_transaction_uuid = EffectiveTargetTransactionUuid(request);
+  resolved.target_local_transaction_id = request.target_local_transaction_id;
+  resolved.target_transaction_uuid = request.target_transaction_uuid;
+
+  if (!resolved.target_transaction_uuid.is_nil() &&
+      !scratchbird::core::uuid::IsEngineIdentityUuid(resolved.target_transaction_uuid)) {
+    resolved.diagnostic = AuditLocationDiagnostic(
+        "ENGINE.MGA_AUDIT_LOCATION_IDENTITY_MISMATCH",
+        "target_transaction_identity_invalid", true);
+    return resolved;
+  }
 
   if (RemoteLocationRequested(request)) {
     resolved.location_class = "remote";
@@ -250,7 +237,7 @@ TransactionLocationResolution ResolveTransactionLocation(
   }
 
   if (resolved.target_local_transaction_id == 0 &&
-      resolved.target_transaction_uuid.empty()) {
+      resolved.target_transaction_uuid.is_nil()) {
     resolved.diagnostic = AuditLocationDiagnostic(
         "ENGINE.MGA_AUDIT_LOCATION_TARGET_REQUIRED",
         "target_local_transaction_id_or_transaction_uuid_required",
@@ -270,18 +257,22 @@ TransactionLocationResolution ResolveTransactionLocation(
     return resolved;
   }
 
-  const std::string entry_uuid = entry->identity.transaction_uuid.valid()
-      ? UuidToString(entry->identity.transaction_uuid.value)
-      : "";
+  const EngineUuid entry_uuid = entry->identity.transaction_uuid.value;
+  if (!entry->identity.valid() ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(entry_uuid)) {
+    resolved.diagnostic = AuditLocationDiagnostic(
+        "ENGINE.MGA_AUDIT_LOCATION_IDENTITY_MISMATCH",
+        "inventory_transaction_identity_invalid", true);
+    return resolved;
+  }
   if (resolved.target_local_transaction_id != 0 &&
-      resolved.target_transaction_uuid.empty()) {
+      resolved.target_transaction_uuid.is_nil()) {
     resolved.target_transaction_uuid = entry_uuid;
   }
   if (resolved.target_local_transaction_id == 0) {
     resolved.target_local_transaction_id = entry->identity.local_id.value;
   }
-  if (!resolved.target_transaction_uuid.empty() &&
-      !entry_uuid.empty() &&
+  if (!resolved.target_transaction_uuid.is_nil() &&
       resolved.target_transaction_uuid != entry_uuid) {
     resolved.location_class = "unknown";
     resolved.transaction_state = TransactionStateName(entry->state);
@@ -330,24 +321,24 @@ void PopulateLocationResult(EngineLocateTransactionResult* result,
   result->location_diagnostic_detail = resolved.diagnostic.detail;
   AddApiBehaviorRow(result,
                     {{"target_local_transaction_id",
-                      std::to_string(resolved.target_local_transaction_id)},
+                      ApiBehaviorUnsignedValue(resolved.target_local_transaction_id)},
                      {"target_transaction_uuid", resolved.target_transaction_uuid},
                      {"location_class", resolved.location_class},
                      {"transaction_state", resolved.transaction_state},
-                     {"queryable", resolved.queryable ? "true" : "false"},
-                     {"writes_refused", resolved.writes_refused ? "true" : "false"},
-                     {"fail_closed", resolved.fail_closed ? "true" : "false"},
+                     {"queryable", ApiBehaviorBooleanValue(resolved.queryable)},
+                     {"writes_refused", ApiBehaviorBooleanValue(resolved.writes_refused)},
+                     {"fail_closed", ApiBehaviorBooleanValue(resolved.fail_closed)},
                      {"local_inventory_authoritative",
-                      resolved.local_inventory_authoritative ? "true" : "false"},
+                      ApiBehaviorBooleanValue(resolved.local_inventory_authoritative)},
                      {"archive_authoritative",
-                      resolved.archive_authoritative ? "true" : "false"},
+                      ApiBehaviorBooleanValue(resolved.archive_authoritative)},
                      {"external_cluster_provider_required",
-                      resolved.external_cluster_provider_required ? "true" : "false"},
+                      ApiBehaviorBooleanValue(resolved.external_cluster_provider_required)},
                      {"location_diagnostic_code", resolved.diagnostic.code},
                      {"mga_inventory_authority",
-                      resolved.local_inventory_authoritative ? "true" : "false"},
-                     {"parser_finality_authority", "false"},
-                     {"reference_finality_authority", "false"}});
+                      ApiBehaviorBooleanValue(resolved.local_inventory_authoritative)},
+                     {"parser_finality_authority", ApiBehaviorBooleanValue(false)},
+                     {"reference_finality_authority", ApiBehaviorBooleanValue(false)}});
   AddApiBehaviorEvidence(result,
                          "mga_transaction_location",
                          resolved.location_class);
@@ -432,10 +423,13 @@ EngineInspectTransactionLineageResult EngineInspectTransactionLineage(
                           "SB-MGA-TXN-INV-LOAD-FAILED",
                           "mga.transaction_inventory.load_failed"));
   }
+  const auto projection = BuildTransactionLineageEvidence(loaded.inventory, EvidenceContextFor(request));
+  if (!projection.ok()) {
+    return TransactionInspectFailure<EngineInspectTransactionLineageResult>(
+        request, operation_id, EvidenceDiagnostic(projection.error));
+  }
   auto result = MakeApiBehaviorSuccess<EngineInspectTransactionLineageResult>(request.context, operation_id);
-  for (const auto& record : BuildTransactionLineageEvidence(loaded.inventory,
-                                                            SchemaEpochFor(request),
-                                                            SnapshotCapsuleFor(request))) {
+  for (const auto& record : projection.records) {
     AddLineageRow(&result, record);
   }
   AddApiBehaviorEvidence(&result, "mga_lineage", "durable_transaction_inventory");
@@ -463,18 +457,14 @@ EngineClassifyTransactionRestoreResult EngineClassifyTransactionRestore(
   }
   const auto classified = ClassifyTransactionInventoryForRestore(
       loaded.inventory,
-      SchemaEpochFor(request),
-      SnapshotCapsuleFor(request),
+      EvidenceContextFor(request),
       SecurityOptionBool(request, "wal_required:", false));
-  auto result = MakeApiBehaviorSuccess<EngineClassifyTransactionRestoreResult>(request.context, operation_id);
+  auto result = classified.ok()
+      ? MakeApiBehaviorSuccess<EngineClassifyTransactionRestoreResult>(request.context, operation_id)
+      : TransactionInspectFailure<EngineClassifyTransactionRestoreResult>(
+          request, operation_id, EvidenceDiagnostic(classified.error));
   result.restore_allowed = classified.restore_allowed;
   result.wal_required = classified.wal_required;
-  if (!classified.ok()) {
-    result.ok = false;
-    result.diagnostics.push_back(DiagnosticFromMGA(classified.diagnostic,
-                                                   "SB-MGA-RESTORE-CLASSIFICATION-REFUSED",
-                                                   "transaction.evidence.restore_classification_refused"));
-  }
   for (const auto& record : classified.records) {
     AddLineageRow(&result, record);
   }
@@ -501,20 +491,37 @@ EngineInspectTransactionForensicsResult EngineInspectTransactionForensics(
                           "SB-MGA-TXN-INV-LOAD-FAILED",
                           "mga.transaction_inventory.load_failed"));
   }
+  const auto projection = BuildTransactionLineageEvidence(loaded.inventory, EvidenceContextFor(request));
+  if (!projection.ok()) {
+    return TransactionInspectFailure<EngineInspectTransactionForensicsResult>(
+        request, operation_id, EvidenceDiagnostic(projection.error));
+  }
   auto result = MakeApiBehaviorSuccess<EngineInspectTransactionForensicsResult>(request.context, operation_id);
-  for (const auto& entry : loaded.inventory.entries) {
-    const auto classification = ClassifyLocalTransactionForRecovery(entry);
+  for (std::size_t index = 0; index < loaded.inventory.entries.size(); ++index) {
+    const auto& entry = loaded.inventory.entries[index];
+    const auto& record = projection.records[index];
+    auto classification = ClassifyLocalTransactionForRecovery(entry);
+    if (!classification.fail_closed && !record.refusal_condition.empty()) {
+      classification.fail_closed = true;
+      classification.action = scratchbird::transaction::mga::TransactionRecoveryAction::fail_closed_ambiguous;
+      classification.stable_reason = record.refusal_condition;
+    }
     AddApiBehaviorRow(&result,
-                      {{"local_transaction_id", std::to_string(entry.identity.local_id.value)},
-                       {"transaction_uuid", entry.identity.transaction_uuid.valid()
-                           ? UuidToString(entry.identity.transaction_uuid.value)
-                           : ""},
+                      {{"local_transaction_id", ApiBehaviorUnsignedValue(entry.identity.local_id.value)},
+                       {"transaction_uuid", entry.identity.transaction_uuid.value},
+                       {"database_uuid", record.context.database_uuid},
+                       {"snapshot_uuid", record.context.snapshot_uuid},
+                       {"policy_snapshot_uuid", record.context.policy_snapshot_uuid},
+                       {"snapshot_generation", ApiBehaviorUnsignedValue(record.context.snapshot_generation)},
+                       {"catalog_generation", ApiBehaviorUnsignedValue(record.context.catalog_generation)},
+                       {"security_generation", ApiBehaviorUnsignedValue(record.context.security_generation)},
+                       {"policy_generation", ApiBehaviorUnsignedValue(record.context.policy_generation)},
                        {"observed_state", TransactionStateName(classification.observed_state)},
                        {"recovery_action", TransactionRecoveryActionName(classification.action)},
-                       {"fail_closed", classification.fail_closed ? "true" : "false"},
+                       {"fail_closed", ApiBehaviorBooleanValue(classification.fail_closed)},
                        {"stable_reason", classification.stable_reason},
-                       {"rollback_only", entry.rollback_only ? "true" : "false"},
-                       {"evidence_written", entry.evidence_record_written ? "true" : "false"}});
+                       {"rollback_only", ApiBehaviorBooleanValue(entry.rollback_only)},
+                       {"evidence_written", ApiBehaviorBooleanValue(entry.evidence_record_written)}});
   }
   AddApiBehaviorEvidence(&result, "mga_forensics", "recovery_classification");
   AddApiBehaviorEvidence(&result, "wal_required", "false");
@@ -540,9 +547,9 @@ EngineLocateTransactionResult EngineLocateTransaction(
                           "mga.transaction_inventory.load_failed"));
   }
   const auto location = ResolveTransactionLocation(request, loaded.inventory);
-  auto result = MakeApiBehaviorSuccess<EngineLocateTransactionResult>(
-      request.context,
-      operation_id);
+  auto result = location.diagnostic.error
+      ? TransactionInspectFailure<EngineLocateTransactionResult>(request, operation_id, location.diagnostic)
+      : MakeApiBehaviorSuccess<EngineLocateTransactionResult>(request.context, operation_id);
   PopulateLocationResult(&result, location);
   AddApiBehaviorEvidence(&result, "mga_authority", "durable_transaction_inventory");
   return result;
@@ -641,7 +648,7 @@ EngineBeginAuditReadTransactionResult EngineBeginAuditReadTransaction(
       operation_id);
   PopulateLocationResult(&result, location);
   result.audit_transaction_uuid =
-      UuidToString(begun.entry.identity.transaction_uuid.value);
+      begun.entry.identity.transaction_uuid.value;
   result.audit_local_transaction_id = begun.entry.identity.local_id.value;
   result.snapshot_visible_through_local_transaction_id =
       begun.entry.begin_visible_through_local_transaction_id;
@@ -655,22 +662,21 @@ EngineBeginAuditReadTransactionResult EngineBeginAuditReadTransaction(
   result.local_transaction_id = result.audit_local_transaction_id;
   AddApiBehaviorRow(&result,
                     {{"audit_local_transaction_id",
-                      std::to_string(result.audit_local_transaction_id)},
+                      ApiBehaviorUnsignedValue(result.audit_local_transaction_id)},
                      {"audit_transaction_uuid",
                       result.audit_transaction_uuid},
                      {"audit_transaction_state",
                       TransactionStateName(begun.entry.state)},
                      {"audit_transaction_distinct",
-                      result.audit_transaction_distinct ? "true" : "false"},
-                     {"read_only", "true"},
-                     {"writes_refused", "true"},
+                      ApiBehaviorBooleanValue(result.audit_transaction_distinct)},
+                     {"read_only", ApiBehaviorBooleanValue(true)},
+                     {"writes_refused", ApiBehaviorBooleanValue(true)},
                      {"snapshot_visible_through_local_transaction_id",
-                      std::to_string(
-                          result.snapshot_visible_through_local_transaction_id)},
+                      ApiBehaviorUnsignedValue(result.snapshot_visible_through_local_transaction_id)},
                      {"isolation_level", request.isolation_level},
-                     {"mga_inventory_authority", "true"},
-                     {"parser_finality_authority", "false"},
-                     {"reference_finality_authority", "false"}});
+                     {"mga_inventory_authority", ApiBehaviorBooleanValue(true)},
+                     {"parser_finality_authority", ApiBehaviorBooleanValue(false)},
+                     {"reference_finality_authority", ApiBehaviorBooleanValue(false)}});
   AddApiBehaviorEvidence(&result,
                          "audit_read_transaction",
                          "durable_mga_read_only_transaction");

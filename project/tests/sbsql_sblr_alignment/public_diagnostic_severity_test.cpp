@@ -77,7 +77,7 @@ int main() {
     Check(projected == SB_ENGINE_DIAGNOSTIC_INTERNAL, "malformed source severity acquired another class");
   }
   const auto catalog = d::CanonicalDiagnosticCodeCatalog();
-  Check(catalog.size == 1397, "exact canonical registry not exercised");
+  Check(catalog.size == 1418, "exact canonical registry not exercised");
   for (const auto& row : catalog) {
     metadata = d::CaptureCanonicalDiagnosticMetadata(row.code);
     bool found = false;

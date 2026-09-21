@@ -50,6 +50,22 @@ target_link_libraries(sb_transaction_mga PUBLIC sb_core_platform sb_core_uuid sb
 
 if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(Threads REQUIRED)
+  # Real projection/classification source closure; not SQL/transport acceptance.
+  add_executable(sbsql_sblr_alignment_transaction_evidence_binary
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/sbsql_sblr_alignment/transaction_evidence_binary_test.cpp
+    transaction_evidence.cpp transaction_recovery.cpp transaction_state.cpp)
+  target_compile_features(sbsql_sblr_alignment_transaction_evidence_binary PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_transaction_evidence_binary PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_compile_options(sbsql_sblr_alignment_transaction_evidence_binary PRIVATE
+    -ffunction-sections -fdata-sections)
+  target_link_options(sbsql_sblr_alignment_transaction_evidence_binary PRIVATE -Wl,--gc-sections)
+  target_link_libraries(sbsql_sblr_alignment_transaction_evidence_binary PRIVATE
+    sb_core_uuid sb_core_diagnostic_catalog)
+  add_test(NAME sbsql_sblr_alignment_transaction_evidence_binary
+    COMMAND sbsql_sblr_alignment_transaction_evidence_binary)
+  set_tests_properties(sbsql_sblr_alignment_transaction_evidence_binary PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-06;MGA;binary_uuid;allocation_failure;component_regression;not_runtime_acceptance"
+    TIMEOUT 60)
   add_executable(sbsql_sblr_alignment_snapshot_retention
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../tests/sbsql_sblr_alignment/snapshot_retention_test.cpp)
   target_compile_features(sbsql_sblr_alignment_snapshot_retention PRIVATE cxx_std_23)

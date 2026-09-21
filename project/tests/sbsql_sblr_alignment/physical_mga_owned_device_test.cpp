@@ -75,6 +75,23 @@ namespace {
 namespace db = scratchbird::storage::database;
 namespace disk = scratchbird::storage::disk;
 namespace mga = scratchbird::transaction::mga;
+
+// Explicit projection fixture, not an admitted policy/snapshot or restore grant.
+static mga::TransactionEvidenceContext EvidenceContextFixture() {
+  mga::TransactionEvidenceContext context;
+  auto identity = [](unsigned tag) {
+    scratchbird::core::platform::Uuid id;
+    id.bytes[0] = 1; id.bytes[6] = 0x70; id.bytes[8] = 0x80; id.bytes[15] = tag;
+    return id;
+  };
+  context.database_uuid = identity(201);
+  context.snapshot_uuid = identity(202);
+  context.policy_snapshot_uuid = identity(203);
+  context.snapshot_generation = 11; context.catalog_generation = 12;
+  context.security_generation = 13; context.policy_generation = 14;
+  return context;
+}
+
 namespace platform = scratchbird::core::platform;
 namespace types = scratchbird::core::datatypes;
 namespace uuid = scratchbird::core::uuid;
@@ -1576,7 +1593,7 @@ void ArchiveAndRecoveryCommitOrder() {
     loaded = db::LoadLocalTransactionInventoryFromOpenDevice(&native.device, page_size);
     Check(loaded.ok(), "load native reopened terminal archive");
     const auto bytes_before = native.Bytes();
-    const auto restore = mga::ClassifyTransactionInventoryForRestore(loaded.inventory, "schema", "snapshot", false);
+    const auto restore = mga::ClassifyTransactionInventoryForRestore(loaded.inventory, EvidenceContextFixture(), false);
     const auto replayed = mga::ApplyLocalTransactionInventoryRecovery(loaded.inventory, 1790000000600ull);
     const bool failed_terminal = decision == mga::LimboOperatorDecision::fail_terminal;
     Check(restore.ok() == !failed_terminal && restore.restore_allowed == !failed_terminal &&

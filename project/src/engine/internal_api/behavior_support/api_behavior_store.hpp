@@ -61,9 +61,11 @@ std::string ApiBehaviorPayloadFromRequest(const EngineApiRequest& request);
 EngineUuid ApiBehaviorObjectUuid(const EngineApiRequest& request, const std::string& kind);
 EngineTypedValue ApiBehaviorValue(std::string value);
 EngineTypedValue ApiBehaviorValue(const EngineUuid& value);
+EngineTypedValue ApiBehaviorUnsignedValue(EngineApiU64 value);
+EngineTypedValue ApiBehaviorBooleanValue(bool value);
 // Legacy result carriers preserve the source value category. UUID values are
 // raw16, never converted to strings or inferred from a field name/text spelling.
-// The string/UUID convenience values have no bound datatype descriptor and do
+// The text/UUID/unsigned/boolean convenience values have no bound datatype descriptor and do
 // not authorize canonical result publication. Already-bound typed values retain
 // their exact descriptor; the publication owner must independently validate it.
 using ApiBehaviorValueInput = std::variant<std::string, EngineUuid, EngineTypedValue>;

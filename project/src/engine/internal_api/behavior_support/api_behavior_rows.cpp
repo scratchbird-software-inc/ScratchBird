@@ -68,6 +68,23 @@ EngineTypedValue ApiBehaviorValue(const EngineUuid& value) {
   return typed;
 }
 
+EngineTypedValue ApiBehaviorUnsignedValue(EngineApiU64 value) {
+  EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = "uint64";
+  typed.binary_value.resize(8);
+  for (unsigned n = 0; n < 8; ++n) typed.binary_value[n] = static_cast<std::uint8_t>(value >> (8*n));
+  return typed;
+}
+
+EngineTypedValue ApiBehaviorBooleanValue(bool value) {
+  EngineTypedValue typed;
+  typed.descriptor.descriptor_kind = "scalar";
+  typed.descriptor.canonical_type_name = "boolean";
+  typed.binary_value.push_back(value ? 1 : 0);
+  return typed;
+}
+
 EngineRowValue ApiBehaviorRow(ApiBehaviorFields fields) {
   EngineRowValue row;
   row.requested_row_uuid = GenerateCrudEngineUuid("row");

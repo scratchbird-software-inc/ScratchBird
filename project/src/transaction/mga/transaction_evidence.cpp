@@ -11,25 +11,22 @@
 
 #include "uuid.hpp"
 
+#include <new>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
 namespace scratchbird::transaction::mga {
 namespace {
 
-using scratchbird::core::platform::DiagnosticArgument;
-using scratchbird::core::platform::MakeDiagnostic;
-using scratchbird::core::platform::Severity;
-using scratchbird::core::platform::StatusCode;
-using scratchbird::core::platform::Subsystem;
-using scratchbird::core::uuid::UuidToString;
-
-Status EvidenceOkStatus() {
-  return {StatusCode::ok, Severity::info, Subsystem::transaction_mga};
-}
-
-Status EvidenceErrorStatus() {
-  return {StatusCode::platform_required_feature_missing, Severity::error, Subsystem::transaction_mga};
+using E = TransactionEvidenceError;
+bool ValidContext(const TransactionEvidenceContext& context) noexcept {
+  const auto& db = context.database_uuid;
+  const auto& snapshot = context.snapshot_uuid;
+  const auto& policy = context.policy_snapshot_uuid;
+  return core::uuid::IsEngineIdentityUuid(db) && core::uuid::IsEngineIdentityUuid(snapshot) &&
+      core::uuid::IsEngineIdentityUuid(policy) && db != snapshot && db != policy && snapshot != policy &&
+      context.snapshot_generation && context.catalog_generation && context.security_generation && context.policy_generation;
 }
 
 std::string EventClassForState(TransactionState state) {
@@ -83,18 +80,16 @@ std::string RestoreClassificationFor(const TransactionRecoveryClassification& cl
 }
 
 TransactionLineageEvidenceRecord BuildRecord(const TransactionInventoryEntry& entry,
-                                             std::string schema_epoch,
-                                             std::string snapshot_capsule) {
+                                             const TransactionEvidenceContext& context) {
   const auto classification = ClassifyLocalTransactionForRecovery(entry);
   const auto outcome = InventoryVisibilityState(entry);
   TransactionLineageEvidenceRecord record;
   record.local_id = entry.identity.local_id;
-  record.transaction_uuid = UuidToString(entry.identity.transaction_uuid.value);
+  record.transaction_uuid = entry.identity.transaction_uuid.value;
+  record.context = context;
   record.event_class = EventClassForState(entry.state);
   record.observed_state = TransactionStateName(entry.state);
   record.terminal_state = IsTerminalTransactionState(outcome) ? TransactionStateName(outcome) : "";
-  record.schema_epoch = std::move(schema_epoch);
-  record.snapshot_capsule = std::move(snapshot_capsule);
   record.restore_classification = RestoreClassificationFor(classification, outcome);
   record.refusal_condition = classification.fail_closed ? classification.stable_reason : "";
   record.terminal = IsTerminalTransactionState(outcome);
@@ -105,83 +100,73 @@ TransactionLineageEvidenceRecord BuildRecord(const TransactionInventoryEntry& en
 
 }  // namespace
 
-std::vector<TransactionLineageEvidenceRecord> BuildTransactionLineageEvidence(
-    const LocalTransactionInventory& inventory,
-    std::string schema_epoch,
-    std::string snapshot_capsule) {
-  std::vector<TransactionLineageEvidenceRecord> records;
-  records.reserve(inventory.entries.size());
-  for (const auto& entry : inventory.entries) {
-    records.push_back(BuildRecord(entry, schema_epoch, snapshot_capsule));
+const char* TransactionEvidenceErrorCode(TransactionEvidenceError error) noexcept {
+  switch(error) {
+    case E::none: return nullptr;
+    case E::invalid_context: return "MGA.EVIDENCE.INVALID_CONTEXT";
+    case E::wal_not_authority: return "MGA.EVIDENCE.WAL_NOT_AUTHORITY";
+    case E::invalid_inventory: return "MGA.EVIDENCE.INVENTORY_INVALID";
+    case E::restore_refused: return "MGA.EVIDENCE.RESTORE_REFUSED";
+    case E::resource_exhausted: return "MGA.EVIDENCE.RESOURCE_EXHAUSTED";
+    case E::internal_failure: return "MGA.EVIDENCE.INTERNAL_FAILURE";
   }
-  return records;
+  return "MGA.EVIDENCE.INTERNAL_FAILURE";
+}
+
+TransactionLineageEvidenceResult BuildTransactionLineageEvidence(
+    const LocalTransactionInventory& inventory,
+    const TransactionEvidenceContext& context) noexcept {
+  if (!ValidContext(context)) return {};
+  try {
+    TransactionLineageEvidenceResult result;
+    const char* invalid = ValidateLocalTransactionInventoryStructure(inventory);
+    result.records.reserve(inventory.entries.size());
+    for (const auto& entry : inventory.entries) {
+      auto record = BuildRecord(entry, context);
+      if (*invalid) {
+        record.restore_classification = "refuse_fail_closed";
+        record.refusal_condition = invalid;
+      }
+      result.records.push_back(std::move(record));
+    }
+    result.error = E::none;
+    return result;
+  } catch (const std::bad_alloc&) {
+    return {E::resource_exhausted, {}};
+  } catch (const std::length_error&) {
+    return {E::resource_exhausted, {}};
+  } catch (...) {
+    return {E::internal_failure, {}};
+  }
 }
 
 TransactionRestoreClassificationResult ClassifyTransactionInventoryForRestore(
     const LocalTransactionInventory& inventory,
-    std::string schema_epoch,
-    std::string snapshot_capsule,
-    bool caller_requires_wal) {
-  TransactionRestoreClassificationResult result;
-  result.status = EvidenceOkStatus();
-  result.wal_required = false;
-  if (caller_requires_wal) {
-    result.status = EvidenceErrorStatus();
-    result.restore_allowed = false;
-    result.diagnostic = MakeTransactionEvidenceDiagnostic(result.status,
-                                                         "SB-MGA-WAL-NOT-AUTHORITY",
-                                                         "transaction.evidence.wal_not_authority",
-                                                         "restore classification uses MGA inventory and lineage evidence");
-    return result;
-  }
-  if (schema_epoch.empty() || snapshot_capsule.empty()) {
-    result.status = EvidenceErrorStatus();
-    result.restore_allowed = false;
-    result.diagnostic = MakeTransactionEvidenceDiagnostic(result.status,
-                                                         "SB-MGA-RESTORE-CONTEXT-MISSING",
-                                                         "transaction.evidence.restore_context_missing",
-                                                         "schema_epoch and snapshot_capsule are required");
-    return result;
-  }
-  if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason) {
-    result.status = EvidenceErrorStatus();
-    result.restore_allowed = false;
-    result.diagnostic = MakeTransactionEvidenceDiagnostic(result.status,
-        "SB-MGA-RESTORE-CLASSIFICATION-REFUSED", "transaction.evidence.inventory_invalid", reason);
-    return result;
-  }
-  result.records = BuildTransactionLineageEvidence(inventory, std::move(schema_epoch), std::move(snapshot_capsule));
-  for (const auto& record : result.records) {
-    if (record.restore_classification == "refuse_fail_closed") {
+    const TransactionEvidenceContext& context,
+    bool caller_requires_wal) noexcept {
+  if (!ValidContext(context)) return {};
+  if (caller_requires_wal) return {E::wal_not_authority, {}, false, false};
+  try {
+    if (const auto reason = ValidateLocalTransactionInventoryStructure(inventory); *reason)
+      return {E::invalid_inventory, {}, false, false};
+    auto projection = BuildTransactionLineageEvidence(inventory, context);
+    if (!projection.ok()) return {projection.error, {}, false, false};
+    TransactionRestoreClassificationResult result;
+    result.error = E::none;
+    result.restore_allowed = true;
+    result.records = std::move(projection.records);
+    for (const auto& record : result.records) if (record.restore_classification == "refuse_fail_closed") {
+      result.error = E::restore_refused;
       result.restore_allowed = false;
     }
+    return result;
+  } catch (const std::bad_alloc&) {
+    return {E::resource_exhausted, {}, false, false};
+  } catch (const std::length_error&) {
+    return {E::resource_exhausted, {}, false, false};
+  } catch (...) {
+    return {E::internal_failure, {}, false, false};
   }
-  if (!result.restore_allowed) {
-    result.status = EvidenceErrorStatus();
-    result.diagnostic = MakeTransactionEvidenceDiagnostic(result.status,
-                                                         "SB-MGA-RESTORE-CLASSIFICATION-REFUSED",
-                                                         "transaction.evidence.restore_classification_refused",
-                                                         "inventory contains prepared, limbo, recovering, failed, or ambiguous state");
-  }
-  return result;
-}
-
-DiagnosticRecord MakeTransactionEvidenceDiagnostic(Status status,
-                                                  std::string diagnostic_code,
-                                                  std::string message_key,
-                                                  std::string detail) {
-  std::vector<DiagnosticArgument> arguments;
-  if (!detail.empty()) {
-    arguments.push_back({"detail", detail});
-  }
-  return MakeDiagnostic(status.code,
-                        status.severity,
-                        status.subsystem,
-                        std::move(diagnostic_code),
-                        std::move(message_key),
-                        std::move(arguments),
-                        {},
-                        "transaction.mga.evidence");
 }
 
 }  // namespace scratchbird::transaction::mga

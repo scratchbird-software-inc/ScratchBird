@@ -38,7 +38,7 @@ int main() {
   const auto catalog=d::CanonicalDiagnosticCodeCatalog();
   // Includes narrow-query, typed metric-update and clock-source registrations. Check the exact
   // admitted Core import, not a minimum row count.
-  Check(catalog.size==1412 && catalog.data!=nullptr,"complete Core code inventory missing");
+  Check(catalog.size==1418 && catalog.data!=nullptr,"complete Core code inventory missing");
   std::size_t unspecified_retry=0,unspecified_outcome=0;
   std::string_view previous;
   for(const auto& row:catalog) {
@@ -180,8 +180,7 @@ int main() {
     Check(found==nullptr,"unknown code was invented, normalized or guessed");
   }
   constexpr std::array<std::uint8_t,32> expected_source{
-    0xa3,0x2a,0x06,0xf5,0x20,0x0b,0xc3,0x3c,0x48,0x3c,0xf3,0x4a,0xd8,0xe4,0x51,0x04,
-    0x37,0x6d,0x96,0xca,0x12,0xbb,0x15,0x6c,0x5c,0xc7,0x85,0x7f,0x5f,0x7f,0xaa,0x54};
+    0x6d,0x59,0xa5,0x7b,0xad,0x95,0x15,0x94,0x2d,0xd2,0xbf,0x15,0x6c,0xab,0x3e,0x2b,0xf5,0x07,0x25,0xe5,0x44,0x67,0x89,0xc2,0xc9,0x48,0x2b,0xc8,0x04,0x4e,0xab,0xd4};
   Check(d::CanonicalDiagnosticCodeSourceSha256()==expected_source,"Core source provenance differs");
   std::cout<<"canonical_diagnostic_catalog rows="<<catalog.size<<" checks="<<checks
            <<" failures="<<failures<<'\n';

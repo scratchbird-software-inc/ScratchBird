@@ -26,6 +26,23 @@ static_assert(!std::is_copy_constructible_v<scratchbird::transaction::mga::Publi
 static_assert(std::is_nothrow_move_constructible_v<scratchbird::transaction::mga::PublishedSnapshotPin>);
 
 namespace mga = scratchbird::transaction::mga;
+
+// Explicit projection fixture, not an admitted policy/snapshot or restore grant.
+static mga::TransactionEvidenceContext EvidenceContextFixture() {
+  mga::TransactionEvidenceContext context;
+  auto identity = [](unsigned tag) {
+    scratchbird::core::platform::Uuid id;
+    id.bytes[0] = 1; id.bytes[6] = 0x70; id.bytes[8] = 0x80; id.bytes[15] = tag;
+    return id;
+  };
+  context.database_uuid = identity(201);
+  context.snapshot_uuid = identity(202);
+  context.policy_snapshot_uuid = identity(203);
+  context.snapshot_generation = 11; context.catalog_generation = 12;
+  context.security_generation = 13; context.policy_generation = 14;
+  return context;
+}
+
 namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 static unsigned checks = 0;
@@ -189,7 +206,7 @@ static void ArchivedRecoveryCases() {
                            mga::TransactionState::failed_terminal}) {
     entry.archived_from_state = origin;
     entry.commit_sequence = origin == mga::TransactionState::committed ? 1 : 0;
-    const auto classified = mga::ClassifyTransactionInventoryForRestore(inventory, "schema", "snapshot", false);
+    const auto classified = mga::ClassifyTransactionInventoryForRestore(inventory, EvidenceContextFixture(), false);
     const bool safe = origin != mga::TransactionState::failed_terminal;
     Check(classified.ok() == safe && classified.restore_allowed == safe && classified.records.size() == inventory.entries.size(),
         "restore discarded archive finality");
@@ -221,9 +238,9 @@ static void ArchivedRecoveryCases() {
   }
   auto malformed = fixture.inventory;
   malformed.entries.push_back(malformed.entries.front());
-  const auto invalid = mga::ClassifyTransactionInventoryForRestore(malformed, "schema", "snapshot", false);
+  const auto invalid = mga::ClassifyTransactionInventoryForRestore(malformed, EvidenceContextFixture(), false);
   Check(!invalid.ok() && !invalid.restore_allowed && invalid.records.empty() &&
-      invalid.diagnostic.diagnostic_code == "SB-MGA-RESTORE-CLASSIFICATION-REFUSED",
+      invalid.error == mga::TransactionEvidenceError::invalid_inventory,
       "restore published a prefix from duplicate native inventory");
   for (const auto origin : {mga::TransactionState::none, mga::TransactionState::active,
                            mga::TransactionState::prepared, mga::TransactionState::archived,
@@ -231,10 +248,10 @@ static void ArchivedRecoveryCases() {
     malformed = fixture.inventory;
     malformed.entries.front().state = mga::TransactionState::archived;
     malformed.entries.front().archived_from_state = origin;
-    const auto lineage = mga::BuildTransactionLineageEvidence(malformed, "schema", "snapshot");
-    Check(!lineage.empty() && !lineage.front().terminal && lineage.front().terminal_state.empty() &&
-        lineage.front().restore_classification == "refuse_fail_closed", "invalid archive lineage invented terminal evidence");
-    const auto refused = mga::ClassifyTransactionInventoryForRestore(malformed, "schema", "snapshot", false);
+    const auto lineage = mga::BuildTransactionLineageEvidence(malformed, EvidenceContextFixture());
+    Check(lineage.ok() && !lineage.records.empty() && !lineage.records.front().terminal && lineage.records.front().terminal_state.empty() &&
+        lineage.records.front().restore_classification == "refuse_fail_closed", "invalid archive lineage invented terminal evidence");
+    const auto refused = mga::ClassifyTransactionInventoryForRestore(malformed, EvidenceContextFixture(), false);
     Check(!refused.ok() && !refused.restore_allowed && refused.records.empty(), "invalid archive restore published records");
   }
   const std::vector<std::function<void(mga::LocalTransactionInventory&)>> invalid_sequences{
@@ -251,16 +268,16 @@ static void ArchivedRecoveryCases() {
     malformed = fixture.inventory; mutate(malformed);
     for (unsigned order = 0; order < 2; ++order) {
       std::reverse(malformed.entries.begin(), malformed.entries.end());
-      const auto refused = mga::ClassifyTransactionInventoryForRestore(malformed, "schema", "snapshot", false);
+      const auto refused = mga::ClassifyTransactionInventoryForRestore(malformed, EvidenceContextFixture(), false);
       Check(!refused.ok() && !refused.restore_allowed && refused.records.empty(), "invalid restore sequence admitted a record prefix");
     }
   }
   const auto empty = mga::MakeEmptyLocalTransactionInventory();
-  const auto empty_restore = mga::ClassifyTransactionInventoryForRestore(empty, "schema", "snapshot", false);
+  const auto empty_restore = mga::ClassifyTransactionInventoryForRestore(empty, EvidenceContextFixture(), false);
   Check(empty_restore.ok() && empty_restore.restore_allowed && empty_restore.records.empty(), "valid empty restore inventory refused");
-  Check(!mga::ClassifyTransactionInventoryForRestore(empty, "schema", "snapshot", true).restore_allowed &&
-        !mga::ClassifyTransactionInventoryForRestore(empty, "", "snapshot", false).restore_allowed &&
-        !mga::ClassifyTransactionInventoryForRestore(empty, "schema", "", false).restore_allowed,
+  Check(!mga::ClassifyTransactionInventoryForRestore(empty, EvidenceContextFixture(), true).restore_allowed &&
+        !mga::ClassifyTransactionInventoryForRestore(empty, {}, false).restore_allowed &&
+        !mga::ClassifyTransactionInventoryForRestore(empty, mga::TransactionEvidenceContext{}, false).restore_allowed,
         "archive repair bypassed WAL or restore context refusals");
   std::cout << "archived_recovery origin_cases=131072 misplaced_cases=65536\n";
 }
@@ -648,7 +665,7 @@ static void InventoryAdmissionCases() {
         request.inventory_complete = true;
         const auto cleanup = mga::ComputeAuthoritativeCleanupHorizon(request);
         if (cleanup.ok() || cleanup.cleanup_horizon_authoritative || cleanup.cleanup_horizon.valid()) ++missed[4];
-        const auto restore = mga::ClassifyTransactionInventoryForRestore(inventory, "schema", "snapshot", false);
+        const auto restore = mga::ClassifyTransactionInventoryForRestore(inventory, EvidenceContextFixture(), false);
         if (restore.ok() || restore.restore_allowed || !restore.records.empty()) ++missed[5];
         Check(mga::SnapshotVectorDescriptorEqual(
             mga::ResolvePublishedSnapshotVector(f.snapshot.snapshot_uuid).descriptor, f.snapshot),

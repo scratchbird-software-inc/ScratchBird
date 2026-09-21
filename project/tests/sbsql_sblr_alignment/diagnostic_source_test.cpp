@@ -60,7 +60,7 @@ int main() {
   // Full current registration population: copying facts is the tested contract,
   // not proof that every registered operation emits a complete valid vector.
   const auto catalog = d::CanonicalDiagnosticCodeCatalog();
-  Check(catalog.size == 1378, "expected registration population changed");
+  Check(catalog.size == 1418, "expected registration population changed");
   std::size_t copied = 0;
   for (const auto& row : catalog) {
     auto value = api::MakeEngineApiDiagnostic(std::string(row.code),

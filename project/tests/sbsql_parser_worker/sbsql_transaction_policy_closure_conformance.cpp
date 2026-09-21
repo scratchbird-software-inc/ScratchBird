@@ -34,6 +34,23 @@ namespace {
 namespace api = scratchbird::engine::internal_api;
 namespace db = scratchbird::storage::database;
 namespace mga = scratchbird::transaction::mga;
+
+// Explicit projection fixture, not an admitted policy/snapshot or restore grant.
+static mga::TransactionEvidenceContext EvidenceContextFixture() {
+  mga::TransactionEvidenceContext context;
+  auto identity = [](unsigned tag) {
+    scratchbird::core::platform::Uuid id;
+    id.bytes[0] = 1; id.bytes[6] = 0x70; id.bytes[8] = 0x80; id.bytes[15] = tag;
+    return id;
+  };
+  context.database_uuid = identity(201);
+  context.snapshot_uuid = identity(202);
+  context.policy_snapshot_uuid = identity(203);
+  context.snapshot_generation = 11; context.catalog_generation = 12;
+  context.security_generation = 13; context.policy_generation = 14;
+  return context;
+}
+
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
@@ -251,9 +268,10 @@ void RequireReadOnlyMGAHelpers(const api::EngineRequestContext& context,
   Require(recovered_lookup.entry.state == mga::TransactionState::rolled_back,
           "read_only_active did not recover to rolled_back");
 
-  const auto lineage = mga::BuildTransactionLineageEvidence(inventory, "schema_epoch_1", "snapshot_capsule_1");
+  const auto lineage = mga::BuildTransactionLineageEvidence(inventory, EvidenceContextFixture());
   bool found_lineage = false;
-  for (const auto& record : lineage) {
+  Require(lineage.ok(), "typed evidence projection failed");
+  for (const auto& record : lineage.records) {
     if (record.local_id.value != local_id.value) { continue; }
     found_lineage = true;
     Require(record.observed_state == "read_only_active",
