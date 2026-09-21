@@ -1,4 +1,5 @@
 #include "sblr_ddl_create_procedure_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include "api_diagnostics.hpp"
 
@@ -134,14 +135,14 @@ bool DecodeSblrDdlCreateProcedureAuthorityInputV1(
 }
 
 SblrDdlCreateProcedureCoordinationResult CompileSblrDdlCreateProcedureDescriptor(
-    const EngineRequestContext& context, const std::string& receipt,
+    const EngineRequestContext& context, const EngineUuid& receipt,
     std::uint64_t occurrence, std::uint32_t procedure_occurrence,
     std::uint64_t availability) {
   std::lock_guard lock(g_legacy_mutex);
   SblrDdlCreateProcedureCoordinationResult result;
   if (!HasTag(context, "private_ddl_create_procedure_binder") ||
       !context.statement_metadata_snapshot_engine_owned ||
-      receipt != context.statement_uuid || occurrence == 0 ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(receipt) || receipt != context.statement_uuid || occurrence == 0 ||
       procedure_occurrence == 0 || availability == 0) {
     result.diagnostic = Diagnostic(
         "SBLR.OPERAND_INVALID",

@@ -8,6 +8,6 @@ struct SblrDdlDropTypeCoordinationResult {
   scratchbird::engine::sblr::SblrDdlDropTypeDescriptorV1 descriptor{};
   EngineApiDiagnostic diagnostic;
 };
-SblrDdlDropTypeCoordinationResult CompileSblrDdlDropTypeDescriptor(const EngineRequestContext&, const std::string&, std::uint64_t, std::uint32_t, std::uint64_t);
+SblrDdlDropTypeCoordinationResult CompileSblrDdlDropTypeDescriptor(const EngineRequestContext&, const EngineUuid&, std::uint64_t, std::uint32_t, std::uint64_t);
 SblrDdlDropTypeCoordinationResult ConsumeSblrDdlDropTypeDescriptor(const EngineRequestContext&, const scratchbird::engine::sblr::SblrDdlDropTypeDescriptorV1&);
 }

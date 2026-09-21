@@ -1,4 +1,5 @@
 #include "sblr_ddl_drop_table_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 #include "api_diagnostics.hpp"
 
 #include <algorithm>
@@ -25,14 +26,14 @@ bool HasTag(const EngineRequestContext& c, const char* tag) {
 }
 
 SblrDdlDropTableCoordinationResult CompileSblrDdlDropTableDescriptor(
-    const EngineRequestContext& c, const std::string& statement,
+    const EngineRequestContext& c, const EngineUuid& statement,
     std::uint64_t occurrence, std::uint32_t table_occurrence,
     std::uint64_t availability) {
   SblrDdlDropTableCoordinationResult out;
   std::lock_guard lock(g_mutex);
   if (!HasTag(c, "private_ddl_drop_table_binder") ||
       !c.statement_metadata_snapshot_engine_owned ||
-      statement != c.statement_uuid || !occurrence ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(statement) || statement != c.statement_uuid || !occurrence ||
       !table_occurrence || !availability) {
     out.diagnostic = Diagnostic("SBLR.OPERAND.INVALID",
                                 "sblr.ddl_drop_table.coordination_invalid");

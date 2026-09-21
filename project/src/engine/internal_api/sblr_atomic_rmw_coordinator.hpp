@@ -10,7 +10,7 @@ struct SblrAtomicRmwCoordinationResult {
   EngineApiDiagnostic diagnostic;
 };
 SblrAtomicRmwCoordinationResult CompileSblrAtomicRmwDescriptor(
-    const EngineRequestContext&, const std::string&, std::uint64_t,
+    const EngineRequestContext&, const EngineUuid&, std::uint64_t,
     std::uint32_t, std::uint64_t);
 SblrAtomicRmwCoordinationResult ConsumeSblrAtomicRmwDescriptor(
     const EngineRequestContext&,

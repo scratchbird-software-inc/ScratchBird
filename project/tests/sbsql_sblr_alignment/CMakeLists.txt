@@ -2,14 +2,16 @@
 # SPDX-License-Identifier: MPL-2.0
 
 add_executable(sbsql_sblr_alignment_server_coordination_binary_uuid
-  server_coordination_binary_uuid_test.cpp)
+  server_coordination_binary_uuid_test.cpp
+  ../../src/engine/internal_api/sblr_session_setting_set_coordinator.cpp
+  ../../src/engine/internal_api/api_unsupported.cpp)
 target_compile_features(sbsql_sblr_alignment_server_coordination_binary_uuid PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_server_coordination_binary_uuid PRIVATE
-  ../../src ../../include ../../src/server_engine_bridge ../../src/engine/internal_api
+  ../../src ../../include ../../src/server_engine_bridge ../../src/engine/internal_api ../../src/engine/sblr
   ../../src/core/memory ../../src/core/agents ../../src/core/metrics
   ../../src/core/catalog ../../src/core/datatypes ../../src/core/index
   ../../src/core/resources ../../src/storage/database ../../src/transaction/mga)
-target_link_libraries(sbsql_sblr_alignment_server_coordination_binary_uuid PRIVATE sb_core_uuid)
+target_link_libraries(sbsql_sblr_alignment_server_coordination_binary_uuid PRIVATE sb_core_uuid sb_core_diagnostic_catalog)
 add_test(NAME sbsql_sblr_alignment_server_coordination_binary_uuid
   COMMAND sbsql_sblr_alignment_server_coordination_binary_uuid)
 set_tests_properties(sbsql_sblr_alignment_server_coordination_binary_uuid PROPERTIES

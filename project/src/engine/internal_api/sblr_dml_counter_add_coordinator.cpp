@@ -1,4 +1,5 @@
 #include "sblr_dml_counter_add_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include "api_diagnostics.hpp"
 
@@ -42,7 +43,7 @@ bool FinalizeDescriptorEvidence(
 
 SblrDmlCounterAddCoordinationResult CompileSblrDmlCounterAddDescriptor(
     const EngineRequestContext& context,
-    const std::string& receipt,
+    const EngineUuid& receipt,
     std::uint64_t occurrence,
     std::uint64_t counter_occurrence,
     std::uint64_t availability)
@@ -50,7 +51,7 @@ SblrDmlCounterAddCoordinationResult CompileSblrDmlCounterAddDescriptor(
     SblrDmlCounterAddCoordinationResult result;
     if (!context.security_context_present ||
         !context.statement_metadata_snapshot_engine_owned ||
-        receipt != context.statement_uuid || occurrence == 0 ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(receipt) || receipt != context.statement_uuid || occurrence == 0 ||
         counter_occurrence == 0 || availability == 0) {
         result.diagnostic = MakeEngineApiDiagnostic(
             "SBLR.OPERAND.INVALID",

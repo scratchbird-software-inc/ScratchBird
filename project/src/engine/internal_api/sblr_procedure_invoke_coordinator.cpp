@@ -1,4 +1,5 @@
 #include "sblr_procedure_invoke_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include "api_diagnostics.hpp"
 
@@ -126,14 +127,14 @@ bool DecodeSblrProcedureInvokeAuthorityInputV1(
 }
 
 SblrProcedureInvokeCoordinationResult CompileSblrProcedureInvokeDescriptor(
-    const EngineRequestContext& context, const std::string& receipt,
+    const EngineRequestContext& context, const EngineUuid& receipt,
     std::uint64_t occurrence, std::uint32_t invocation_occurrence,
     std::uint64_t availability) {
   std::lock_guard lock(g_legacy_mutex);
   SblrProcedureInvokeCoordinationResult result;
   if (!HasTag(context, "private_procedure_invoke_binder") ||
       !context.statement_metadata_snapshot_engine_owned ||
-      receipt != context.statement_uuid || occurrence == 0 ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(receipt) || receipt != context.statement_uuid || occurrence == 0 ||
       invocation_occurrence == 0 || availability == 0) {
     result.diagnostic = Diagnostic(
         "SBLR.OPERAND_INVALID",

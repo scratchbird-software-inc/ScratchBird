@@ -23,7 +23,7 @@ SblrDdlCreateTriggerCoordinationResult CompileSblrDdlCreateTriggerDescriptor(
 // Transitional fail-closed compatibility entry points. Public trigger routing
 // must use the receipt-private bind/copy API before these are removed.
 SblrDdlCreateTriggerCoordinationResult CompileSblrDdlCreateTriggerDescriptor(
-    const EngineRequestContext&, const std::string&, std::uint64_t,
+    const EngineRequestContext&, const EngineUuid&, std::uint64_t,
     std::uint32_t, std::uint64_t);
 SblrDdlCreateTriggerCoordinationResult ConsumeSblrDdlCreateTriggerDescriptor(
     const EngineRequestContext&,

@@ -1,4 +1,5 @@
 #include "sblr_bulk_import_stream_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include "api_diagnostics.hpp"
 #include "hash_digest.hpp"
@@ -48,13 +49,11 @@ bool HasTag(const EngineRequestContext& context, std::string_view tag) {
          context.trace_tags.end();
 }
 
-bool CanonicalUuid(std::string_view text, Uuid* output) {
-  if (!output || text.empty()) return false;
-  const auto parsed = scratchbird::core::uuid::ParseUuid(std::string(text));
-  if (!parsed.ok() || scratchbird::core::uuid::UuidToString(parsed.value) != text)
+bool CopySystemUuid(const EngineUuid& identity, Uuid* output) {
+  if (!output || !scratchbird::core::uuid::IsEngineIdentityUuid(identity))
     return false;
-  std::copy(parsed.value.bytes.begin(), parsed.value.bytes.end(), output->begin());
-  return NonZero(*output);
+  *output = identity.bytes;
+  return true;
 }
 
 void PutU16(std::vector<std::uint8_t>* out, std::uint16_t value) {
@@ -276,21 +275,21 @@ bool ContextMatches(const EngineRequestContext& context,
   Uuid catalog{};
   Uuid security{};
   Uuid resource{};
-  return CanonicalUuid(context.statement_receipt_uuid, &receipt) &&
+  return CopySystemUuid(context.statement_receipt_uuid, &receipt) &&
          receipt == value.authenticated_receipt_uuid &&
-         CanonicalUuid(context.transaction_uuid, &transaction) &&
+         CopySystemUuid(context.transaction_uuid, &transaction) &&
          transaction == value.owning_transaction_uuid &&
          context.local_transaction_id == value.owning_local_transaction_id &&
-         CanonicalUuid(context.statement_snapshot_uuid, &snapshot) &&
+         CopySystemUuid(context.statement_snapshot_uuid, &snapshot) &&
          snapshot == value.statement_snapshot_uuid &&
-         CanonicalUuid(context.catalog_epoch_uuid, &catalog) &&
+         CopySystemUuid(context.catalog_epoch_uuid, &catalog) &&
          catalog == value.catalog_epoch_uuid &&
          context.catalog_generation_id == value.catalog_generation &&
-         CanonicalUuid(context.authorization_context.authority_uuid,
+         CopySystemUuid(context.authorization_context.authority_uuid,
                        &security) &&
          security == value.security_context_uuid &&
          context.authorization_context.security_epoch == value.security_epoch &&
-         CanonicalUuid(context.resource_admission_uuid, &resource) &&
+         CopySystemUuid(context.resource_admission_uuid, &resource) &&
          resource == value.resource_grant_uuid &&
          context.resource_epoch == value.resource_grant_generation;
 }
@@ -458,7 +457,7 @@ CoordinateDurableSblrBulkImportStreamDescriptorV1(
 }
 
 SblrBulkImportStreamCoordinationResult CompileSblrBulkImportStreamDescriptor(
-    const EngineRequestContext& context, const std::string& receipt,
+    const EngineRequestContext& context, const EngineUuid& receipt,
     std::uint64_t occurrence, std::uint32_t import_occurrence,
     std::uint64_t availability) {
   std::lock_guard lock(legacy_mutex);
@@ -466,7 +465,7 @@ SblrBulkImportStreamCoordinationResult CompileSblrBulkImportStreamDescriptor(
   if (!context.security_context_present ||
       !context.statement_metadata_snapshot_engine_owned ||
       !HasTag(context, "private_bulk_import_stream_compiler") ||
-      receipt != context.statement_uuid || occurrence == 0 ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(receipt) || receipt != context.statement_uuid || occurrence == 0 ||
       import_occurrence == 0 || availability == 0) {
     result.diagnostic =
         Diagnostic("SBLR.OPERAND_INVALID",

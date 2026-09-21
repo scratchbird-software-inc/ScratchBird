@@ -28,7 +28,7 @@ bool DecodeSblrDdlCreateProcedureAuthorityInputV1(
 // coverage.  The executable SBsql route uses the syntax-only v2 bind and the
 // receipt-private authority overload above.
 SblrDdlCreateProcedureCoordinationResult CompileSblrDdlCreateProcedureDescriptor(
-    const EngineRequestContext&, const std::string&, std::uint64_t,
+    const EngineRequestContext&, const EngineUuid&, std::uint64_t,
     std::uint32_t, std::uint64_t);
 SblrDdlCreateProcedureCoordinationResult ConsumeSblrDdlCreateProcedureDescriptor(
     const EngineRequestContext&,

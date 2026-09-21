@@ -1,4 +1,5 @@
 #include "sblr_dml_conditional_mutate_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include "api_diagnostics.hpp"
 
@@ -36,14 +37,14 @@ bool FinalizeDescriptorEvidence(
 
 SblrDmlConditionalMutateCoordinationResult
 CompileSblrDmlConditionalMutateDescriptor(const EngineRequestContext& context,
-                                          const std::string& receipt,
+                                          const EngineUuid& receipt,
                                           std::uint64_t structural_occurrence,
                                           std::uint64_t mutation_occurrence,
                                           std::uint64_t availability_generation) {
   SblrDmlConditionalMutateCoordinationResult result;
   if (!context.security_context_present ||
       !context.statement_metadata_snapshot_engine_owned ||
-      receipt != context.statement_uuid || !structural_occurrence ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(receipt) || receipt != context.statement_uuid || !structural_occurrence ||
       !mutation_occurrence || !availability_generation) {
     result.diagnostic = MakeEngineApiDiagnostic(
         "SBLR.OPERAND.INVALID", "sblr.dml_conditional_mutate.coordination_invalid",

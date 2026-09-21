@@ -27,7 +27,7 @@ bool DecodeSblrProcedureInvokeAuthorityInputV1(
 // Legacy v1 coordination remains component-only.  Executable routes use the
 // receipt-private syntax-demand binder and the typed overload above.
 SblrProcedureInvokeCoordinationResult CompileSblrProcedureInvokeDescriptor(
-    const EngineRequestContext&, const std::string&, std::uint64_t,
+    const EngineRequestContext&, const EngineUuid&, std::uint64_t,
     std::uint32_t, std::uint64_t);
 SblrProcedureInvokeCoordinationResult ConsumeSblrProcedureInvokeDescriptor(
     const EngineRequestContext&,

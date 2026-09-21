@@ -1,4 +1,5 @@
 #include "sblr_ddl_create_publication_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 #include "api_diagnostics.hpp"
 #include <algorithm>
 #include <map>
@@ -24,7 +25,7 @@ EngineApiDiagnostic Diagnostic(std::string code, std::string detail) {
 
 SblrDdlCreatePublicationCoordinationResult
 CompileSblrDdlCreatePublicationDescriptor(const EngineRequestContext& c,
-                                          const std::string& publication,
+                                          const EngineUuid& publication,
                                           std::uint64_t occurrence,
                                           std::uint32_t domain_occurrence,
                                           std::uint64_t availability) {
@@ -32,7 +33,7 @@ CompileSblrDdlCreatePublicationDescriptor(const EngineRequestContext& c,
   SblrDdlCreatePublicationCoordinationResult out;
   if (!HasTag(c, "private_ddl_create_publication_binder") ||
       !c.statement_metadata_snapshot_engine_owned ||
-      publication != c.statement_uuid || !occurrence ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(publication) || publication != c.statement_uuid || !occurrence ||
       !domain_occurrence || !availability) {
     out.diagnostic = Diagnostic("SBLR.OPERAND_INVALID",
                                 "sblr.ddl_create_publication.coordination_invalid");

@@ -1,4 +1,5 @@
 #include "sblr_ddl_drop_continuous_view_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 #include "api_diagnostics.hpp"
 #include <algorithm>
 #include <map>
@@ -20,12 +21,12 @@ EngineApiDiagnostic diagnostic(std::string code, std::string message) {
 }
 
 SblrDdlDropContinuousViewCoordinationResult CompileSblrDdlDropContinuousViewDescriptor(
-    const EngineRequestContext& c, const std::string& receipt, std::uint64_t occurrence,
+    const EngineRequestContext& c, const EngineUuid& receipt, std::uint64_t occurrence,
     std::uint32_t view_occurrence, std::uint64_t availability) {
   std::lock_guard lock(mutex);
   SblrDdlDropContinuousViewCoordinationResult result;
   if (!tag(c, "private_ddl_drop_continuous_view_binder") ||
-      !c.statement_metadata_snapshot_engine_owned || receipt != c.statement_uuid ||
+      !c.statement_metadata_snapshot_engine_owned || !scratchbird::core::uuid::IsEngineIdentityUuid(receipt) || receipt != c.statement_uuid ||
       !occurrence || !view_occurrence || !availability) {
     result.diagnostic = diagnostic("SBLR.OPERAND.INVALID", "sblr.ddl_drop_continuous_view.coordination_invalid");
     return result;

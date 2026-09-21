@@ -1,4 +1,5 @@
 #include "sblr_ddl_create_index_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 #include "api_diagnostics.hpp"
 #include "uuid.hpp"
 #include <algorithm>
@@ -19,21 +20,16 @@ EngineApiDiagnostic MissingExecutorEvidence() {
            "sblr.opcode.executor_evidence_missing");
 }
 
-bool canonical_uuid(const std::string& value) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(value);
-  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == value;
-}
 }  // namespace
 
 SblrDdlCreateIndexCoordinationResult CompileSblrDdlCreateIndexDescriptor(
-    const EngineRequestContext& c, const std::string& r,
+    const EngineRequestContext& c, const EngineUuid& r,
     std::uint64_t occurrence, std::uint32_t index_occurrence,
     std::uint64_t availability) {
   SblrDdlCreateIndexCoordinationResult o;
   if (!tag(c, "private_ddl_create_index_binder") ||
       !c.statement_metadata_snapshot_engine_owned ||
-      !canonical_uuid(r) || r != c.statement_uuid || !occurrence ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(r) || r != c.statement_uuid || !occurrence ||
       !index_occurrence || !availability) {
     o.diagnostic = d("SBLR.OPERAND_INVALID",
                      "sblr.ddl_create_index.coordination_invalid");

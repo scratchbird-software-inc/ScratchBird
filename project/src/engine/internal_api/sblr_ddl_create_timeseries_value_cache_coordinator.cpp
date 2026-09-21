@@ -1,4 +1,5 @@
 #include "sblr_ddl_create_timeseries_value_cache_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include "api_diagnostics.hpp"
 
@@ -44,7 +45,7 @@ bool FinalizeDescriptorEvidence(
 SblrDdlCreateTimeseriesValueCacheCoordinationResult
 CompileSblrDdlCreateTimeseriesValueCacheDescriptor(
     const EngineRequestContext& context,
-    const std::string& receipt,
+    const EngineUuid& receipt,
     std::uint64_t occurrence,
     std::uint64_t cache_occurrence,
     std::uint64_t availability)
@@ -52,7 +53,7 @@ CompileSblrDdlCreateTimeseriesValueCacheDescriptor(
     SblrDdlCreateTimeseriesValueCacheCoordinationResult result;
     if (!context.security_context_present ||
         !context.statement_metadata_snapshot_engine_owned ||
-        receipt != context.statement_uuid || occurrence == 0 ||
+        !scratchbird::core::uuid::IsEngineIdentityUuid(receipt) || receipt != context.statement_uuid || occurrence == 0 ||
         cache_occurrence == 0 || availability == 0) {
         result.diagnostic = MakeEngineApiDiagnostic(
             "SBLR.OPERAND.INVALID",

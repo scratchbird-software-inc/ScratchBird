@@ -1,4 +1,5 @@
 #include "sblr_ddl_create_type_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include "api_diagnostics.hpp"
 #include "uuid.hpp"
@@ -23,22 +24,16 @@ EngineApiDiagnostic MissingExecutorEvidence() {
                     "sblr.opcode.executor_evidence_missing");
 }
 
-bool IsCanonicalUuid(const std::string& value) {
-  const auto parsed = scratchbird::core::uuid::ParseUuid(value);
-  return parsed.ok() && !scratchbird::core::uuid::IsNilUuid(parsed.value) &&
-         scratchbird::core::uuid::UuidToString(parsed.value) == value;
-}
 }  // namespace
 
 SblrDdlCreateTypeCoordinationResult CompileSblrDdlCreateTypeDescriptor(
-    const EngineRequestContext& context, const std::string& receipt,
+    const EngineRequestContext& context, const EngineUuid& receipt,
     std::uint64_t occurrence, std::uint32_t domain_occurrence,
     std::uint64_t availability) {
   SblrDdlCreateTypeCoordinationResult result;
   if (!HasPrivateTag(context, "private_ddl_create_type_binder") ||
       !context.statement_metadata_snapshot_engine_owned ||
-      !IsCanonicalUuid(receipt) ||
-      receipt != context.statement_uuid || !occurrence ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(receipt) || receipt != context.statement_uuid || !occurrence ||
       !domain_occurrence || !availability) {
     result.diagnostic =
         Diagnostic("SBLR.OPERAND_INVALID",

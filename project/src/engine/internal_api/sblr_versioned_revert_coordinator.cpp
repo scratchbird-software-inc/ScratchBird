@@ -1,4 +1,5 @@
 #include "sblr_versioned_revert_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 #include "api_diagnostics.hpp"
 #include <algorithm>
 #include <map>
@@ -10,9 +11,9 @@ std::string Key(const D& d){return {(const char*)d.body.data(),d.body.size()};}
 bool Tag(const EngineRequestContext& c,const char* t){return c.security_context_present&&std::find(c.trace_tags.begin(),c.trace_tags.end(),t)!=c.trace_tags.end();}
 EngineApiDiagnostic Diag(std::string c,std::string d){return MakeEngineApiDiagnostic(std::move(c),std::move(d),{});}
 }
-SblrVersionedRevertCoordinationResult CompileSblrVersionedRevertDescriptor(const EngineRequestContext& c,const std::string& n,std::uint64_t g){
+SblrVersionedRevertCoordinationResult CompileSblrVersionedRevertDescriptor(const EngineRequestContext& c,const EngineUuid& n,std::uint64_t g){
  std::lock_guard l(g_mutex); SblrVersionedRevertCoordinationResult o;
- if(!Tag(c,"private_versioned_revert_binder")||!c.statement_metadata_snapshot_engine_owned||n!=c.statement_uuid||!g||!Tag(c,"cluster_provider_admitted")||!Tag(c,"cluster_route_fence_admitted")){o.diagnostic=Diag("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","sblr.versioned_revert.cluster_gate");return o;}
+ if(!Tag(c,"private_versioned_revert_binder")||!c.statement_metadata_snapshot_engine_owned||!scratchbird::core::uuid::IsEngineIdentityUuid(n) || n != c.statement_uuid||!g||!Tag(c,"cluster_provider_admitted")||!Tag(c,"cluster_route_fence_admitted")){o.diagnostic=Diag("CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN","sblr.versioned_revert.cluster_gate");return o;}
  o.descriptor.body[0]=1; o.descriptor.body[16]=1; for(int i=0;i<8;++i)o.descriptor.body[72+i]=(std::uint8_t)(g>>(8*i));
  if(scratchbird::engine::sblr::EncodeSblrVersionedRevertDescriptorV1(o.descriptor).empty()){o.diagnostic=Diag("SBLR.OPERAND.INVALID","sblr.versioned_revert.descriptor_invalid");return o;}
  live[Key(o.descriptor)]=o.descriptor; o.ok=true; o.diagnostic=Diag("OK","ok"); return o;

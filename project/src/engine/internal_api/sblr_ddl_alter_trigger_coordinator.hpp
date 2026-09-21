@@ -21,7 +21,7 @@ SblrDdlAlterTriggerCoordinationResult CompileSblrDdlAlterTriggerDescriptor(
 // Fail-closed compatibility entry points. Public routing must bind and copy the
 // immutable receipt-private descriptor instead.
 SblrDdlAlterTriggerCoordinationResult CompileSblrDdlAlterTriggerDescriptor(
-    const EngineRequestContext&, const std::string&, std::uint64_t,
+    const EngineRequestContext&, const EngineUuid&, std::uint64_t,
     std::uint32_t, std::uint64_t);
 SblrDdlAlterTriggerCoordinationResult ConsumeSblrDdlAlterTriggerDescriptor(
     const EngineRequestContext&,

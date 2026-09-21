@@ -1,4 +1,5 @@
 #include "sblr_ddl_alter_trigger_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include "api_diagnostics.hpp"
 
@@ -39,7 +40,7 @@ SblrDdlAlterTriggerCoordinationResult CompileSblrDdlAlterTriggerDescriptor(
 }
 
 SblrDdlAlterTriggerCoordinationResult CompileSblrDdlAlterTriggerDescriptor(
-    const EngineRequestContext&, const std::string&, std::uint64_t,
+    const EngineRequestContext&, const EngineUuid&, std::uint64_t,
     std::uint32_t, std::uint64_t) {
   return Refuse("MGA.AUTHORITY_MISMATCH",
                 "sblr.ddl_alter_trigger.receipt_private_bind_required");

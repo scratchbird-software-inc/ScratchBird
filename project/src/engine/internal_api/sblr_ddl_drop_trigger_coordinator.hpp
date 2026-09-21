@@ -18,7 +18,7 @@ struct SblrDdlDropTriggerCoordinationResult {
 SblrDdlDropTriggerCoordinationResult CompileSblrDdlDropTriggerDescriptor(
     const SblrDdlDropTriggerAuthorityInputV1&);
 SblrDdlDropTriggerCoordinationResult CompileSblrDdlDropTriggerDescriptor(
-    const EngineRequestContext&, const std::string&, std::uint64_t,
+    const EngineRequestContext&, const EngineUuid&, std::uint64_t,
     std::uint32_t, std::uint64_t);
 SblrDdlDropTriggerCoordinationResult ConsumeSblrDdlDropTriggerDescriptor(
     const EngineRequestContext&,

@@ -1,4 +1,5 @@
 #include "sblr_atomic_rmw_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include "api_diagnostics.hpp"
 
@@ -25,14 +26,14 @@ EngineApiDiagnostic Diagnostic(std::string code, std::string key) {
 }  // namespace
 
 SblrAtomicRmwCoordinationResult CompileSblrAtomicRmwDescriptor(
-    const EngineRequestContext& context, const std::string& receipt,
+    const EngineRequestContext& context, const EngineUuid& receipt,
     std::uint64_t occurrence, std::uint32_t rmw_occurrence,
     std::uint64_t availability_generation) {
   std::lock_guard lock(coordinator_mutex);
   SblrAtomicRmwCoordinationResult result;
   if (!Tagged(context, "private_atomic_rmw_compiler") ||
       !context.statement_metadata_snapshot_engine_owned ||
-      receipt != context.statement_uuid || occurrence == 0 ||
+      !scratchbird::core::uuid::IsEngineIdentityUuid(receipt) || receipt != context.statement_uuid || occurrence == 0 ||
       rmw_occurrence == 0 || availability_generation == 0) {
     result.diagnostic = Diagnostic("SBLR.OPERAND_INVALID", "sblr.atomic_rmw.coordination_invalid");
     return result;

@@ -69,7 +69,7 @@ CoordinateDurableSblrBulkImportStreamDescriptorV1(
 // the terminal opcode-775 executor is migrated to the durable registry.  New
 // BIRQ coordination must use CoordinateDurable... above.
 SblrBulkImportStreamCoordinationResult CompileSblrBulkImportStreamDescriptor(
-    const EngineRequestContext&, const std::string&, std::uint64_t,
+    const EngineRequestContext&, const EngineUuid&, std::uint64_t,
     std::uint32_t, std::uint64_t);
 SblrBulkImportStreamCoordinationResult ConsumeSblrBulkImportStreamDescriptor(
     const EngineRequestContext&,

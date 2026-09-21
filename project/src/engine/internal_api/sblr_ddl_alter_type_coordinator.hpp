@@ -4,6 +4,6 @@
 #include "engine/sblr/sblr_ddl_alter_type_runtime.hpp"
 namespace scratchbird::engine::internal_api {
 using SblrDdlAlterTypeCoordinationResult = SblrDdlCreateViewCoordinationResult;
-SblrDdlAlterTypeCoordinationResult CompileSblrDdlAlterTypeDescriptor(const EngineRequestContext&, const std::string&, std::uint64_t, std::uint32_t, std::uint64_t);
+SblrDdlAlterTypeCoordinationResult CompileSblrDdlAlterTypeDescriptor(const EngineRequestContext&, const EngineUuid&, std::uint64_t, std::uint32_t, std::uint64_t);
 SblrDdlAlterTypeCoordinationResult ConsumeSblrDdlAlterTypeDescriptor(const EngineRequestContext&, const scratchbird::engine::sblr::SblrDdlAlterTypeDescriptorV1&);
 }

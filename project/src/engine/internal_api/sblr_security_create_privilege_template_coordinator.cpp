@@ -1,4 +1,5 @@
 #include "sblr_security_create_privilege_template_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 
 #include "api_diagnostics.hpp"
 
@@ -38,7 +39,7 @@ CompileSblrSecurityCreatePrivilegeTemplateDescriptor(
 
 SblrSecurityCreatePrivilegeTemplateCoordinationResult
 CompileSblrSecurityCreatePrivilegeTemplateDescriptor(
-    const EngineRequestContext&, const std::string&, std::uint64_t,
+    const EngineRequestContext&, const EngineUuid&, std::uint64_t,
     std::uint32_t, std::uint64_t) {
   SblrSecurityCreatePrivilegeTemplateCoordinationResult result;
   result.diagnostic = Diagnostic(

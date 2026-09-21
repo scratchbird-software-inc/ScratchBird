@@ -33,7 +33,7 @@ CompileSblrSecurityCreatePrivilegeTemplateDescriptor(
 // recreating the removed process-global descriptor map.
 SblrSecurityCreatePrivilegeTemplateCoordinationResult
 CompileSblrSecurityCreatePrivilegeTemplateDescriptor(
-    const EngineRequestContext&, const std::string&, std::uint64_t,
+    const EngineRequestContext&, const EngineUuid&, std::uint64_t,
     std::uint32_t, std::uint64_t);
 SblrSecurityCreatePrivilegeTemplateCoordinationResult
 ConsumeSblrSecurityCreatePrivilegeTemplateDescriptor(

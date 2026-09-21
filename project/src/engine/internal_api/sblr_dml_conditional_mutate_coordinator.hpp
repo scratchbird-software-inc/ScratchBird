@@ -13,7 +13,7 @@ struct SblrDmlConditionalMutateCoordinationResult {
 
 SblrDmlConditionalMutateCoordinationResult
 CompileSblrDmlConditionalMutateDescriptor(const EngineRequestContext&,
-                                          const std::string& receipt,
+                                          const EngineUuid& receipt,
                                           std::uint64_t structural_occurrence,
                                           std::uint64_t mutation_occurrence,
                                           std::uint64_t availability_generation);

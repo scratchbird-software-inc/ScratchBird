@@ -11,7 +11,7 @@ struct SblrDdlDropTableCoordinationResult {
 };
 
 SblrDdlDropTableCoordinationResult CompileSblrDdlDropTableDescriptor(
-    const EngineRequestContext&, const std::string&, std::uint64_t,
+    const EngineRequestContext&, const EngineUuid&, std::uint64_t,
     std::uint32_t, std::uint64_t);
 SblrDdlDropTableCoordinationResult ConsumeSblrDdlDropTableDescriptor(
     const EngineRequestContext&,

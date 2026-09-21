@@ -4,6 +4,6 @@
 #include "engine/sblr/sblr_ddl_create_type_runtime.hpp"
 namespace scratchbird::engine::internal_api {
 using SblrDdlCreateTypeCoordinationResult = SblrDdlCreateViewCoordinationResult;
-SblrDdlCreateTypeCoordinationResult CompileSblrDdlCreateTypeDescriptor(const EngineRequestContext&, const std::string&, std::uint64_t, std::uint32_t, std::uint64_t);
+SblrDdlCreateTypeCoordinationResult CompileSblrDdlCreateTypeDescriptor(const EngineRequestContext&, const EngineUuid&, std::uint64_t, std::uint32_t, std::uint64_t);
 SblrDdlCreateTypeCoordinationResult ConsumeSblrDdlCreateTypeDescriptor(const EngineRequestContext&, const scratchbird::engine::sblr::SblrDdlCreateTypeDescriptorV1&);
 }

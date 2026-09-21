@@ -1,4 +1,5 @@
 #include "sblr_ddl_drop_materialized_view_coordinator.hpp"
+#include "../../core/uuid/uuid.hpp"
 #include "api_diagnostics.hpp"
 #include <algorithm>
 #include <map>
@@ -8,9 +9,9 @@ namespace { using D=scratchbird::engine::sblr::SblrDdlDropMaterializedViewDescri
 std::string key(const scratchbird::engine::sblr::DdlCreateViewSha& h){return {reinterpret_cast<const char*>(h.data()),h.size()};}
 bool tag(const EngineRequestContext& c,const char* t){return c.security_context_present&&std::find(c.trace_tags.begin(),c.trace_tags.end(),t)!=c.trace_tags.end();}
 EngineApiDiagnostic diag(std::string c,std::string k){return MakeEngineApiDiagnostic(std::move(c),std::move(k),{});} }
-SblrDdlDropMaterializedViewCoordinationResult CompileSblrDdlDropMaterializedViewDescriptor(const EngineRequestContext& c,const std::string& r,std::uint64_t o,std::uint32_t d,std::uint64_t a){
+SblrDdlDropMaterializedViewCoordinationResult CompileSblrDdlDropMaterializedViewDescriptor(const EngineRequestContext& c,const EngineUuid& r,std::uint64_t o,std::uint32_t d,std::uint64_t a){
  SblrDdlDropMaterializedViewCoordinationResult x; std::lock_guard l(m);
- if(!tag(c,"private_ddl_drop_materialized_view_binder")||!c.statement_metadata_snapshot_engine_owned||r!=c.statement_uuid||!o||!d||!a){x.diagnostic=diag("SBLR.OPERAND.INVALID","sblr.ddl_drop_materialized_view.coordination_invalid");return x;}
+ if(!tag(c,"private_ddl_drop_materialized_view_binder")||!c.statement_metadata_snapshot_engine_owned||!scratchbird::core::uuid::IsEngineIdentityUuid(r) || r != c.statement_uuid||!o||!d||!a){x.diagnostic=diag("SBLR.OPERAND.INVALID","sblr.ddl_drop_materialized_view.coordination_invalid");return x;}
  x.descriptor.body[0]=1; x.descriptor.body[1]=std::uint8_t(o); x.descriptor.body[2]=std::uint8_t(d); x.descriptor.availability=a;
  auto b=scratchbird::engine::sblr::EncodeSblrDdlDropMaterializedViewDescriptorV1(x.descriptor,false);
  if(b.empty()||!scratchbird::engine::sblr::DecodeSblrDdlDropMaterializedViewDescriptorV1(b.data(),b.size(),&x.descriptor,nullptr,false)){x.diagnostic=diag("SBLR.OPERAND.INVALID","sblr.ddl_drop_materialized_view.descriptor_invalid");return x;}
